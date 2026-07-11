@@ -30,12 +30,9 @@ from sqlalchemy import engine_from_config, pool
 from app.core.config import get_settings
 from app.database.base import Base
 
-# Future Sprint 2+ model imports (uncomment as models are added):
-# from app.models.invoice import Invoice          # noqa: F401
-# from app.models.vendor import Vendor            # noqa: F401
-# from app.models.invoice_item import InvoiceItem # noqa: F401
-# from app.models.user import User                # noqa: F401
-# from app.models.audit_log import AuditLog       # noqa: F401
+# Import all models so their tables are registered on Base.metadata.
+# This single import triggers app/models/__init__.py which imports every model.
+import app.models  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Alembic Config object — provides access to alembic.ini values
