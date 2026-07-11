@@ -143,6 +143,46 @@ class AIStructuringError(InvoiceBaseException):
     message = "AI-based invoice structuring failed. The document will be queued for review."
 
 
+class LLMAuthenticationError(AIStructuringError):
+    """Raised when the LLM provider rejects our credentials (server misconfiguration)."""
+
+    error_code = "ERR_LLM_AUTH_FAILED"
+    http_status = 503
+    message = "AI provider authentication failed. Check server configuration."
+
+
+class LLMRateLimitError(AIStructuringError):
+    """Raised when the LLM provider rate limit persists after all retries."""
+
+    error_code = "ERR_LLM_RATE_LIMITED"
+    http_status = 429
+    message = "AI provider rate limit exceeded. Please retry shortly."
+
+
+class LLMTimeoutError(AIStructuringError):
+    """Raised when an LLM request times out after all retries."""
+
+    error_code = "ERR_LLM_TIMEOUT"
+    http_status = 504
+    message = "AI provider request timed out."
+
+
+class LLMConnectionError(AIStructuringError):
+    """Raised when the LLM provider is unreachable after all retries."""
+
+    error_code = "ERR_LLM_UNAVAILABLE"
+    http_status = 503
+    message = "AI provider is unreachable. Please retry shortly."
+
+
+class LLMResponseError(AIStructuringError):
+    """Raised when the LLM returns an unusable response (refusal, truncation, bad schema)."""
+
+    error_code = "ERR_LLM_INVALID_RESPONSE"
+    http_status = 422
+    message = "The AI provider returned an unusable response for this document."
+
+
 class ValidationError(InvoiceBaseException):
     """Raised when extracted invoice data fails mathematical validation."""
 
