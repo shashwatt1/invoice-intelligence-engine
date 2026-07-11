@@ -33,6 +33,12 @@ dependencies = [
     "python-multipart>=0.0.9",   # FastAPI file upload support
     "aiofiles>=23.2.1",          # Async file I/O
 
+    # Text extraction
+    "pdfplumber>=0.11.0",        # Digital PDF text-layer extraction
+
+    # AI structuring
+    "openai>=2.0.0",             # Structured Outputs (chat.completions.parse)
+
     # Utilities
     "structlog>=24.1.0",         # Structured logging
     "python-jose[cryptography]>=3.3.0",

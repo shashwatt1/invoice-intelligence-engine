@@ -115,17 +115,24 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # OCR (used from Sprint 2 onward)
     # -------------------------------------------------------------------------
-    ocr_provider: Literal["paddleocr", "easyocr", "google_vision"] = "paddleocr"
+    ocr_provider: Literal["google_vision", "paddleocr", "easyocr"] = "google_vision"
     google_vision_api_key: str = ""
 
     # -------------------------------------------------------------------------
-    # AI Structuring (used from Sprint 3 onward)
+    # AI Structuring
     # -------------------------------------------------------------------------
+    llm_provider: Literal["openai"] = "openai"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     openai_max_retries: int = 3
     openai_timeout_seconds: int = 30
     openai_max_tokens_per_document: int = 6000
+
+    # -------------------------------------------------------------------------
+    # Validation
+    # -------------------------------------------------------------------------
+    validation_rounding_tolerance: float = 0.02
+    review_confidence_threshold: float = 0.85
 
     # -------------------------------------------------------------------------
     # Logging
