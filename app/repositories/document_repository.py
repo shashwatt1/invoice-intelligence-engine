@@ -12,10 +12,23 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentStatus
+from app.models.invoice import Invoice
+
+# Whitelisted sort keys → ORDER BY expressions (never interpolate user input)
+_HISTORY_SORT_COLUMNS = {
+    "created_at": Document.created_at,
+    "filename": Document.filename,
+    "status": Document.status,
+    "vendor": Invoice.vendor_name,
+    "invoice_number": Invoice.invoice_number,
+    "invoice_date": Invoice.invoice_date,
+    "grand_total": Invoice.grand_total,
+    "confidence": Invoice.composite_confidence,
+}
 
 
 class DocumentRepository:
@@ -66,3 +79,44 @@ class DocumentRepository:
         document.source_type = source_type
         document.status = DocumentStatus.OCR_COMPLETED
         await self._session.flush()
+
+    async def search_history(
+        self,
+        *,
+        search: str | None = None,
+        status: DocumentStatus | None = None,
+        sort_by: str = "created_at",
+        descending: bool = True,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[tuple[Document, Invoice | None]], int]:
+        """
+        Processing history: documents LEFT JOINed to their invoice, so
+        failed documents (which never produce an invoice) still appear.
+        """
+        query = select(Document, Invoice).outerjoin(Invoice, Invoice.document_id == Document.id)
+
+        if search:
+            pattern = f"%{search.strip()}%"
+            query = query.where(
+                or_(
+                    Document.filename.ilike(pattern),
+                    Invoice.invoice_number.ilike(pattern),
+                    Invoice.vendor_name.ilike(pattern),
+                )
+            )
+        if status is not None:
+            query = query.where(Document.status == status)
+
+        count_query = select(func.count()).select_from(query.subquery())
+        total = (await self._session.execute(count_query)).scalar_one()
+
+        sort_column = _HISTORY_SORT_COLUMNS.get(sort_by, Document.created_at)
+        order = sort_column.desc() if descending else sort_column.asc()
+        query = (
+            query.order_by(order, Document.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = (await self._session.execute(query)).all()
+        return [(document, invoice) for document, invoice in rows], total

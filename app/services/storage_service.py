@@ -18,8 +18,8 @@ Design decisions:
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
+from datetime import UTC
 from pathlib import Path
 
 import aiofiles
@@ -102,9 +102,9 @@ class LocalStorageService(StorageService):
         organization_id: str = "default",
     ) -> str:
         """Write file bytes to local disk and return the relative path."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ext = Path(original_filename).suffix.lower() or ".bin"
 
         # Build directory: base / org / year / month

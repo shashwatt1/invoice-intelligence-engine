@@ -32,3 +32,6 @@ logs/
 .env
 .env.local
 *.secret
+
+# Uploaded documents (local storage backend)
+uploads/

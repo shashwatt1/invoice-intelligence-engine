@@ -48,6 +48,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+frontend = [
+    "streamlit>=1.40.0",         # Enterprise dashboard frontend (frontend/)
+]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.6",

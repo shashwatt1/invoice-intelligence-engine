@@ -14,12 +14,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import health, upload
+from app.api.v1 import dashboard, documents, health, invoices, upload
 
 api_router = APIRouter()
 
 # System endpoints — health, readiness, version
 api_router.include_router(health.router, prefix="")
 
-# Upload endpoint — Phase 1
+# Upload endpoint — Phase 1 (superseded by /invoices/process for the full pipeline)
 api_router.include_router(upload.router, prefix="")
+
+# Processing pipeline + read models
+api_router.include_router(invoices.router, prefix="")
+api_router.include_router(documents.router, prefix="")
+api_router.include_router(dashboard.router, prefix="")

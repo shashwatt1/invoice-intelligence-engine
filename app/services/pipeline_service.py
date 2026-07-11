@@ -33,9 +33,11 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
+    AIStructuringError,
     DatabaseError,
     DuplicateDocumentError,
     InvoiceBaseException,
+    OCRExtractionError,
 )
 from app.core.logging import get_logger
 from app.models.document import Document, DocumentStatus
@@ -120,17 +122,52 @@ class InvoiceProcessingPipeline:
         file_hash: str,
     ) -> PipelineResult:
         """
-        Process one uploaded document end-to-end.
+        Process one uploaded document end-to-end (intake + all stages).
 
         Raises:
             DuplicateDocumentError: Same content hash already processed.
             OCRExtractionError / AIStructuringError / DatabaseError:
                 Stage failures, after the document is marked FAILED.
         """
+        document = await self.intake(
+            session,
+            filename=filename,
+            mime_type=mime_type,
+            file_size_bytes=file_size_bytes,
+            file_path=file_path,
+            file_hash=file_hash,
+        )
+        return await self.run_stages(
+            session,
+            document,
+            file_content=file_content,
+            mime_type=mime_type,
+            filename=filename,
+        )
+
+    async def intake(
+        self,
+        session: AsyncSession,
+        *,
+        filename: str,
+        mime_type: str,
+        file_size_bytes: int,
+        file_path: str,
+        file_hash: str,
+    ) -> Document:
+        """
+        Synchronous intake: duplicate check + Document(UPLOADED) + UPLOAD log.
+
+        Split from run_stages() so the API can return 202 with a document_id
+        immediately and execute the remaining stages in the background while
+        clients poll the document status.
+
+        Raises:
+            DuplicateDocumentError: Same content hash already processed.
+        """
         documents = DocumentRepository(session)
         logs = ProcessingLogRepository(session)
 
-        # ---- Duplicate check (before any row is created) -----------------
         existing = await documents.get_by_hash(file_hash)
         if existing is not None:
             raise DuplicateDocumentError(
@@ -141,7 +178,6 @@ class InvoiceProcessingPipeline:
                 }
             )
 
-        # ---- Document creation -------------------------------------------
         document = await documents.create(
             filename=filename,
             mime_type=mime_type,
@@ -162,6 +198,23 @@ class InvoiceProcessingPipeline:
         )
         await session.commit()
         logger.info("pipeline_document_created", document_id=str(document.id), filename=filename)
+        return document
+
+    async def run_stages(
+        self,
+        session: AsyncSession,
+        document: Document,
+        *,
+        file_content: bytes,
+        mime_type: str,
+        filename: str,
+    ) -> PipelineResult:
+        """
+        Run extraction → structuring → validation → persistence for an
+        already-intaken document. See process() for the failure contract.
+        """
+        documents = DocumentRepository(session)
+        logs = ProcessingLogRepository(session)
 
         # ---- Text extraction ----------------------------------------------
         await documents.set_status(document, DocumentStatus.OCR_IN_PROGRESS)
@@ -171,6 +224,15 @@ class InvoiceProcessingPipeline:
         except InvoiceBaseException as exc:
             await self._fail(session, document, PipelineStage.TEXT_EXTRACTION, exc)
             raise
+        except Exception as exc:
+            # Non-domain errors (e.g. provider misconfiguration) must still
+            # drive the document to a terminal FAILED state.
+            wrapped = OCRExtractionError(
+                message=f"Unexpected extraction failure: {exc}",
+                detail={"error": str(exc)[:500]},
+            )
+            await self._fail(session, document, PipelineStage.TEXT_EXTRACTION, wrapped)
+            raise wrapped from exc
 
         await documents.store_extraction(
             document, raw_ocr_text=ocr_result.full_text, source_type=ocr_result.source_type
@@ -197,6 +259,13 @@ class InvoiceProcessingPipeline:
         except InvoiceBaseException as exc:
             await self._fail(session, document, PipelineStage.AI_STRUCTURING, exc)
             raise
+        except Exception as exc:
+            wrapped = AIStructuringError(
+                message=f"Unexpected structuring failure: {exc}",
+                detail={"error": str(exc)[:500]},
+            )
+            await self._fail(session, document, PipelineStage.AI_STRUCTURING, wrapped)
+            raise wrapped from exc
 
         llm_payload = structuring.metadata.to_dict() | {
             "prompt_version": structuring.prompt_version,

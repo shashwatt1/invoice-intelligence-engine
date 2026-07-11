@@ -2,6 +2,33 @@
 
 ## Transforming Invoice Data into Business Intelligence
 
+## Quick Start (MVP Demo)
+
+```bash
+# 1. Infrastructure — PostgreSQL
+docker compose up -d db
+.venv/bin/python -m alembic upgrade head          # first run only
+
+# 2. Configuration — copy the template and set your keys
+cp .env.example .env                              # set OPENAI_API_KEY (required)
+                                                  # set GOOGLE_VISION_API_KEY (scanned files only)
+
+# 3. Backend API  →  http://localhost:8000/docs
+.venv/bin/uvicorn app.main:app --port 8000
+
+# 4. Frontend dashboard  →  http://localhost:8501   (second terminal)
+.venv/bin/streamlit run frontend/app.py
+```
+
+Open the dashboard, go to **Process Invoice**, drop a PDF/PNG/JPEG, and watch
+each pipeline stage complete live: upload → text extraction → AI structuring →
+validation → database persistence. Every screen (details, validation report,
+history, developer panel) is driven exclusively by the FastAPI backend.
+
+Tests: `pytest -q --no-cov` (offline suite) ·
+`RUN_DB_TESTS=1 pytest tests/integration -q --no-cov` (real Postgres) ·
+`RUN_LIVE_LLM_TESTS=1 pytest tests/integration -q --no-cov` (real OpenAI).
+
 ## Overview
 
 The Invoice Intelligence Platform is an AI-powered document processing and business intelligence system designed to automate the extraction, validation, storage, and analysis of invoice data. The platform aims to eliminate manual invoice processing by converting invoice images and PDFs into structured, ERP-ready business data while simultaneously building a centralized knowledge repository that can power analytics, reporting, operational insights, and decision-making.

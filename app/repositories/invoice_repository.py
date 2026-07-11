@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
@@ -76,6 +77,19 @@ class InvoiceRepository:
 
     async def get(self, invoice_id: uuid.UUID) -> Invoice | None:
         return await self._session.get(Invoice, invoice_id)
+
+    async def get_detail(self, invoice_id: uuid.UUID) -> Invoice | None:
+        """Invoice with items, vendor, and document eagerly loaded."""
+        result = await self._session.execute(
+            select(Invoice)
+            .where(Invoice.id == invoice_id)
+            .options(
+                selectinload(Invoice.items),
+                selectinload(Invoice.vendor),
+                selectinload(Invoice.document),
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def get_by_document(self, document_id: uuid.UUID) -> Invoice | None:
         result = await self._session.execute(

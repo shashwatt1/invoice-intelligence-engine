@@ -21,10 +21,9 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
-import aiofiles
 from fastapi import UploadFile
 
 from app.core.config import get_settings
@@ -141,7 +140,7 @@ class UploadService:
             file_path=file_path,
             file_hash=file_hash,
             status="INGESTED",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
         logger.info(

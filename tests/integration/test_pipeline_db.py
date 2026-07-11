@@ -28,79 +28,13 @@ from app.models import (
     ProcessingLog,
     Vendor,
 )
-from app.schemas.extraction import ExtractedInvoice, ExtractedLineItem, ExtractedVendor
-from app.services.llm.base import LLMCallMetadata
-from app.services.ocr.base import OCRResult
+from app.schemas.extraction import ExtractedLineItem, ExtractedVendor
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from app.services.structuring_service import InvoiceStructuringResult
 from app.services.validation.report import ProcessingDecision
 from tests.integration.conftest import requires_db
+from tests.integration.fakes import FakeExtraction, FakeStructuring, extracted_invoice
 
 pytestmark = requires_db
-
-# ---------------------------------------------------------------------------
-# Stage fakes (DB is the real dependency under test)
-# ---------------------------------------------------------------------------
-
-
-class FakeExtraction:
-    def __init__(self, result: OCRResult | None = None, error: Exception | None = None):
-        self._result = result or OCRResult(
-            full_text="INVOICE INV-001 Acme Corp total 18.90",
-            source_type="digital_pdf",
-            page_count=1,
-            mean_confidence=1.0,
-            duration_ms=12,
-        )
-        self._error = error
-
-    async def extract_text(self, file_content, mime_type, filename=""):
-        if self._error:
-            raise self._error
-        return self._result
-
-
-def extracted_invoice(**overrides) -> ExtractedInvoice:
-    base = {
-        "vendor": ExtractedVendor(name="Acme Corp", tax_id="GB123", email="ap@acme.test"),
-        "invoice_number": "INV-001",
-        "invoice_date": "2026-01-15",
-        "due_date": "2026-02-14",
-        "currency": "USD",
-        "purchase_order": "PO-777",
-        "payment_terms": "Net 30",
-        "subtotal": 18.9,
-        "grand_total": 18.9,
-        "line_items": [
-            ExtractedLineItem(
-                description="Blue Widget", quantity=2.0, unit_price=None,
-                line_total=18.9, confidence=0.95,
-            )
-        ],
-        "confidence": 0.95,
-    }
-    base.update(overrides)
-    return ExtractedInvoice(**base)
-
-
-class FakeStructuring:
-    def __init__(self, invoice: ExtractedInvoice | None = None, error: Exception | None = None):
-        self._invoice = invoice or extracted_invoice()
-        self._error = error
-
-    async def structure_invoice(self, ocr_result, filename=""):
-        if self._error:
-            raise self._error
-        return InvoiceStructuringResult(
-            invoice=self._invoice,
-            raw_response={"id": "chatcmpl-fake", "model": "gpt-4o-mini"},
-            prompt_version="v1",
-            metadata=LLMCallMetadata(
-                provider="openai", model="gpt-4o-mini", request_id="chatcmpl-fake",
-                finish_reason="stop", latency_ms=350, input_tokens=1200,
-                output_tokens=250, total_tokens=1450, estimated_cost_usd=0.00033,
-            ),
-        )
 
 
 def make_pipeline(extraction=None, structuring=None) -> InvoiceProcessingPipeline:
@@ -266,6 +200,22 @@ class TestFailureHandling:
         assert document.status == DocumentStatus.FAILED
         assert document.raw_ocr_text is not None  # earlier stage output retained
 
+        failure = await one(
+            db_session, select(ProcessingLog).where(ProcessingLog.status == LogStatus.FAILURE)
+        )
+        assert failure.stage == PipelineStage.AI_STRUCTURING
+
+    async def test_unexpected_stage_error_still_reaches_failed_state(self, db_session):
+        # A non-domain exception (e.g. provider misconfiguration raising
+        # ValueError) must never leave the document stuck mid-pipeline.
+        pipeline = make_pipeline(
+            structuring=FakeStructuring(error=ValueError("OPENAI_API_KEY is not configured"))
+        )
+        with pytest.raises(AIStructuringError, match="Unexpected structuring failure"):
+            await pipeline.process(db_session, **upload_kwargs())
+
+        document = await one(db_session, select(Document))
+        assert document.status == DocumentStatus.FAILED
         failure = await one(
             db_session, select(ProcessingLog).where(ProcessingLog.status == LogStatus.FAILURE)
         )

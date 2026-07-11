@@ -22,13 +22,13 @@ Design decisions:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from app.core.logging import get_logger
 from app.schemas.base import APIResponse
 from app.schemas.upload import UploadResponse
-from app.services.storage_service import LocalStorageService, get_storage_service
+from app.services.storage_service import get_storage_service
 from app.services.upload_service import UploadService
 
 logger = get_logger(__name__)

@@ -17,9 +17,7 @@ Design decisions:
 
 from __future__ import annotations
 
-import asyncio
 import os
-import tempfile
 from collections.abc import AsyncGenerator
 
 import pytest
