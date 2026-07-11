@@ -18,14 +18,32 @@ Design decisions:
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime
+from enum import StrEnum
 
-from sqlalchemy import DateTime, Index, String, Text, Integer, func, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+
+
+class DocumentStatus(StrEnum):
+    """
+    Document lifecycle states (stored as VARCHAR — no migration needed
+    to evolve). Progression:
+
+        UPLOADED → OCR_IN_PROGRESS → OCR_COMPLETED → AI_PROCESSING
+                 → VALIDATED | REVIEW_REQUIRED → COMPLETED
+        Any stage → FAILED (ProcessingLog records which stage and why)
+    """
+
+    UPLOADED = "UPLOADED"
+    OCR_IN_PROGRESS = "OCR_IN_PROGRESS"
+    OCR_COMPLETED = "OCR_COMPLETED"
+    AI_PROCESSING = "AI_PROCESSING"
+    VALIDATED = "VALIDATED"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
 
 
 class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):

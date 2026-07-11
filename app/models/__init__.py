@@ -6,16 +6,19 @@ register on Base.metadata. Alembic's env.py also imports from here
 to ensure autogenerate detects all tables.
 """
 
-from app.models.document import Document
+from app.models.document import Document, DocumentStatus
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
-from app.models.processing_log import ProcessingLog
+from app.models.processing_log import LogStatus, PipelineStage, ProcessingLog
 from app.models.vendor import Vendor
 
 __all__ = [
     "Document",
+    "DocumentStatus",
     "Invoice",
     "InvoiceItem",
+    "LogStatus",
+    "PipelineStage",
     "ProcessingLog",
     "Vendor",
 ]

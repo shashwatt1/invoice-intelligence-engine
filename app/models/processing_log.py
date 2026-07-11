@@ -20,12 +20,30 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, UUIDPrimaryKeyMixin
+
+
+class PipelineStage(StrEnum):
+    """Pipeline stages recorded in the processing log."""
+
+    UPLOAD = "UPLOAD"
+    TEXT_EXTRACTION = "TEXT_EXTRACTION"
+    AI_STRUCTURING = "AI_STRUCTURING"
+    VALIDATION = "VALIDATION"
+    PERSISTENCE = "PERSISTENCE"
+
+
+class LogStatus(StrEnum):
+    """Outcome of a logged pipeline stage."""
+
+    SUCCESS = "SUCCESS"
+    FAILURE = "FAILURE"
 
 
 class ProcessingLog(Base, UUIDPrimaryKeyMixin):

@@ -17,7 +17,7 @@ Design decisions:
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -27,7 +27,6 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
