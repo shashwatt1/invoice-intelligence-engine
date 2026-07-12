@@ -2,6 +2,7 @@ import { ChevronDown, Terminal } from "lucide-react";
 import { useState } from "react";
 
 import type { InvoiceDetail } from "@/api/types";
+import { StructuredOutput } from "@/components/invoice/structured-output";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
@@ -73,14 +74,18 @@ export function DeveloperPanel({ detail }: { detail: InvoiceDetail }) {
               <Metric label="Finish" value={llm?.finish_reason ?? "—"} />
             </div>
 
-            <Tabs defaultValue="ocr">
+            <Tabs defaultValue="structured">
               <TabsList>
+                <TabsTrigger value="structured">Structured output</TabsTrigger>
                 <TabsTrigger value="ocr">OCR text</TabsTrigger>
                 <TabsTrigger value="raw">Raw structured output</TabsTrigger>
                 <TabsTrigger value="llm">LLM metadata</TabsTrigger>
                 <TabsTrigger value="validation">Validation metadata</TabsTrigger>
                 <TabsTrigger value="ids">Database IDs</TabsTrigger>
               </TabsList>
+              <TabsContent value="structured">
+                <StructuredOutput invoiceId={detail.invoice_id} enabled={open} />
+              </TabsContent>
               <TabsContent value="ocr">
                 <JsonBlock value={detail.ocr_text ?? "(no text stored)"} />
               </TabsContent>

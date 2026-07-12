@@ -12,6 +12,7 @@ import {
   getDashboardSummary,
   getDocumentStatus,
   getInvoice,
+  getInvoiceExport,
   listInvoices,
   processInvoice,
 } from "@/api/endpoints";
@@ -47,6 +48,15 @@ export function useDocumentStatus(documentId: string | undefined) {
     queryFn: () => getDocumentStatus(documentId!),
     enabled: Boolean(documentId),
     refetchInterval: (query) => (query.state.data?.is_terminal ? false : 700),
+  });
+}
+
+export function useInvoiceExport(invoiceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["invoice-export", invoiceId],
+    queryFn: () => getInvoiceExport(invoiceId),
+    enabled, // fetched lazily when the Structured Output tab is opened
+    staleTime: Infinity, // immutable once persisted
   });
 }
 

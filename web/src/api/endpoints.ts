@@ -48,3 +48,20 @@ export async function getDashboardSummary(recentLimit = 10): Promise<DashboardDa
   });
   return data.data!;
 }
+
+export type ExportFormat = "json" | "txt" | "csv";
+
+/** Download URL for the validated-invoice export (browser follows the
+ * Content-Disposition attachment header). */
+export function invoiceExportUrl(invoiceId: string, format: ExportFormat): string {
+  return `/api/v1/invoices/${invoiceId}/export?format=${format}`;
+}
+
+/** The final validated invoice object (post-validation, as persisted). */
+export async function getInvoiceExport(invoiceId: string): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.get<Record<string, unknown>>(
+    `/invoices/${invoiceId}/export`,
+    { params: { format: "json" } },
+  );
+  return data;
+}
