@@ -14,10 +14,10 @@ Design decisions:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -49,7 +49,10 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_prefix: str = "/api/v1"
-    allowed_origins: list[str] = Field(
+    # NoDecode: stop pydantic-settings from JSON-decoding this list field
+    # before our comma-separated parser runs (it crashes on ".env" values
+    # like "http://a,http://b" otherwise).
+    allowed_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://localhost:3000", "http://localhost:8080"]
     )
 
@@ -83,7 +86,7 @@ class Settings(BaseSettings):
     storage_backend: Literal["local", "s3", "supabase"] = "local"
     upload_path: str = "./uploads"
     max_upload_size_mb: int = 25
-    allowed_mime_types: list[str] = Field(
+    allowed_mime_types: Annotated[list[str], NoDecode] = Field(
         default=["application/pdf", "image/png", "image/jpeg"]
     )
 

@@ -42,6 +42,23 @@ def test_parse_mime_types_from_string() -> None:
     assert s.allowed_mime_types == ["application/pdf", "image/png", "image/jpeg"]
 
 
+def test_comma_separated_lists_load_from_dotenv_file(tmp_path) -> None:
+    """
+    Regression: pydantic-settings JSON-decodes complex fields from .env
+    files BEFORE field validators run. Without NoDecode on the list
+    fields, a template-style .env (comma-separated values) crashed the
+    app at startup with a SettingsError.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080\n"
+        "ALLOWED_MIME_TYPES=application/pdf,image/png\n"
+    )
+    s = Settings(_env_file=str(env_file))
+    assert s.allowed_origins == ["http://localhost:3000", "http://localhost:8080"]
+    assert s.allowed_mime_types == ["application/pdf", "image/png"]
+
+
 def test_is_development_flag() -> None:
     """is_development must be True when app_env=development."""
     s = Settings(_env_file=None, app_env="development")
