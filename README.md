@@ -16,14 +16,19 @@ cp .env.example .env                              # set OPENAI_API_KEY (required
 # 3. Backend API  →  http://localhost:8000/docs
 .venv/bin/uvicorn app.main:app --port 8000
 
-# 4. Frontend dashboard  →  http://localhost:8501   (second terminal)
-.venv/bin/streamlit run frontend/app.py
+# 4. Frontend dashboard  →  http://localhost:5173   (second terminal)
+cd web && npm install && npm run dev
 ```
 
 Open the dashboard, go to **Process Invoice**, drop a PDF/PNG/JPEG, and watch
 each pipeline stage complete live: upload → text extraction → AI structuring →
 validation → database persistence. Every screen (details, validation report,
 history, developer panel) is driven exclusively by the FastAPI backend.
+
+The frontend is a React 19 + TypeScript + Vite app (`web/`) built with
+TailwindCSS, shadcn/ui, TanStack Query, and Framer Motion. It talks to the
+backend only through the REST API (dev proxy → `:8000`), so the backend
+remains the single source of truth.
 
 Tests: `pytest -q --no-cov` (offline suite) ·
 `RUN_DB_TESTS=1 pytest tests/integration -q --no-cov` (real Postgres) ·
