@@ -83,7 +83,7 @@ class TestExportFormats:
         )
         rows = list(csv.reader(io.StringIO(response.text)))
         assert rows[0] == ["Description", "Quantity", "Unit Price", "Line Total",
-                           "Tax Rate (%)", "SKU/UPC"]
+                           "Tax Rate (%)", "UPC"]
         assert rows[1][0] == "Blue Widget"
         assert rows[1][2] == "9.45"  # derived unit price
 

@@ -208,7 +208,7 @@ def build_txt(invoice: Invoice) -> str:
 # CSV — line items for accounting systems
 # ---------------------------------------------------------------------------
 
-CSV_HEADERS = ["Description", "Quantity", "Unit Price", "Line Total", "Tax Rate (%)", "SKU/UPC"]
+CSV_HEADERS = ["Description", "Quantity", "Unit Price", "Line Total", "Tax Rate (%)", "UPC"]
 
 
 def build_items_csv(invoice: Invoice) -> str:

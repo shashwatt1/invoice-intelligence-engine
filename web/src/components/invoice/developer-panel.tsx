@@ -76,7 +76,7 @@ export function DeveloperPanel({ detail }: { detail: InvoiceDetail }) {
 
             <Tabs defaultValue="structured">
               <TabsList>
-                <TabsTrigger value="structured">Structured output</TabsTrigger>
+                <TabsTrigger value="structured">Structured extraction</TabsTrigger>
                 <TabsTrigger value="ocr">OCR text</TabsTrigger>
                 <TabsTrigger value="raw">Raw structured output</TabsTrigger>
                 <TabsTrigger value="llm">LLM metadata</TabsTrigger>
