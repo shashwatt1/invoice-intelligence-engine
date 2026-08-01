@@ -274,14 +274,18 @@ def _pdi_item_code(product_code: str | None) -> str:
     many POS/back-office systems use) — UNVERIFIED against a matched
     ground-truth PDI file, but a documented, deterministic, industry-standard
     transformation rather than a guess. Shorter codes (e.g. a vendor item
-    number) are zero-padded on the left. No code on file → 11 spaces,
-    matching the blank-code rows observed in real PDI samples.
+    number) are zero-padded on the left.
+
+    No code on file → "00000" followed by 6 spaces. This exact convention
+    (not all-spaces, not all-zeros) is CONFIRMED against a real blank-code
+    row in a supplied PDI ground-truth file — see the PDI compatibility
+    report, Track A case 3.
     """
     if not product_code:
-        return " " * PDI_ITEM_CODE_WIDTH
+        return "00000" + " " * (PDI_ITEM_CODE_WIDTH - 5)
     digits = _NON_DIGITS.sub("", product_code)
     if not digits:
-        return " " * PDI_ITEM_CODE_WIDTH
+        return "00000" + " " * (PDI_ITEM_CODE_WIDTH - 5)
     if len(digits) == 12:
         digits = digits[:-1]
     if len(digits) > PDI_ITEM_CODE_WIDTH:

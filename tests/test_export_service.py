@@ -186,11 +186,13 @@ class TestPdiItemCode:
     def test_code_longer_than_field_is_truncated(self):
         assert len(_pdi_item_code("1234567890123456")) == PDI_ITEM_CODE_WIDTH
 
-    def test_missing_code_is_blank_field(self):
-        assert _pdi_item_code(None) == " " * PDI_ITEM_CODE_WIDTH
+    def test_missing_code_uses_confirmed_blank_convention(self):
+        # "00000" + spaces — confirmed against a real blank-code row in a
+        # supplied PDI ground-truth file (992990.txt), not all-spaces.
+        assert _pdi_item_code(None) == "00000" + " " * 6
 
-    def test_empty_string_is_blank_field(self):
-        assert _pdi_item_code("") == " " * PDI_ITEM_CODE_WIDTH
+    def test_empty_string_uses_confirmed_blank_convention(self):
+        assert _pdi_item_code("") == "00000" + " " * 6
 
     def test_non_digit_characters_are_stripped_before_padding(self):
         assert _pdi_item_code("ABC-123") == "00000000123"
@@ -245,7 +247,7 @@ class TestPdiExport:
         invoice = make_invoice()
         invoice.items[0].product_sku = None
         line = build_pdi_export(invoice).splitlines()[1]
-        assert line[1:12] == " " * PDI_ITEM_CODE_WIDTH
+        assert line[1:12] == "00000" + " " * 6
 
     def test_quantity_field_is_zero_padded_to_four_digits(self):
         invoice = make_invoice()

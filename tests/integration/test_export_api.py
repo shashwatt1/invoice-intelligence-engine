@@ -190,7 +190,7 @@ class TestPdiExport:
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
         )
         detail_line = response.text.splitlines()[1]
-        assert detail_line[1:12] == " " * 11
+        assert detail_line[1:12] == "00000" + " " * 6
 
     async def test_pdi_export_omits_trailer_records(self, api_client):  # noqa: F811
         invoice_id = await processed_invoice_id(api_client)
