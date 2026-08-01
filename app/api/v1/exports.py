@@ -1,7 +1,7 @@
 """
 Invoice Export Endpoint — app/api/v1/exports.py
 
-    GET /invoices/{id}/export?format=json|txt|csv
+    GET /invoices/{id}/export?format=json|txt|csv|pdi
 
 Read-only, additive: serves the final validated invoice (as persisted)
 in ERP-consumable formats with download-friendly Content-Disposition
@@ -23,13 +23,14 @@ from app.repositories.invoice_repository import InvoiceRepository
 from app.services.export_service import (
     build_export_payload,
     build_items_csv,
+    build_pdi_export,
     build_txt,
     export_basename,
 )
 
 router = APIRouter(tags=["Invoices"])
 
-ExportFormat = Literal["json", "txt", "csv"]
+ExportFormat = Literal["json", "txt", "csv", "pdi"]
 
 
 @router.get(
@@ -40,7 +41,11 @@ ExportFormat = Literal["json", "txt", "csv"]
         "in an ERP-consumable format.\n\n"
         "- `format=json` — structured invoice document (default)\n"
         "- `format=txt` — human-readable summary\n"
-        "- `format=csv` — line items for accounting systems\n\n"
+        "- `format=csv` — line items for accounting systems\n"
+        "- `format=pdi` — fixed-width PDI import format (item code, description, "
+        "quantity are high-confidence; cost fields are emitted as documented "
+        "zero-value placeholders pending confirmation of PDI's price encoding — "
+        "see the field mapping report before relying on this for a live import)\n\n"
         "Responses carry a `Content-Disposition` attachment header with a "
         "filename derived from the invoice number."
     ),
@@ -75,6 +80,10 @@ async def export_invoice(
         content = build_items_csv(invoice)
         media_type = "text/csv"
         filename = f"{basename}_items.csv"
+    elif format == "pdi":
+        content = build_pdi_export(invoice)
+        media_type = "text/plain"
+        filename = f"{basename}_pdi.txt"
     else:
         content = json.dumps(build_export_payload(invoice), indent=2, ensure_ascii=False)
         media_type = "application/json"

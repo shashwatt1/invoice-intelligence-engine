@@ -227,3 +227,113 @@ def build_items_csv(invoice: Invoice) -> str:
             ]
         )
     return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# PDI — fixed-width positional import format
+#
+# Reverse-engineered from real PDI import files (see field mapping report,
+# "PDI Export — UPC Capture + Formatter" milestone). Field confidence is
+# NOT uniform — see the module-level note below before trusting this output
+# for a live PDI import without a human review pass.
+#
+# Detail record layout (70 chars, 0-indexed slices):
+#   [0]      "B"                     record type
+#   [1:12]   item code               11 digits, zero-padded, right-justified
+#   [12:37]  description             25 chars, left-justified, space-padded
+#   [37:57]  "block A"               20 digits — cost/price encoding, UNVERIFIED
+#   [57]     sign                    "+" (no credit/return concept exists yet)
+#   [58:62]  quantity                4 digits, zero-padded
+#   [62:70]  "block B tail"          8 digits — cost/UOM encoding, UNVERIFIED
+#
+# Header record: "AMOUNT {batch:>7}   {date:6}{sign}{amount_cents:09d}"
+# Trailer records (CFUE/CPPT fee lines) are intentionally NOT emitted: we
+# have no extracted data for fuel surcharge or itemized tax this milestone
+# (see field mapping report) — omitting is safer than fabricating a $0 line
+# that looks like real, verified data.
+# ---------------------------------------------------------------------------
+
+PDI_ITEM_CODE_WIDTH = 11
+PDI_DESCRIPTION_WIDTH = 25
+PDI_QUANTITY_WIDTH = 4
+PDI_BLOCK_A_WIDTH = 20  # cost/price — UNVERIFIED, always emitted as zeros
+PDI_BLOCK_B_TAIL_WIDTH = 8  # cost/UOM — UNVERIFIED, always emitted as zeros
+PDI_BATCH_WIDTH = 7
+PDI_DATE_FORMAT = "%m%d%y"
+PDI_AMOUNT_WIDTH = 9
+
+_NON_DIGITS = re.compile(r"\D")
+
+
+def _pdi_item_code(product_code: str | None) -> str:
+    """
+    Reduce an extracted product_code to PDI's 11-digit item-code field.
+
+    Rule: a 12-digit code is treated as UPC-A and reduced by dropping its
+    trailing check digit (the standard "UPC without check digit" convention
+    many POS/back-office systems use) — UNVERIFIED against a matched
+    ground-truth PDI file, but a documented, deterministic, industry-standard
+    transformation rather than a guess. Shorter codes (e.g. a vendor item
+    number) are zero-padded on the left. No code on file → 11 spaces,
+    matching the blank-code rows observed in real PDI samples.
+    """
+    if not product_code:
+        return " " * PDI_ITEM_CODE_WIDTH
+    digits = _NON_DIGITS.sub("", product_code)
+    if not digits:
+        return " " * PDI_ITEM_CODE_WIDTH
+    if len(digits) == 12:
+        digits = digits[:-1]
+    if len(digits) > PDI_ITEM_CODE_WIDTH:
+        digits = digits[:PDI_ITEM_CODE_WIDTH]
+    return digits.rjust(PDI_ITEM_CODE_WIDTH, "0")
+
+
+def _pdi_description(description: str) -> str:
+    return description[:PDI_DESCRIPTION_WIDTH].ljust(PDI_DESCRIPTION_WIDTH)
+
+
+def _pdi_quantity(quantity: Decimal | None) -> str:
+    """
+    4-digit zero-padded quantity. A quantity of 10000+ (never seen in any
+    real sample) would overflow the field rather than being silently
+    truncated to a wrong-but-plausible-looking number.
+    """
+    value = int(quantity) if quantity is not None else 0
+    return str(max(value, 0)).rjust(PDI_QUANTITY_WIDTH, "0")
+
+
+def _pdi_detail_line(item: InvoiceItem) -> str:
+    return (
+        "B"
+        + _pdi_item_code(item.product_sku)
+        + _pdi_description(item.description)
+        + "0" * PDI_BLOCK_A_WIDTH
+        + "+"
+        + _pdi_quantity(item.quantity)
+        + "0" * PDI_BLOCK_B_TAIL_WIDTH
+    )
+
+
+def _pdi_header_line(invoice: Invoice) -> str:
+    batch = _NON_DIGITS.sub("", invoice.invoice_number or "")
+    batch = (batch[-PDI_BATCH_WIDTH:] if batch else "").rjust(PDI_BATCH_WIDTH, "0")
+    date_str = invoice.invoice_date.strftime(PDI_DATE_FORMAT) if invoice.invoice_date else "0" * 6
+    cents = round(float(invoice.grand_total) * 100) if invoice.grand_total is not None else 0
+    return f"AMOUNT {batch}   {date_str}+{cents:0{PDI_AMOUNT_WIDTH}d}"
+
+
+def build_pdi_export(invoice: Invoice) -> str:
+    """
+    Deterministic PDI-compatible fixed-width export.
+
+    High-confidence fields (verified against real PDI samples): record
+    structure, item code, description, quantity. Low-confidence fields
+    (cost/price encoding, batch-number semantics): emitted as documented
+    placeholders (zeros / best-effort invoice number), never fabricated to
+    look more certain than they are. See the field mapping report for the
+    full confidence breakdown before relying on this for a live import.
+    """
+    lines = [_pdi_header_line(invoice)]
+    lines.extend(_pdi_detail_line(item) for item in _sorted_items(invoice))
+    return "\n".join(lines) + "\n"

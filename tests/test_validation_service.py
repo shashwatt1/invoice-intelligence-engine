@@ -289,6 +289,21 @@ class TestNormalization:
         assert result.invoice.invoice_number is None
         assert "INVOICE_NUMBER_PRESENT" in {c.name for c in result.report.failed_checks}
 
+    def test_product_code_passes_through_unchanged(self):
+        # Preserved exactly as printed (dashes, leading zeros) — the PDI
+        # formatter, not normalization, is responsible for reducing it.
+        result = validate(invoice(line_items=[item(product_code="0-48500-20603-4")]))
+        assert result.invoice.line_items[0].product_code == "0-48500-20603-4"
+
+    def test_product_code_whitespace_collapses_to_none(self):
+        result = validate(invoice(line_items=[item(product_code="   ")]))
+        assert result.invoice.line_items[0].product_code is None
+
+    def test_missing_product_code_is_none_not_a_validation_failure(self):
+        result = validate(invoice(line_items=[item(product_code=None)]))
+        assert result.invoice.line_items[0].product_code is None
+        assert result.report.decision is ProcessingDecision.VALIDATED
+
 
 # ---------------------------------------------------------------------------
 # Confidence scoring

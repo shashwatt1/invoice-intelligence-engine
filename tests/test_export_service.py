@@ -19,8 +19,14 @@ from app.models.invoice_item import InvoiceItem
 from app.models.vendor import Vendor
 from app.services.export_service import (
     CSV_HEADERS,
+    PDI_BLOCK_A_WIDTH,
+    PDI_BLOCK_B_TAIL_WIDTH,
+    PDI_DESCRIPTION_WIDTH,
+    PDI_ITEM_CODE_WIDTH,
+    _pdi_item_code,
     build_export_payload,
     build_items_csv,
+    build_pdi_export,
     build_txt,
     export_basename,
 )
@@ -155,3 +161,132 @@ class TestFilenames:
     def test_basename_falls_back_to_id_when_number_missing(self):
         invoice = make_invoice(invoice_number=None)
         assert export_basename(invoice) == f"invoice_{str(invoice.id)[:8]}"
+
+
+class TestPdiItemCode:
+    """
+    Item-code reduction rule: a 12-digit UPC-A is reduced to PDI's 11-digit
+    field by dropping the trailing check digit (standard "UPC without check
+    digit" convention). This is a documented, deterministic transformation —
+    not verified against a matched ground-truth PDI file (no such pair was
+    available), so these tests pin the rule's *behavior*, not its correctness
+    against PDI's actual expectation.
+    """
+
+    def test_12_digit_upc_drops_check_digit(self):
+        assert _pdi_item_code("028000772123") == "02800077212"
+
+    def test_dashed_upc_is_normalized_before_reduction(self):
+        # PepsiCo-style UPC formatting, e.g. "0-48500-20603-4"
+        assert _pdi_item_code("0-48500-20603-4") == "04850020603"
+
+    def test_short_vendor_item_number_is_zero_padded(self):
+        assert _pdi_item_code("71600") == "00000071600"
+
+    def test_code_longer_than_field_is_truncated(self):
+        assert len(_pdi_item_code("1234567890123456")) == PDI_ITEM_CODE_WIDTH
+
+    def test_missing_code_is_blank_field(self):
+        assert _pdi_item_code(None) == " " * PDI_ITEM_CODE_WIDTH
+
+    def test_empty_string_is_blank_field(self):
+        assert _pdi_item_code("") == " " * PDI_ITEM_CODE_WIDTH
+
+    def test_non_digit_characters_are_stripped_before_padding(self):
+        assert _pdi_item_code("ABC-123") == "00000000123"
+
+
+class TestPdiExport:
+    def test_header_line_format(self):
+        # 7-digit invoice number avoids any truncation ambiguity in the assertion.
+        invoice = make_invoice(invoice_number="1234567", grand_total=Decimal("46.68"))
+        header = build_pdi_export(invoice).splitlines()[0]
+
+        assert header == "AMOUNT 1234567   033126+000004668"
+
+    def test_header_batch_uses_last_seven_digits_of_invoice_number(self):
+        invoice = make_invoice(invoice_number="INV-2026-0042")
+        header = build_pdi_export(invoice).splitlines()[0]
+        # digits-only "20260042" (8 chars) -> last 7 -> "0260042"
+        assert header.split()[1] == "0260042"
+
+    def test_detail_line_is_exactly_70_characters(self):
+        pdi = build_pdi_export(make_invoice())
+        detail_lines = pdi.splitlines()[1:]
+
+        assert len(detail_lines) == 2
+        assert all(len(line) == 70 for line in detail_lines)
+
+    def test_detail_line_field_positions(self):
+        invoice = make_invoice()
+        line = build_pdi_export(invoice).splitlines()[1]  # first item
+
+        assert line[0] == "B"
+        assert line[1:12] == "00071990030"  # product_sku "0071990030" -> zero-padded 11
+        assert line[12:37] == "COORS LIGHT 2/12/12 CAN".ljust(25)
+        assert line[37:57] == "0" * PDI_BLOCK_A_WIDTH
+        assert line[57] == "+"
+        assert line[58:62] == "0003"  # quantity 3.0000
+        assert line[62:70] == "0" * PDI_BLOCK_B_TAIL_WIDTH
+
+    def test_long_description_is_truncated_to_25_chars(self):
+        invoice = make_invoice()
+        invoice.items[0].description = "A" * 40
+        line = build_pdi_export(invoice).splitlines()[1]
+        assert line[12:37] == "A" * PDI_DESCRIPTION_WIDTH
+
+    def test_short_description_is_space_padded(self):
+        invoice = make_invoice()
+        invoice.items[0].description = "GUM"
+        line = build_pdi_export(invoice).splitlines()[1]
+        assert line[12:37] == "GUM".ljust(PDI_DESCRIPTION_WIDTH)
+
+    def test_item_without_product_code_gets_blank_item_code(self):
+        invoice = make_invoice()
+        invoice.items[0].product_sku = None
+        line = build_pdi_export(invoice).splitlines()[1]
+        assert line[1:12] == " " * PDI_ITEM_CODE_WIDTH
+
+    def test_quantity_field_is_zero_padded_to_four_digits(self):
+        invoice = make_invoice()
+        invoice.items[1].quantity = Decimal("2.0000")
+        line = build_pdi_export(invoice).splitlines()[2]  # second item
+        assert line[58:62] == "0002"
+
+    def test_no_trailer_records_are_emitted(self):
+        # Fuel surcharge / prepaid tax are real PDI trailer record types, but
+        # we don't extract that data this milestone — omitting is safer than
+        # emitting a fabricated $0.00 line that looks like verified data.
+        pdi = build_pdi_export(make_invoice())
+        assert "CFUE" not in pdi
+        assert "CPPT" not in pdi
+
+    def test_missing_grand_total_and_date_do_not_crash(self):
+        invoice = make_invoice(grand_total=None, invoice_date=None, invoice_number=None)
+        header = build_pdi_export(invoice).splitlines()[0]
+        assert header == "AMOUNT 0000000   000000+000000000"
+
+    def test_output_ends_with_trailing_newline(self):
+        assert build_pdi_export(make_invoice()).endswith("\n")
+
+    def test_line_count_matches_header_plus_items(self):
+        invoice = make_invoice()
+        lines = build_pdi_export(invoice).rstrip("\n").split("\n")
+        assert len(lines) == 1 + len(invoice.items)
+
+    def test_large_invoice_produces_one_line_per_item(self):
+        invoice = make_invoice()
+        invoice.items = [
+            InvoiceItem(
+                invoice_id=invoice.id, description=f"Item {i:03d}",
+                quantity=Decimal("1.0000"), unit_price=Decimal("2.5000"),
+                line_total=Decimal("2.50"), sort_order=i, product_sku=None,
+            )
+            for i in range(150)
+        ]
+        pdi = build_pdi_export(invoice)
+        detail_lines = pdi.splitlines()[1:]
+        assert len(detail_lines) == 150
+        assert all(len(line) == 70 for line in detail_lines)
+        assert detail_lines[0][12:37].strip() == "Item 000"
+        assert detail_lines[149][12:37].strip() == "Item 149"

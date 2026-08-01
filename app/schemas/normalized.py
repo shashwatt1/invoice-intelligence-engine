@@ -32,6 +32,7 @@ class NormalizedLineItem(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     description: str | None = None
+    product_code: str | None = None          # UPC or vendor item #, exactly as printed
     quantity: Decimal | None = None          # 4 dp
     unit_price: Decimal | None = None        # 4 dp
     line_total: Decimal | None = None        # 2 dp

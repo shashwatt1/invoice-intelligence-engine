@@ -51,6 +51,17 @@ math looks inconsistent — validation happens downstream.
 regions rather than omitting data you can partially read.
 """
 
+_SYSTEM_PROMPT_V2 = (
+    _SYSTEM_PROMPT_V1
+    + """\
+10. product_code: extract the UPC/barcode number or vendor item/SKU number \
+printed on this line, exactly as printed (keep dashes, leading zeros, and \
+letters). If both a UPC and a separate vendor item number are printed on the \
+same line, prefer the UPC. If neither is printed, use null. Never infer, \
+look up, or construct a code that is not directly printed on the line.
+"""
+)
+
 
 def _build_user_prompt_v1(ocr_text: str, source_type: str = "") -> str:
     source_note = f" (extraction method: {source_type})" if source_type else ""
@@ -78,9 +89,14 @@ _REGISTRY: dict[str, PromptTemplate] = {
         system_prompt=_SYSTEM_PROMPT_V1,
         build_user_prompt=_build_user_prompt_v1,
     ),
+    "v2": PromptTemplate(
+        version="v2",
+        system_prompt=_SYSTEM_PROMPT_V2,
+        build_user_prompt=_build_user_prompt_v1,  # user-prompt construction is unchanged
+    ),
 }
 
-ACTIVE_VERSION = "v1"
+ACTIVE_VERSION = "v2"
 
 
 def get_prompt(version: str | None = None) -> PromptTemplate:

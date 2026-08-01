@@ -65,6 +65,7 @@ class InvoiceRepository:
                 InvoiceItem(
                     invoice_id=invoice.id,
                     description=item.description or "(no description)",
+                    product_sku=item.product_code,
                     quantity=item.quantity if item.quantity is not None else Decimal("0"),
                     unit_price=item.unit_price if item.unit_price is not None else Decimal("0"),
                     line_total=item.line_total if item.line_total is not None else Decimal("0"),

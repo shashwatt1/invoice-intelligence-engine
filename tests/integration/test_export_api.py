@@ -120,6 +120,99 @@ class TestExportFormats:
         assert len(csv_rows) == 121  # header + 120 items
 
 
+class TestPdiExport:
+    """
+    Proves the full loop this milestone exists for: an extracted
+    product_code survives validation, gets persisted into
+    invoice_items.product_sku, and comes back out through the PDI
+    formatter — with zero code in this test knowing about PDI's byte
+    layout (that's exercised in tests/test_export_service.py).
+    """
+
+    async def test_product_code_flows_from_extraction_to_pdi_export(
+        self, api_client, app  # noqa: F811
+    ):
+        from app.api.v1.invoices import get_pipeline
+
+        real_upc_invoice = extracted_invoice(
+            line_items=[
+                ExtractedLineItem(
+                    description="COORS LIGHT 2/12/12 CAN", product_code="028000772123",
+                    quantity=3.0, unit_price=21.95, line_total=65.85,
+                )
+            ],
+            subtotal=65.85, grand_total=65.85,
+        )
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(real_upc_invoice)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["coors invoice " + "pad " * 300]),
+            filename="coors.pdf",
+        )
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+
+        # The product_code is visible through the existing JSON export slot
+        # too (it was already wired to product_sku; this is that column
+        # finally getting populated, not a new export field).
+        json_export = (
+            await api_client.get(f"/api/v1/invoices/{status['invoice_id']}/export")
+        ).json()
+        assert json_export["line_items"][0]["sku_upc"] == "028000772123"
+
+        response = await api_client.get(
+            f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
+        assert (
+            response.headers["content-disposition"]
+            == 'attachment; filename="invoice_INV-001_pdi.txt"'
+        )
+
+        lines = response.text.splitlines()
+        assert lines[0].startswith("AMOUNT ")
+        detail_line = lines[1]
+        assert len(detail_line) == 70
+        assert detail_line[0] == "B"
+        assert detail_line[1:12] == "02800077212"  # 12-digit UPC, check digit stripped
+        assert detail_line[12:37].strip() == "COORS LIGHT 2/12/12 CAN"
+        assert detail_line[58:62] == "0003"  # quantity 3
+
+    async def test_missing_product_code_produces_blank_item_code(
+        self, api_client  # noqa: F811
+    ):
+        # Default fixture line item has no product_code — proves the
+        # formatter degrades safely rather than failing when OCR/the model
+        # found no code on the document.
+        invoice_id = await processed_invoice_id(api_client)
+        response = await api_client.get(
+            f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
+        )
+        detail_line = response.text.splitlines()[1]
+        assert detail_line[1:12] == " " * 11
+
+    async def test_pdi_export_omits_trailer_records(self, api_client):  # noqa: F811
+        invoice_id = await processed_invoice_id(api_client)
+        response = await api_client.get(
+            f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
+        )
+        assert "CFUE" not in response.text
+        assert "CPPT" not in response.text
+
+    async def test_existing_exports_unaffected_by_pdi_addition(self, api_client):  # noqa: F811
+        # Regression guard: adding format=pdi must not perturb json/txt/csv.
+        invoice_id = await processed_invoice_id(api_client)
+        for fmt, content_type in [
+            ("json", "application/json"), ("txt", "text/plain"), ("csv", "text/csv"),
+        ]:
+            response = await api_client.get(
+                f"/api/v1/invoices/{invoice_id}/export", params={"format": fmt}
+            )
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith(content_type)
+
+
 class TestExportErrors:
     async def test_unknown_invoice_is_404(self, api_client):  # noqa: F811
         response = await api_client.get(f"/api/v1/invoices/{uuid.uuid4()}/export")

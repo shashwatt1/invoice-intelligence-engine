@@ -46,6 +46,16 @@ class ExtractedLineItem(BaseModel):
     description: str | None = Field(
         default=None, description="Item description exactly as printed."
     )
+    product_code: str | None = Field(
+        default=None,
+        description=(
+            "The UPC or vendor item/SKU number printed on this line, exactly as "
+            "printed (keep dashes, leading zeros, and letters if present). If both "
+            "a UPC/barcode number and a separate vendor item number are printed, "
+            "prefer the UPC. If neither is printed, use null. Never infer, look up, "
+            "or construct a code that is not directly printed on the line."
+        ),
+    )
     quantity: float | None = Field(
         default=None, description="Quantity ordered. May be fractional (e.g. 1.5)."
     )
