@@ -1,466 +1,252 @@
-# Invoice Intelligence Platform
+# Invoice Intelligence Engine
 
-## Transforming Invoice Data into Business Intelligence
-
-## Quick Start (MVP Demo)
-
-```bash
-# 1. Infrastructure — PostgreSQL
-docker compose up -d db
-.venv/bin/python -m alembic upgrade head          # first run only
-
-# 2. Configuration — copy the template and set your keys
-cp .env.example .env                              # set OPENAI_API_KEY (required)
-                                                  # set GOOGLE_VISION_API_KEY (scanned files only)
-
-# 3. Backend API  →  http://localhost:8000/docs
-.venv/bin/uvicorn app.main:app --port 8000
-
-# 4. Frontend dashboard  →  http://localhost:5173   (second terminal)
-cd web && npm install && npm run dev
-```
-
-Open the dashboard, go to **Process Invoice**, drop a PDF/PNG/JPEG, and watch
-each pipeline stage complete live: upload → text extraction → AI structuring →
-validation → database persistence. Every screen (details, validation report,
-history, developer panel) is driven exclusively by the FastAPI backend.
-
-The frontend is a React 19 + TypeScript + Vite app (`web/`) built with
-TailwindCSS, shadcn/ui, TanStack Query, and Framer Motion. It talks to the
-backend only through the REST API (dev proxy → `:8000`), so the backend
-remains the single source of truth.
-
-Tests: `pytest -q --no-cov` (offline suite) ·
-`RUN_DB_TESTS=1 pytest tests/integration -q --no-cov` (real Postgres) ·
-`RUN_LIVE_LLM_TESTS=1 pytest tests/integration -q --no-cov` (real OpenAI).
+Converts supplier invoices (PDF, PNG, JPEG) into structured, validated
+data through an OCR + AI extraction pipeline, with deterministic export
+formats for downstream systems.
 
 ## Overview
 
-The Invoice Intelligence Platform is an AI-powered document processing and business intelligence system designed to automate the extraction, validation, storage, and analysis of invoice data. The platform aims to eliminate manual invoice processing by converting invoice images and PDFs into structured, ERP-ready business data while simultaneously building a centralized knowledge repository that can power analytics, reporting, operational insights, and decision-making.
+The system ingests an uploaded invoice, extracts its text, structures it
+into a canonical schema using an LLM, validates the result with
+deterministic business rules, and persists it to PostgreSQL. From there
+the invoice can be exported as JSON, a human-readable text summary, CSV,
+or a fixed-width positional format for an external import system.
+
+A React frontend provides a dashboard, an upload/processing view with a
+live status timeline, invoice history, and an invoice detail view
+(validation report, structured data viewer, developer panel). The
+frontend consumes the backend exclusively through its REST API.
+
+## Current architecture
+
+```
+Supplier Invoice (PDF / PNG / JPEG)
+        │
+        ▼
+  Text Extraction        pdfplumber for digital PDFs; Google Vision OCR
+        │                for scanned/image documents
+        ▼
+  AI Structured Extraction   OpenAI Structured Outputs, versioned prompt,
+        │                    schema-constrained JSON response
+        ▼
+  Validation Engine       deterministic math checks, confidence scoring,
+        │                 VALIDATED / REVIEW_REQUIRED decision — no AI
+        ▼
+  PostgreSQL Persistence  one atomic transaction: vendor + invoice + items
+        │
+        ▼
+  Export                  JSON / TXT / CSV / fixed-width, all derived from
+                           the same persisted record
+```
+
+The LLM's role is strictly document understanding — reading what is
+printed on the page. Every decision made after extraction (validation
+math, confidence scoring, export formatting) is deterministic code with
+no AI involvement, so results are reproducible and auditable.
+
+## Technology stack
+
+**Backend** — Python 3.11+, FastAPI, SQLAlchemy 2.0 (async), Alembic,
+PostgreSQL, pdfplumber, Google Cloud Vision API, OpenAI API (Structured
+Outputs), structlog.
+
+**Frontend** — React 19, TypeScript, Vite, TailwindCSS, shadcn/ui,
+TanStack Query, Framer Motion, Recharts.
+
+**Testing** — pytest (offline unit tests + Postgres-backed integration
+tests), ruff, oxlint.
+
+## Project principles
+
+These constraints have shaped every change made to this codebase and
+should continue to:
+
+- **The backend is the single source of truth.** The frontend never
+  makes a business decision — it renders what the API returns.
+- **Business logic lives in the backend**, never in the frontend and
+  never in a repository (repositories perform data access only).
+- **AI is used only for document understanding** — extracting what is
+  printed on a page. It never makes a validation, matching, or
+  formatting decision.
+- **Validation and formatting are deterministic.** Given the same input,
+  they always produce the same output, with no model call involved.
+- **Existing working functionality is preserved.** Changes are additive
+  by default; modifying an existing, working component requires a
+  specific, stated reason.
+
+## Repository structure
+
+```
+app/
+  api/v1/            FastAPI routers (one file per resource)
+  core/               Configuration, exceptions, logging
+  database/           Engine/session setup, declarative base
+  middleware/          Request-ID and exception-handling middleware
+  models/             SQLAlchemy ORM models
+  repositories/       Data-access layer — one repository per aggregate,
+                        no business logic
+  schemas/            Pydantic contracts (LLM-boundary, normalized, API)
+  services/           Business logic
+    ocr/               OCR provider abstraction (pdfplumber, Google Vision)
+    llm/                LLM provider abstraction (OpenAI)
+    validation/         Deterministic validation engine
+  prompts/            Versioned extraction prompts (never mutate a
+                        shipped version — add a new one)
+alembic/              Database migrations
+web/                  React frontend
+tests/                Offline unit tests (no external dependencies)
+tests/integration/    Postgres-backed integration tests
+docs/archive/         Superseded early planning documents (historical
+                        reference only — see docs/archive/README.md)
+```
+
+## Environment configuration
+
+Copy the template and fill in your own values:
+
+```bash
+cp .env.example .env
+```
 
-Traditional invoice processing workflows often rely on manual data entry, vendor-provided spreadsheets, or rigid OCR pipelines that struggle with document variability. Different vendors use different invoice layouts, formatting conventions, product descriptions, pricing structures, and reporting styles. These inconsistencies create operational inefficiencies and increase the risk of human error.
+Required for full functionality:
 
-The objective of this platform is not simply to extract text from invoices. Instead, it seeks to create an intelligent document processing ecosystem capable of understanding invoice content, structuring business information, learning vendor patterns, maintaining historical records, and generating actionable insights from accumulated data.
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | AI structured extraction |
+| `GOOGLE_VISION_API_KEY` | OCR for scanned/image invoices (not needed for digital PDFs, which are parsed directly) |
+| `DATABASE_URL` / `DATABASE_URL_SYNC` | PostgreSQL connection (async / sync-for-Alembic) |
 
----
+`DATABASE_URL` defaults to the credentials used by `docker-compose.yml`
+for local development only. **Rotate these before using any shared,
+staging, or production database** — they are not safe to reuse outside a
+local machine.
 
-# Problem Statement
+See `.env.example` for the full list of configuration options (OCR/LLM
+provider selection, validation tolerances, logging, storage backend).
 
-Many businesses receive invoices from multiple suppliers and distributors in image or PDF format. While some vendors may provide structured exports such as CSV files or API integrations, a large portion of invoice processing still relies on manual review and data entry.
+## Local development setup
 
-Traditional OCR-based systems often encounter challenges such as:
+Prerequisites: Python 3.11+, Node.js 20+, Docker.
 
-* Vendor-specific invoice layouts
-* Multi-line product descriptions
-* Inconsistent formatting
-* OCR noise and extraction errors
-* Complex table structures
-* Difficulty maintaining parsing rules across vendors
-* High operational effort for validation and corrections
+```bash
+git clone <repo-url>
+cd invoice-intelligence-engine
 
-As businesses scale, manually processing invoices becomes increasingly inefficient and expensive.
+# Backend
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
 
-The Invoice Intelligence Platform addresses these challenges by combining OCR, artificial intelligence, validation workflows, structured storage, and analytics capabilities into a unified system.
+# Frontend
+cd web && npm install && cd ..
 
----
+# Environment
+cp .env.example .env   # then fill in OPENAI_API_KEY / GOOGLE_VISION_API_KEY
+```
 
-# Vision
+## Running database migrations
 
-The long-term vision of the platform is to become a centralized invoice intelligence engine capable of:
+```bash
+docker compose up -d db          # start PostgreSQL
+.venv/bin/python -m alembic upgrade head
+```
 
-* Extracting structured invoice data automatically
-* Validating business records
-* Building a vendor intelligence repository
-* Maintaining a product knowledge base
-* Generating operational reports
-* Supporting business analytics
-* Answering natural language business queries
-* Integrating seamlessly with ERP and CRM systems
+To create a new migration after changing a model:
 
-Ultimately, the platform should allow organizations to transform raw invoices into actionable business intelligence.
+```bash
+.venv/bin/python -m alembic revision --autogenerate -m "describe the change"
+.venv/bin/python -m alembic upgrade head
+```
 
----
+Always review an autogenerated migration before applying it — autogenerate
+detects schema drift but does not understand intent.
 
-# Project Evolution
+## Running the backend
 
-## Initial Approach
+```bash
+.venv/bin/uvicorn app.main:app --port 8000
+```
 
-The project initially followed a traditional OCR-driven workflow:
+API docs: `http://localhost:8000/docs`
 
-Invoice Image
-→ OCR
-→ Row Detection
-→ Column Mapping
-→ Regex Parsing
-→ Structured JSON
+## Running the frontend
 
-During development and testing, multiple OCR pipelines were explored and benchmarked.
+```bash
+cd web
+npm run dev
+```
 
-### Technologies Evaluated
+Dashboard: `http://localhost:5173` (proxies API calls to `:8000` in
+development).
 
-* PaddleOCR
-* EasyOCR
-* Custom preprocessing workflows
-* Layout reconstruction approaches
-* Rule-based parsing
-* Geometry-based field mapping
+## Running tests
 
-This phase successfully validated that invoice text extraction was achievable. However, it also revealed a critical insight:
+```bash
+# Offline suite — no external dependencies required
+.venv/bin/pytest -q
 
-### OCR Was Not the Primary Bottleneck
+# Integration suite — requires the Postgres container running
+RUN_DB_TESTS=1 .venv/bin/pytest tests/integration -q
 
-The most significant challenge was not extracting text.
+# Optional: live-LLM smoke test (uses real OpenAI API credits)
+RUN_LIVE_LLM_TESTS=1 .venv/bin/pytest tests/integration -q
+```
 
-The real challenge was:
+Frontend:
 
-* Semantic understanding
-* Layout reconstruction
-* Multi-line item handling
-* Vendor-specific variability
-* Reliable business-data structuring
+```bash
+cd web
+npm run lint
+npm run build
+```
 
-This insight led to a strategic shift toward an AI-assisted architecture.
+## Development workflow
 
----
+- Prefer additive changes. If a working component needs to change, state
+  why before changing it.
+- Run the offline test suite before every commit; run the integration
+  suite before anything touching persistence, the pipeline, or the API.
+- Evolving an extraction prompt means adding a new version in
+  `app/prompts/`, never editing a version already in use — a persisted
+  invoice's `prompt_version` must stay interpretable.
+- Database schema changes are additive migrations (new tables/columns
+  with safe defaults) unless a genuine defect requires otherwise.
 
-# Proposed Architecture
+## Troubleshooting
 
-The platform is evolving toward the following workflow:
+**`docker compose up -d db` fails / Docker commands hang** — Docker
+Desktop may be stopped or paused; start it and retry.
 
-Invoice Image / PDF
-→ OCR / Vision Layer
-→ AI Structuring Layer
-→ Validation Layer
-→ Database
-→ ERP Integration
-→ Analytics & Reporting
+**A processed document lands in `FAILED` at the `AI_STRUCTURING`
+stage** — check `GET /api/v1/documents/{id}` for the specific error.
+Common causes: missing/invalid `OPENAI_API_KEY`, or an
+`insufficient_quota` response from OpenAI (a billing state, not a code
+error — confirm via the OpenAI dashboard).
 
-Each layer serves a specific purpose within the system.
+**Re-uploading the same file returns `409 ERR_DUPLICATE_DOCUMENT`** —
+expected behavior. Documents are deduplicated by SHA-256 content hash.
 
----
+**`alembic upgrade head` fails on a fresh database** — ensure the
+Postgres container is healthy (`docker compose ps`) and `DATABASE_URL_SYNC`
+in `.env` matches the running container's credentials.
 
-# System Components
+## Security notes
 
-## OCR / Vision Layer
+- Never commit `.env` — it is gitignored; only `.env.example` (placeholder
+  values only) is tracked.
+- The default local database credentials in `docker-compose.yml` /
+  `.env.example` are for local development only and must be rotated
+  before use in any shared environment.
+- No authentication or authorization layer currently exists on the API —
+  do not expose this service outside a trusted network without adding
+  one.
+- Test fixtures use fictional company names and synthetic product codes
+  by convention; do not introduce real business or customer data into
+  committed test files.
 
-The OCR layer is responsible for extracting textual information from invoice documents.
+## Contribution guidelines
 
-Potential providers include:
-
-* Google Vision API
-* EasyOCR
-* Future Vision-Language Models
-
-Responsibilities:
-
-* Text extraction
-* Layout awareness
-* Bounding-box information
-* Document preprocessing
-
-The OCR layer focuses exclusively on data extraction and does not perform business interpretation.
-
----
-
-## AI Structuring Layer
-
-The AI Structuring Layer is the intelligence engine of the platform.
-
-Responsibilities include:
-
-* Understanding invoice content
-* Identifying products
-* Extracting quantities
-* Detecting prices
-* Recognizing vendor information
-* Generating structured JSON outputs
-* Handling document variability
-
-This layer transforms OCR output into meaningful business records.
-
----
-
-## Validation Layer
-
-Validation is a critical component of the system.
-
-AI-generated outputs must be verified before entering business workflows.
-
-Validation checks include:
-
-* Numeric consistency
-* Total calculations
-* Quantity validation
-* UPC validation
-* Required field verification
-* Vendor consistency checks
-
-Invoices failing validation can be flagged for review.
-
----
-
-## Database Layer
-
-The database serves as the foundation for long-term intelligence.
-
-Primary storage entities include:
-
-### Vendors
-
-* Vendor ID
-* Vendor Name
-* Contact Information
-* Invoice History
-
-### Products
-
-* Product ID
-* Product Name
-* UPC
-* Pricing History
-* Category
-
-### Invoices
-
-* Invoice Number
-* Invoice Date
-* Vendor Information
-* Structured Data
-* Validation Status
-
-### Audit Logs
-
-* Processing Events
-* Validation Results
-* User Corrections
-
-The preferred database solution is PostgreSQL.
-
----
-
-## ERP Integration Layer
-
-The ERP integration layer enables extracted data to be consumed by downstream business systems.
-
-Supported workflows may include:
-
-* Inventory updates
-* Purchase tracking
-* Product catalog synchronization
-* Financial reporting
-* Accounting workflows
-
-This layer acts as the bridge between invoice intelligence and operational systems.
-
----
-
-## Analytics & Reporting Layer
-
-One of the platform's most important future capabilities is business intelligence generation.
-
-The analytics engine will transform historical invoice data into actionable insights.
-
-Examples:
-
-### Vendor Analytics
-
-* Purchase volume by vendor
-* Vendor performance trends
-* Vendor spend analysis
-
-### Product Analytics
-
-* Top-selling products
-* Product demand trends
-* Price fluctuations
-
-### Operational Analytics
-
-* Store-wise purchases
-* Inventory movement
-* Category-level reporting
-
----
-
-# Natural Language Query Engine
-
-Future versions of the platform will support conversational business queries.
-
-Examples:
-
-"Show me the top purchased products last month."
-
-"Which vendor had the highest purchase volume this quarter?"
-
-"How much inventory was purchased from Vendor X this year?"
-
-"What products experienced the highest price increase in the last six months?"
-
-The platform should be capable of generating these insights directly from stored business data.
-
----
-
-# Technology Stack
-
-## Backend
-
-* FastAPI
-* Python
-
-## Frontend
-
-* Streamlit
-
-## Database
-
-* PostgreSQL
-
-Potential providers:
-
-* Supabase
-* Neon
-
-## OCR
-
-* Google Vision API
-* EasyOCR
-
-## AI
-
-* OpenAI API
-
-## Infrastructure
-
-* Railway
-* Render
-
----
-
-# Third-Party Services
-
-The platform may utilize several external services depending on deployment requirements.
-
-### Google Vision API
-
-Purpose:
-
-* OCR extraction
-* Document analysis
-
-### OpenAI API
-
-Purpose:
-
-* Semantic invoice structuring
-* Business-data extraction
-* Natural language querying
-
-### Claude
-
-Purpose:
-
-* Research and development support
-* Architecture planning
-* Prompt engineering
-* Technical experimentation
-
----
-
-# Roadmap
-
-## Phase 1 — Intelligent Invoice Extraction
-
-Objectives:
-
-* OCR integration
-* AI-assisted structuring
-* Validation workflows
-* Structured JSON generation
-
-Deliverables:
-
-* Upload interface
-* Extraction API
-* Validation engine
-
----
-
-## Phase 2 — ERP Integration & Data Foundation
-
-Objectives:
-
-* Persistent storage
-* Invoice repository
-* Product repository
-* Vendor repository
-
-Deliverables:
-
-* PostgreSQL integration
-* Historical invoice storage
-* ERP-ready exports
-
----
-
-## Phase 3 — Vendor Intelligence & Template Learning
-
-Objectives:
-
-* Vendor recognition
-* Template identification
-* Product memory
-
-Deliverables:
-
-* Template engine
-* Reusable mappings
-* Cost optimization
-
----
-
-## Phase 4 — Business Intelligence & Analytics
-
-Objectives:
-
-* Reporting
-* Dashboarding
-* Natural language querying
-
-Deliverables:
-
-* Weekly reports
-* Monthly reports
-* Vendor analytics
-* Product intelligence
-
----
-
-# Expected Business Value
-
-The Invoice Intelligence Platform aims to provide:
-
-* Reduced manual data entry
-* Faster invoice processing
-* Improved accuracy
-* Better operational visibility
-* Historical business intelligence
-* Scalable vendor management
-* ERP integration capabilities
-
-By transforming invoices into structured, searchable, and analyzable business data, organizations can improve operational efficiency while unlocking new opportunities for analytics and decision-making.
-
----
-
-# Current Status
-
-The project is currently in the Architecture Review and Prototype Validation stage.
-
-The feasibility of invoice extraction has been validated through extensive OCR experimentation and repository auditing. Current efforts are focused on evolving the prototype into a scalable AI-powered Invoice Intelligence Platform capable of supporting enterprise workflows, analytics, reporting, and long-term business intelligence initiatives.
-
----
-
-## License
-
-This project is currently under active development.
-
-For internal use, research, prototyping, and evaluation purposes.
+- Commits should be scoped to one logical change with a clear message
+  explaining *why*, not just *what*.
+- Every change to backend logic should include or update tests; run the
+  full relevant test suite before committing.
+- Do not amend or force-push shared history.

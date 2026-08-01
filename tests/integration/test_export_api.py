@@ -134,21 +134,21 @@ class TestPdiExport:
     ):
         from app.api.v1.invoices import get_pipeline
 
-        real_upc_invoice = extracted_invoice(
+        sample_invoice = extracted_invoice(
             line_items=[
                 ExtractedLineItem(
-                    description="COORS LIGHT 2/12/12 CAN", product_code="028000772123",
+                    description="NORTHWIND LAGER 12PK CAN", product_code="999000000015",
                     quantity=3.0, unit_price=21.95, line_total=65.85,
                 )
             ],
             subtotal=65.85, grand_total=65.85,
         )
         app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
-            structuring_service=FakeStructuring(real_upc_invoice)
+            structuring_service=FakeStructuring(sample_invoice)
         )
         accepted = await process_file(
-            api_client, content=build_pdf(["coors invoice " + "pad " * 300]),
-            filename="coors.pdf",
+            api_client, content=build_pdf(["sample invoice " + "pad " * 300]),
+            filename="sample-invoice.pdf",
         )
         status = (await api_client.get(accepted["status_url"])).json()["data"]
 
@@ -158,7 +158,7 @@ class TestPdiExport:
         json_export = (
             await api_client.get(f"/api/v1/invoices/{status['invoice_id']}/export")
         ).json()
-        assert json_export["line_items"][0]["sku_upc"] == "028000772123"
+        assert json_export["line_items"][0]["sku_upc"] == "999000000015"
 
         response = await api_client.get(
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
@@ -175,8 +175,8 @@ class TestPdiExport:
         detail_line = lines[1]
         assert len(detail_line) == 70
         assert detail_line[0] == "B"
-        assert detail_line[1:12] == "02800077212"  # 12-digit UPC, check digit stripped
-        assert detail_line[12:37].strip() == "COORS LIGHT 2/12/12 CAN"
+        assert detail_line[1:12] == "99900000001"  # 12-digit UPC, check digit stripped
+        assert detail_line[12:37].strip() == "NORTHWIND LAGER 12PK CAN"
         assert detail_line[58:62] == "0003"  # quantity 3
 
     async def test_missing_product_code_produces_blank_item_code(

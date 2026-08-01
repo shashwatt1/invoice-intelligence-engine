@@ -292,8 +292,8 @@ class TestNormalization:
     def test_product_code_passes_through_unchanged(self):
         # Preserved exactly as printed (dashes, leading zeros) — the PDI
         # formatter, not normalization, is responsible for reducing it.
-        result = validate(invoice(line_items=[item(product_code="0-48500-20603-4")]))
-        assert result.invoice.line_items[0].product_code == "0-48500-20603-4"
+        result = validate(invoice(line_items=[item(product_code="9-99000-00026-3")]))
+        assert result.invoice.line_items[0].product_code == "9-99000-00026-3"
 
     def test_product_code_whitespace_collapses_to_none(self):
         result = validate(invoice(line_items=[item(product_code="   ")]))

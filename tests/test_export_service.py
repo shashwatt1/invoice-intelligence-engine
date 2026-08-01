@@ -44,30 +44,30 @@ def make_invoice(**overrides) -> Invoice:
         tax_amount=Decimal("7.78"),
         discount_amount=Decimal("0.00"),
         grand_total=Decimal("46.68"),
-        vendor_name="Apple Food & Grocery Inc",
+        vendor_name="Acme Distribution Co",
         status="VALIDATED",
         composite_confidence=Decimal("0.9840"),
         extraction_model="gpt-4o-mini",
     )
     invoice.created_at = datetime(2026, 7, 12, 10, 0, tzinfo=UTC)
     invoice.vendor = Vendor(
-        id=uuid.uuid4(), name="Apple Food & Grocery Inc", tax_id="US-998877",
-        address="1 Grocer Way", email="ap@apple-food.test",
+        id=uuid.uuid4(), name="Acme Distribution Co", tax_id="US-0000001",
+        address="1 Commerce Way", email="ap@acme-distribution.test",
     )
     invoice.document = Document(
-        id=invoice.document_id, filename="apple-food.pdf", mime_type="application/pdf",
+        id=invoice.document_id, filename="acme-distribution.pdf", mime_type="application/pdf",
         file_size_bytes=2048, file_path="/uploads/x.pdf", file_hash="a" * 64,
         source_type="digital_pdf",
     )
     invoice.items = [
         InvoiceItem(
-            invoice_id=invoice.id, description="COORS LIGHT 2/12/12 CAN",
+            invoice_id=invoice.id, description="NORTHWIND LAGER 12PK CAN",
             quantity=Decimal("3.0000"), unit_price=Decimal("21.9500"),
             line_total=Decimal("65.85"), tax_rate=Decimal("6.0000"),
-            sort_order=0, product_sku="0071990030",
+            sort_order=0, product_sku="0000012345",
         ),
         InvoiceItem(
-            invoice_id=invoice.id, description="MODELO ESPECIAL 12PK",
+            invoice_id=invoice.id, description="CONTOSO GOLD ALE 12PK",
             quantity=Decimal("2.0000"), unit_price=Decimal("18.5000"),
             line_total=Decimal("37.00"), tax_rate=None, sort_order=1,
         ),
@@ -87,10 +87,10 @@ class TestJsonPayload:
         assert payload["invoice"]["totals"] == {
             "subtotal": 38.9, "tax": 7.78, "discount": 0.0, "grand_total": 46.68,
         }
-        assert payload["vendor"]["name"] == "Apple Food & Grocery Inc"
-        assert payload["vendor"]["tax_id"] == "US-998877"
+        assert payload["vendor"]["name"] == "Acme Distribution Co"
+        assert payload["vendor"]["tax_id"] == "US-0000001"
         assert [item["position"] for item in payload["line_items"]] == [1, 2]
-        assert payload["line_items"][0]["sku_upc"] == "0071990030"
+        assert payload["line_items"][0]["sku_upc"] == "0000012345"
         assert payload["line_items"][1]["tax_rate"] is None
         assert payload["validation"] == {
             "status": "VALIDATED", "review_required": False, "composite_confidence": 0.984,
@@ -105,7 +105,7 @@ class TestJsonPayload:
         invoice = make_invoice()
         invoice.vendor = None
         payload = build_export_payload(invoice)
-        assert payload["vendor"]["name"] == "Apple Food & Grocery Inc"
+        assert payload["vendor"]["name"] == "Acme Distribution Co"
         assert payload["vendor"]["email"] is None
 
 
@@ -114,10 +114,10 @@ class TestTxt:
         text = build_txt(make_invoice())
 
         for expected in [
-            "Vendor\n------\nApple Food & Grocery Inc",
+            "Vendor\n------\nAcme Distribution Co",
             "Invoice Number:\nINV-2026-0042",
             "Items",
-            "1.\nDescription:\nCOORS LIGHT 2/12/12 CAN",
+            "1.\nDescription:\nNORTHWIND LAGER 12PK CAN",
             "Quantity:\n3.00",
             "Unit Price:\n21.95",
             "Grand Total:\n46.68 USD",
@@ -140,8 +140,8 @@ class TestCsv:
         rows = list(csv.reader(io.StringIO(content)))
 
         assert rows[0] == CSV_HEADERS
-        assert rows[1] == ["COORS LIGHT 2/12/12 CAN", "3.0", "21.95", "65.85", "6.0", "0071990030"]
-        assert rows[2] == ["MODELO ESPECIAL 12PK", "2.0", "18.5", "37.0", "", ""]
+        assert rows[1] == ["NORTHWIND LAGER 12PK CAN", "3.0", "21.95", "65.85", "6.0", "0000012345"]
+        assert rows[2] == ["CONTOSO GOLD ALE 12PK", "2.0", "18.5", "37.0", "", ""]
 
     def test_csv_quotes_commas_in_descriptions(self):
         invoice = make_invoice()
@@ -174,21 +174,21 @@ class TestPdiItemCode:
     """
 
     def test_12_digit_upc_drops_check_digit(self):
-        assert _pdi_item_code("028000772123") == "02800077212"
+        assert _pdi_item_code("999000000015") == "99900000001"
 
     def test_dashed_upc_is_normalized_before_reduction(self):
-        # PepsiCo-style UPC formatting, e.g. "0-48500-20603-4"
-        assert _pdi_item_code("0-48500-20603-4") == "04850020603"
+        # Dash-delimited UPC formatting, as sometimes printed on invoices
+        assert _pdi_item_code("9-99000-00026-3") == "99900000026"
 
     def test_short_vendor_item_number_is_zero_padded(self):
-        assert _pdi_item_code("71600") == "00000071600"
+        assert _pdi_item_code("12345") == "00000012345"
 
     def test_code_longer_than_field_is_truncated(self):
         assert len(_pdi_item_code("1234567890123456")) == PDI_ITEM_CODE_WIDTH
 
     def test_missing_code_uses_confirmed_blank_convention(self):
-        # "00000" + spaces — confirmed against a real blank-code row in a
-        # supplied PDI ground-truth file (992990.txt), not all-spaces.
+        # "00000" + spaces — confirmed against a real blank-code row observed
+        # in a supplied PDI sample file, not all-spaces.
         assert _pdi_item_code(None) == "00000" + " " * 6
 
     def test_empty_string_uses_confirmed_blank_convention(self):
@@ -224,8 +224,8 @@ class TestPdiExport:
         line = build_pdi_export(invoice).splitlines()[1]  # first item
 
         assert line[0] == "B"
-        assert line[1:12] == "00071990030"  # product_sku "0071990030" -> zero-padded 11
-        assert line[12:37] == "COORS LIGHT 2/12/12 CAN".ljust(25)
+        assert line[1:12] == "00000012345"  # product_sku "0000012345" -> zero-padded 11
+        assert line[12:37] == "NORTHWIND LAGER 12PK CAN".ljust(25)
         assert line[37:57] == "0" * PDI_BLOCK_A_WIDTH
         assert line[57] == "+"
         assert line[58:62] == "0003"  # quantity 3.0000

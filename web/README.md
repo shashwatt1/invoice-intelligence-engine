@@ -1,32 +1,52 @@
-# React + TypeScript + Vite
+# Invoice Intelligence Engine — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React frontend for the Invoice Intelligence Engine. Consumes the backend
+exclusively through its REST API — no business logic lives here.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+React 19, TypeScript, Vite, TailwindCSS, shadcn/ui, TanStack Query,
+React Router, Axios, Framer Motion, Recharts.
 
-## React Compiler
+## Structure
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```
+src/
+  api/            Typed API client (client.ts, endpoints.ts, types.ts)
+                    — the only place that talks to the backend
+  hooks/          TanStack Query hooks — all server state lives here
+  components/
+    ui/            shadcn/ui primitives
+    layout/        App shell, sidebar, page header
+    dashboard/      Dashboard-specific components
+    processing/     Upload + live processing timeline
+    invoice/        Invoice detail, validation report, developer panel
+    shared/         Cross-page components (status badges, pagination, ...)
+  pages/          Route-level components
+  lib/            Formatting utilities, status vocabulary, cn() helper
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Running
+
+```bash
+npm install
+npm run dev       # http://localhost:5173, proxies /api to :8000
+```
+
+## Quality checks
+
+```bash
+npm run lint       # oxlint
+npx tsc -b         # type-check
+npm run build       # production build
+```
+
+## Conventions
+
+- All backend communication goes through `src/api/` — components and
+  hooks never call `fetch`/`axios` directly.
+- Server state is managed by TanStack Query hooks in `src/hooks/`, not
+  component-local state.
+- The API's `{success, data, error}` envelope is unwrapped once, in the
+  Axios response interceptor (`src/api/client.ts`) — callers work with
+  plain typed data or a thrown `ApiError`.

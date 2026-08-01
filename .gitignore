@@ -18,6 +18,12 @@ env/
 dist/
 build/
 
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
 # IDE
 .vscode/
 .idea/
