@@ -45,7 +45,7 @@ ExportFormat = Literal["json", "txt", "csv", "pdi"]
         "- `format=pdi` — fixed-width PDI import format (item code, description, "
         "quantity are high-confidence; cost fields are emitted as documented "
         "zero-value placeholders pending confirmation of PDI's price encoding — "
-        "see the field mapping report before relying on this for a live import). "
+        "see docs/PDI_OPEN_QUESTIONS.md before relying on this for a live import). "
         "Only available for invoices that passed validation.\n\n"
         "Responses carry a `Content-Disposition` attachment header with a "
         "filename derived from the invoice number."

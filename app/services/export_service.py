@@ -232,25 +232,33 @@ def build_items_csv(invoice: Invoice) -> str:
 # ---------------------------------------------------------------------------
 # PDI — fixed-width positional import format
 #
-# Reverse-engineered from real PDI import files (see field mapping report,
-# "PDI Export — UPC Capture + Formatter" milestone). Field confidence is
-# NOT uniform — see the module-level note below before trusting this output
-# for a live PDI import without a human review pass.
+# Reverse-engineered from real PDI import files. Field confidence is NOT
+# uniform — see docs/PDI_OPEN_QUESTIONS.md.
+#
+# Every field is produced by its own small, named encoder below, grouped
+# CONFIRMED (verified against real PDI samples) vs. PLACEHOLDER (business
+# rule not yet known — see docs/PDI_OPEN_QUESTIONS.md). Confirming a rule
+# means changing exactly one function; nothing else in this module, the
+# API, or the frontend needs to change.
 #
 # Detail record layout (70 chars, 0-indexed slices):
 #   [0]      "B"                     record type
-#   [1:12]   item code               11 digits, zero-padded, right-justified
-#   [12:37]  description             25 chars, left-justified, space-padded
-#   [37:57]  "block A"               20 digits — cost/price encoding, UNVERIFIED
-#   [57]     sign                    "+" (no credit/return concept exists yet)
-#   [58:62]  quantity                4 digits, zero-padded
-#   [62:70]  "block B tail"          8 digits — cost/UOM encoding, UNVERIFIED
+#   [1:12]   item code               11 digits — CONFIRMED (_pdi_item_code)
+#   [12:37]  description             25 chars  — CONFIRMED (_pdi_description)
+#   [37:57]  cost block              20 digits — PLACEHOLDER (_pdi_cost_block)
+#   [57]     sign                    1 char    — CONFIRMED for now (_pdi_sign)
+#   [58:62]  quantity                4 digits  — CONFIRMED (_pdi_quantity)
+#   [62:70]  cost block tail         8 digits  — PLACEHOLDER (_pdi_cost_tail)
 #
-# Header record: "AMOUNT {batch:>7}   {date:6}{sign}{amount_cents:09d}"
-# Trailer records (CFUE/CPPT fee lines) are intentionally NOT emitted: we
-# have no extracted data for fuel surcharge or itemized tax this milestone
-# (see field mapping report) — omitting is safer than fabricating a $0 line
-# that looks like real, verified data.
+# Header record: "AMOUNT {batch}   {date}{sign}{amount}"
+#   batch  — PLACEHOLDER (_pdi_batch_number)
+#   date   — CONFIRMED format, semantics open (_pdi_date, see open questions)
+#   amount — CONFIRMED (_pdi_amount_cents)
+#
+# Trailer records (CFUE/CPPT fee lines) — PLACEHOLDER (_pdi_trailer_lines),
+# currently always empty: no source data is captured for fuel surcharge or
+# itemized tax. Omitting is safer than fabricating a $0 line that looks
+# like real, verified data.
 # ---------------------------------------------------------------------------
 
 PDI_ITEM_CODE_WIDTH = 11
@@ -263,6 +271,11 @@ PDI_DATE_FORMAT = "%m%d%y"
 PDI_AMOUNT_WIDTH = 9
 
 _NON_DIGITS = re.compile(r"\D")
+
+
+# ---------------------------------------------------------------------------
+# CONFIRMED field encoders — verified against real PDI samples
+# ---------------------------------------------------------------------------
 
 
 def _pdi_item_code(product_code: str | None) -> str:
@@ -294,17 +307,88 @@ def _pdi_item_code(product_code: str | None) -> str:
 
 
 def _pdi_description(description: str) -> str:
+    """CONFIRMED: 25 chars, left-justified, space-padded/truncated."""
     return description[:PDI_DESCRIPTION_WIDTH].ljust(PDI_DESCRIPTION_WIDTH)
 
 
 def _pdi_quantity(quantity: Decimal | None) -> str:
     """
-    4-digit zero-padded quantity. A quantity of 10000+ (never seen in any
-    real sample) would overflow the field rather than being silently
-    truncated to a wrong-but-plausible-looking number.
+    CONFIRMED: 4-digit zero-padded quantity. A quantity of 10000+ (never
+    seen in any real sample) would overflow the field rather than being
+    silently truncated to a wrong-but-plausible-looking number.
     """
     value = int(quantity) if quantity is not None else 0
     return str(max(value, 0)).rjust(PDI_QUANTITY_WIDTH, "0")
+
+
+def _pdi_sign() -> str:
+    """
+    CONFIRMED for every sample processed to date: always "+". Every real
+    invoice this system has produced a PDI export for is a standard
+    delivery. UNKNOWN: the sign convention for a credit/return invoice —
+    see docs/PDI_OPEN_QUESTIONS.md Q3. Not a current blocker: this system
+    has no concept of a return/credit invoice upstream of the formatter
+    (extraction and validation don't distinguish one), so there is nothing
+    for this function to get wrong today.
+    """
+    return "+"
+
+
+def _pdi_date(invoice: Invoice) -> str:
+    """CONFIRMED format (MMDDYY). Semantics (invoice date vs. some other
+    date PDI expects) unconfirmed but low-risk — see open questions."""
+    return invoice.invoice_date.strftime(PDI_DATE_FORMAT) if invoice.invoice_date else "0" * 6
+
+
+def _pdi_amount_cents(invoice: Invoice) -> str:
+    """CONFIRMED: integer cents, zero-padded — cross-checked against fee
+    amounts in supplied PDI ground-truth files."""
+    cents = round(float(invoice.grand_total) * 100) if invoice.grand_total is not None else 0
+    return f"{cents:0{PDI_AMOUNT_WIDTH}d}"
+
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER field encoders — business rule not yet confirmed
+#
+# Each returns a safe, documented placeholder — never a guessed value
+# dressed up to look verified. See docs/PDI_OPEN_QUESTIONS.md for what
+# would need to be confirmed to replace each one, and why it isn't a
+# blocker for the rest of the pipeline in the meantime.
+# ---------------------------------------------------------------------------
+
+
+def _pdi_cost_block(item: InvoiceItem) -> str:
+    """PLACEHOLDER — detail line cost/price encoding (20 digits), unknown.
+    See docs/PDI_OPEN_QUESTIONS.md Q1."""
+    return "0" * PDI_BLOCK_A_WIDTH
+
+
+def _pdi_cost_tail(item: InvoiceItem) -> str:
+    """PLACEHOLDER — detail line cost/UOM encoding (8 digits), unknown,
+    likely related to _pdi_cost_block. See docs/PDI_OPEN_QUESTIONS.md Q1."""
+    return "0" * PDI_BLOCK_B_TAIL_WIDTH
+
+
+def _pdi_batch_number(invoice: Invoice) -> str:
+    """PLACEHOLDER — header batch/reference number semantics unknown.
+    See docs/PDI_OPEN_QUESTIONS.md Q2. Current value: last 7 digits of
+    the invoice number, zero-padded — a defensible best-effort default,
+    not a verified one."""
+    batch = _NON_DIGITS.sub("", invoice.invoice_number or "")
+    return (batch[-PDI_BATCH_WIDTH:] if batch else "").rjust(PDI_BATCH_WIDTH, "0")
+
+
+def _pdi_trailer_lines(invoice: Invoice) -> list[str]:
+    """PLACEHOLDER — fuel surcharge / prepaid tax trailer records
+    (CFUE/CPPT). See docs/PDI_OPEN_QUESTIONS.md Q4. No source data is
+    captured for these today, so nothing is emitted. This is the function
+    to implement once that capture is confirmed as in scope."""
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Record composition
+# ---------------------------------------------------------------------------
 
 
 def _pdi_detail_line(item: InvoiceItem) -> str:
@@ -312,19 +396,18 @@ def _pdi_detail_line(item: InvoiceItem) -> str:
         "B"
         + _pdi_item_code(item.product_sku)
         + _pdi_description(item.description)
-        + "0" * PDI_BLOCK_A_WIDTH
-        + "+"
+        + _pdi_cost_block(item)
+        + _pdi_sign()
         + _pdi_quantity(item.quantity)
-        + "0" * PDI_BLOCK_B_TAIL_WIDTH
+        + _pdi_cost_tail(item)
     )
 
 
 def _pdi_header_line(invoice: Invoice) -> str:
-    batch = _NON_DIGITS.sub("", invoice.invoice_number or "")
-    batch = (batch[-PDI_BATCH_WIDTH:] if batch else "").rjust(PDI_BATCH_WIDTH, "0")
-    date_str = invoice.invoice_date.strftime(PDI_DATE_FORMAT) if invoice.invoice_date else "0" * 6
-    cents = round(float(invoice.grand_total) * 100) if invoice.grand_total is not None else 0
-    return f"AMOUNT {batch}   {date_str}+{cents:0{PDI_AMOUNT_WIDTH}d}"
+    return (
+        f"AMOUNT {_pdi_batch_number(invoice)}   {_pdi_date(invoice)}"
+        f"{_pdi_sign()}{_pdi_amount_cents(invoice)}"
+    )
 
 
 def build_pdi_export(invoice: Invoice) -> str:
@@ -332,12 +415,13 @@ def build_pdi_export(invoice: Invoice) -> str:
     Deterministic PDI-compatible fixed-width export.
 
     High-confidence fields (verified against real PDI samples): record
-    structure, item code, description, quantity. Low-confidence fields
-    (cost/price encoding, batch-number semantics): emitted as documented
-    placeholders (zeros / best-effort invoice number), never fabricated to
-    look more certain than they are. See the field mapping report for the
-    full confidence breakdown before relying on this for a live import.
+    structure, item code, description, quantity, sign. Low-confidence
+    fields (cost/price encoding, batch-number semantics, trailer records):
+    emitted as documented placeholders, never fabricated to look more
+    certain than they are. See docs/PDI_OPEN_QUESTIONS.md for the full
+    confidence breakdown before relying on this for a live import.
     """
     lines = [_pdi_header_line(invoice)]
     lines.extend(_pdi_detail_line(item) for item in _sorted_items(invoice))
+    lines.extend(_pdi_trailer_lines(invoice))
     return "\n".join(lines) + "\n"
