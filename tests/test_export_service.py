@@ -447,3 +447,22 @@ class TestPdiTrailerRecords:
         lines = build_pdi_export(invoice).rstrip("\n").split("\n")
         assert len(lines) == 1 + len(invoice.items) + 1  # header + items + trailer
         assert lines[-1].startswith("CPPT")
+
+
+class TestPdiDeterminism:
+    """
+    Formatter is now frozen pending real PDI validation — this pins the
+    property that validation depends on: the same invoice data always
+    produces byte-identical output, run after run, process after process.
+    """
+
+    def test_same_invoice_produces_byte_identical_output_across_calls(self):
+        invoice = make_invoice()
+        assert build_pdi_export(invoice) == build_pdi_export(invoice)
+
+    def test_independently_built_equal_invoices_produce_identical_output(self):
+        # Two separate ORM instances built from the same values (as would
+        # happen across two different requests/processes) must still
+        # produce identical bytes — nothing keyed off object identity,
+        # memory address, or a fresh timestamp/uuid.
+        assert build_pdi_export(make_invoice()) == build_pdi_export(make_invoice())

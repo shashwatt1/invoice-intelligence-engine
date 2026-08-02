@@ -15,6 +15,12 @@ trailer) is structurally implemented with a confirmed byte layout; what
 remains open is narrower — specific digit scaling and one missing data
 source, not missing record types.
 
+**The formatter is now frozen pending a real PDI import.** No further
+implementation changes should be made against these open questions from
+assumptions — see `docs/PDI_VALIDATION_CHECKLIST.md` for the checklist to
+run on the first real import, and the list of specific assumptions above
+that import should verify or disprove.
+
 ---
 
 ## Q1 — Detail line cost/price digit layout (28 digits per line item)

@@ -236,6 +236,20 @@ class TestPdiExport:
         assert trailer == "CPPTPREPAID SALES TAX        +00000778"
         assert "CFUE" not in response.text
 
+    async def test_repeated_pdi_export_is_byte_identical(self, api_client):  # noqa: F811
+        # Formatter is frozen pending real PDI validation — the property
+        # that validation depends on is that re-exporting the same,
+        # already-persisted invoice never changes a single byte.
+        invoice_id = await processed_invoice_id(api_client)
+        first = await api_client.get(
+            f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
+        )
+        second = await api_client.get(
+            f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
+        )
+        assert first.status_code == second.status_code == 200
+        assert first.text == second.text
+
     async def test_existing_exports_unaffected_by_pdi_addition(self, api_client):  # noqa: F811
         # Regression guard: adding format=pdi must not perturb json/txt/csv.
         invoice_id = await processed_invoice_id(api_client)
