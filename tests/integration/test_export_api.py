@@ -212,6 +212,50 @@ class TestPdiExport:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith(content_type)
 
+    async def test_return_invoice_produces_negative_pdi_records(
+        self, api_client, app  # noqa: F811
+    ):
+        # Return/credit invoices carry a negative grand_total end-to-end
+        # (extraction and validation preserve the printed sign — see
+        # _pdi_is_return in export_service.py); the PDI formatter must flip
+        # the sign character while keeping every digit field magnitude-only.
+        from app.api.v1.invoices import get_pipeline
+
+        return_invoice = extracted_invoice(
+            line_items=[
+                ExtractedLineItem(
+                    description="NORTHWIND LAGER 12PK CAN", product_code="999000000015",
+                    quantity=3.0, unit_price=-15.56, line_total=-46.68,
+                )
+            ],
+            subtotal=-46.68, grand_total=-46.68,
+        )
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(return_invoice)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["return invoice " + "pad " * 300]),
+            filename="return-invoice.pdf",
+        )
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+
+        response = await api_client.get(
+            f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
+        )
+        # A 200 here (rather than the 422 from the validation-status gate)
+        # confirms the return invoice was persisted with status="VALIDATED",
+        # not just that the math checks passed.
+        assert response.status_code == 200
+
+        lines = response.text.splitlines()
+        header, detail_line = lines[0], lines[1]
+        assert header[23] == "-"  # header sign position
+        assert "-" not in header[24:]  # amount digits stay magnitude-only
+        assert detail_line[57] == "-"  # detail-line sign position
+        assert detail_line[37:57].isdigit()  # cost block stays magnitude-only
+        assert detail_line[58:62] == "0003"  # quantity stays magnitude-only
+        assert detail_line[62:70].isdigit()  # cost tail stays magnitude-only
+
     async def test_review_required_invoice_cannot_be_exported_as_pdi(
         self, api_client, app  # noqa: F811
     ):

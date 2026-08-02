@@ -23,7 +23,11 @@ from app.services.export_service import (
     PDI_BLOCK_B_TAIL_WIDTH,
     PDI_DESCRIPTION_WIDTH,
     PDI_ITEM_CODE_WIDTH,
+    _pdi_cost_block,
+    _pdi_cost_tail,
+    _pdi_extended_cost_cents,
     _pdi_item_code,
+    _pdi_unit_cost_cents,
     build_export_payload,
     build_items_csv,
     build_pdi_export,
@@ -221,15 +225,15 @@ class TestPdiExport:
 
     def test_detail_line_field_positions(self):
         invoice = make_invoice()
-        line = build_pdi_export(invoice).splitlines()[1]  # first item
+        line = build_pdi_export(invoice).splitlines()[1]  # first item: unit_price=21.9500, qty=3
 
         assert line[0] == "B"
         assert line[1:12] == "00000012345"  # product_sku "0000012345" -> zero-padded 11
         assert line[12:37] == "NORTHWIND LAGER 12PK CAN".ljust(25)
-        assert line[37:57] == "0" * PDI_BLOCK_A_WIDTH
+        assert line[37:57] == "00000000000000002195"  # unit cost 21.95 -> cents, 20-digit
         assert line[57] == "+"
         assert line[58:62] == "0003"  # quantity 3.0000
-        assert line[62:70] == "0" * PDI_BLOCK_B_TAIL_WIDTH
+        assert line[62:70] == "00006585"  # extended cost 21.95 x 3 = 65.85 -> cents, 8-digit
 
     def test_long_description_is_truncated_to_25_chars(self):
         invoice = make_invoice()
@@ -292,3 +296,110 @@ class TestPdiExport:
         assert all(len(line) == 70 for line in detail_lines)
         assert detail_lines[0][12:37].strip() == "Item 000"
         assert detail_lines[149][12:37].strip() == "Item 149"
+
+
+class TestPdiCostCalculation:
+    """
+    Business rule: cost section is derived from unit cost x quantity.
+    Calculation is CONFIRMED; the 20/8-digit layout it's packed into is not
+    (docs/PDI_OPEN_QUESTIONS.md Q1) — these tests pin the calculation and
+    its magnitude-only encoding, not the still-open digit layout itself.
+    """
+
+    def test_unit_cost_cents_rounds_to_nearest_cent(self):
+        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
+        assert _pdi_unit_cost_cents(item) == 2195
+
+    def test_extended_cost_cents_is_unit_cost_times_quantity(self):
+        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
+        assert _pdi_extended_cost_cents(item) == 6585
+
+    def test_cost_block_is_zero_padded_to_twenty_digits(self):
+        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
+        block = _pdi_cost_block(item)
+        assert len(block) == PDI_BLOCK_A_WIDTH
+        assert block == "00000000000000002195"
+
+    def test_cost_tail_is_zero_padded_to_eight_digits(self):
+        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
+        tail = _pdi_cost_tail(item)
+        assert len(tail) == PDI_BLOCK_B_TAIL_WIDTH
+        assert tail == "00006585"
+
+    def test_cost_fields_are_magnitude_only_for_negative_unit_price(self):
+        # Return-invoice line items may carry a negative unit_price; the
+        # cost fields themselves stay positive-looking — direction is
+        # carried solely by the dedicated sign character (_pdi_sign).
+        item = InvoiceItem(unit_price=Decimal("-21.9500"), quantity=Decimal("3.0000"))
+        assert _pdi_cost_block(item) == "00000000000000002195"
+        assert _pdi_cost_tail(item) == "00006585"
+
+
+class TestPdiBatchNumber:
+    """Batch/reference field is CONFIRMED to come from the store's
+    invoice/reference number (invoice_number), replacing the prior
+    placeholder — docs/PDI_OPEN_QUESTIONS.md Q2, now resolved."""
+
+    def test_batch_number_derived_from_invoice_number(self):
+        invoice = make_invoice(invoice_number="1234567")
+        header = build_pdi_export(invoice).splitlines()[0]
+        assert header.split()[1] == "1234567"
+
+    def test_batch_number_uses_last_seven_digits_when_longer(self):
+        invoice = make_invoice(invoice_number="INV-2026-0042")
+        header = build_pdi_export(invoice).splitlines()[0]
+        assert header.split()[1] == "0260042"
+
+    def test_batch_number_is_zero_padded_when_shorter(self):
+        invoice = make_invoice(invoice_number="42")
+        header = build_pdi_export(invoice).splitlines()[0]
+        assert header.split()[1] == "0000042"
+
+
+class TestPdiReturnInvoice:
+    """
+    Business rule: normal invoices produce positive records, return/credit
+    invoices (negative grand_total) produce negative records —
+    docs/PDI_OPEN_QUESTIONS.md Q3, now resolved. "Negative" means the sign
+    character flips to "-" on the header and every detail line; the
+    amount/cost/quantity digit fields themselves stay magnitude-only.
+    """
+
+    def test_return_invoice_header_sign_is_negative(self):
+        invoice = make_invoice(grand_total=Decimal("-46.68"))
+        header = build_pdi_export(invoice).splitlines()[0]
+        assert header == "AMOUNT 0260042   033126-000004668"
+
+    def test_return_invoice_detail_line_sign_is_negative(self):
+        invoice = make_invoice(grand_total=Decimal("-46.68"))
+        lines = build_pdi_export(invoice).splitlines()[1:]
+        assert all(line[57] == "-" for line in lines)
+
+    def test_return_invoice_amount_field_stays_magnitude_only(self):
+        invoice = make_invoice(grand_total=Decimal("-46.68"))
+        header = build_pdi_export(invoice).splitlines()[0]
+        assert header.endswith("-000004668")  # digits carry no minus sign
+
+    def test_return_invoice_cost_and_quantity_fields_stay_magnitude_only(self):
+        invoice = make_invoice(grand_total=Decimal("-46.68"))
+        line = build_pdi_export(invoice).splitlines()[1]
+        assert line[37:57] == "00000000000000002195"
+        assert line[58:62] == "0003"
+        assert line[62:70] == "00006585"
+
+    def test_normal_invoice_sign_is_positive(self):
+        invoice = make_invoice(grand_total=Decimal("46.68"))
+        pdi = build_pdi_export(invoice)
+        assert pdi.splitlines()[0][23] == "+"  # header sign position
+        assert all(line[57] == "+" for line in pdi.splitlines()[1:])
+
+    def test_zero_grand_total_is_not_treated_as_a_return(self):
+        invoice = make_invoice(grand_total=Decimal("0.00"))
+        pdi = build_pdi_export(invoice)
+        assert pdi.splitlines()[0][23] == "+"
+        assert pdi.splitlines()[1][57] == "+"
+
+    def test_missing_grand_total_is_not_treated_as_a_return(self):
+        invoice = make_invoice(grand_total=None)
+        pdi = build_pdi_export(invoice)
+        assert pdi.splitlines()[1][57] == "+"

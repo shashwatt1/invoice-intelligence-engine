@@ -6,32 +6,41 @@ files. Some fields are confirmed correct by direct byte-level comparison
 against those files; others have no known encoding and are deliberately
 left as documented placeholders rather than guessed values.
 
-Each placeholder is isolated behind its own small function
-(`_pdi_cost_block`, `_pdi_cost_tail`, `_pdi_batch_number`,
-`_pdi_trailer_lines`) so that confirming an answer below means changing
-exactly one function — nothing else in the formatter, the API, or the
-frontend needs to change.
+Each unresolved field is isolated behind its own small function
+(`_pdi_cost_block`, `_pdi_cost_tail`, `_pdi_trailer_lines`) so that
+confirming an answer below means changing exactly one function — nothing
+else in the formatter, the API, or the frontend needs to change.
 
 ---
 
-## Q1 — Detail line cost/price encoding (28 digits per line item)
+## Q1 — Detail line cost/price digit layout (28 digits per line item)
 
-**What's unknown:** the 20-digit "cost block" and 8-digit "cost tail" on
-every detail line have no verified structure. We know they exist and
-where they sit; we don't know how price, cost, or unit-of-measure data is
-packed into them.
+**Resolved in part:** the business rule is confirmed — the cost section
+is calculated from the line's unit cost and quantity (`_pdi_unit_cost_cents`,
+`_pdi_extended_cost_cents`: unit cost in cents, and unit cost × quantity
+in cents). Every detail line now carries real, non-zero cost data.
 
-**Why it matters:** without this, an imported invoice carries no
-cost/price data — every line item's financial value is silently zero in
-the imported file, even though the item and quantity are correct.
+**What's still unknown:** the exact fixed-width DIGIT LAYOUT the 20-digit
+"cost block" and 8-digit "cost tail" pack those calculated values into.
+The current encoding (`_pdi_cost_block`, `_pdi_cost_tail`) is a plain
+right-justified, zero-padded cents value — a reasonable default, but not
+verified against a matched ground-truth PDI file. It's possible PDI
+expects a different scale (e.g. whole cents vs. a fixed-decimal format)
+or additional sub-fields packed into either block.
+
+**Why it matters:** if the digit layout differs from the current
+right-justified-cents assumption, imported cost/price values would be
+wrong (not zero, but incorrect) rather than simply missing.
 
 **Affects:** `_pdi_cost_block()`, `_pdi_cost_tail()` — two functions,
-called once per detail line.
+called once per detail line. `_pdi_unit_cost_cents()` /
+`_pdi_extended_cost_cents()` (the calculation itself) are CONFIRMED and
+unaffected.
 
 **Can development continue without it?** Yes. Item identification and
-quantity — the fields that most directly reduce manual re-typing — are
-unaffected and already confirmed correct. The placeholder is safe
-(zeros, not a fabricated number) and fully isolated.
+quantity are unaffected. The current encoding is a documented best-effort,
+not a placeholder — it should be treated as unverified rather than wrong
+until checked against a ground-truth file.
 
 **What would resolve it:** one real supplier invoice paired with the
 actual PDI file your system accepted for that same delivery. With a
@@ -40,50 +49,37 @@ with certainty instead of estimated.
 
 ---
 
-## Q2 — Header batch/reference number semantics
+## Q2 — Header batch/reference number semantics — RESOLVED
 
-**What's unknown:** whether the 7-digit number at the start of the
-`AMOUNT` line is expected to be derived from the vendor's invoice number,
-or is something PDI assigns itself (its own sequence numbers in the
-sample files looked assigned, not derived from a vendor invoice number).
+**Resolution:** the batch/reference field is populated from the store's
+own invoice/reference number (`invoice_number`, as extracted from the
+document), not a PDI-assigned sequence number.
 
-**Why it matters:** if PDI expects a specific number it tracks itself,
-our current placeholder could collide with an existing batch, get
-silently misfiled, or be rejected outright.
+**Implementation:** `_pdi_batch_number()` — non-digit characters are
+stripped from `invoice_number` and the result is fit to the fixed 7-digit
+field (right-aligned, truncating leading digits if longer, zero-padded if
+shorter).
 
-**Affects:** `_pdi_batch_number()` — one function, called once per file.
-
-**Can development continue without it?** Yes. This is a single, isolated
-header field; every detail line and the rest of the header are
-unaffected by whatever the answer turns out to be.
-
-**Secondary, minor note:** the header date's *format* is confirmed
-(MMDDYY) but not whether it should be the invoice date (what we currently
-use, in `_pdi_date()`) or some other date (e.g. the date the file is
-generated). Low risk either way — flagging for completeness, not raising
-as a full question.
+**Secondary, minor note (still open, low risk):** the header date's
+*format* is confirmed (MMDDYY) but not whether it should be the invoice
+date (what we currently use, in `_pdi_date()`) or some other date (e.g.
+the date the file is generated).
 
 ---
 
-## Q3 — Return / credit invoice handling
+## Q3 — Return / credit invoice handling — RESOLVED
 
-**What's unknown:** one supplied ground-truth PDI file is entirely a
-return/credit transaction, using `-` throughout instead of `+`. Whether
-and how return invoices should flow through this same PDI export path is
-unknown.
+**Resolution:** return/credit invoices use negative amounts. A return is
+detected from the invoice's own `grand_total` being negative — no new
+data capture was required, since extraction and validation already
+preserve whatever sign was printed on the total.
 
-**Why it matters:** if return invoices need to be imported this way,
-they'll currently be exported with the wrong sign — an accounting error,
-not just a cosmetic one.
-
-**Affects:** `_pdi_sign()`.
-
-**Can development continue without it?** Yes. Every real invoice
-processed by this system to date has been a standard delivery. There is
-also no upstream concept of a "credit invoice" anywhere in extraction or
-validation today — resolving this would likely require more than a
-formatter change, so it's worth confirming whether it's in scope at all
-before any implementation work.
+**Implementation:** `_pdi_is_return()` / `_pdi_sign()` — "+" for a normal
+invoice, "-" for a return (`grand_total < 0`), applied uniformly to the
+header and every detail line. The amount/cost/quantity digit fields
+themselves remain magnitude-only (`abs()`); direction is carried solely
+by the sign character, matching every real sample file (a file is either
+entirely a delivery or entirely a return, never mixed line-by-line).
 
 ---
 
@@ -113,14 +109,14 @@ earlier milestone, not yet approved.
 
 ## Summary
 
-| # | Question | Blocks item/qty accuracy? | Formatter-only fix? |
-|---|---|---|---|
-| Q1 | Cost/price encoding | No | Yes |
-| Q2 | Batch number semantics | No | Yes |
-| Q3 | Return/credit sign | No | No — needs upstream data too |
-| Q4 | Fuel surcharge / tax trailers | No | No — needs extraction schema change first |
+| # | Question | Status | Blocks item/qty accuracy? | Formatter-only fix? |
+|---|---|---|---|---|
+| Q1 | Cost/price digit layout | Calculation resolved; layout open | No | Yes |
+| Q2 | Batch number semantics | RESOLVED | No | Yes |
+| Q3 | Return/credit sign | RESOLVED | No | Yes |
+| Q4 | Fuel surcharge / tax trailers | Open | No | No — needs extraction schema change first |
 
-None of these block the parts of the export that most directly reduce
-manual entry today (which item, how many). All four are isolated to a
-single named function each, ready to be filled in as soon as an answer
-is available.
+None of the remaining open items block the parts of the export that most
+directly reduce manual entry today (which item, how many, and now cost).
+Each is isolated to a single named function, ready to be filled in as
+soon as an answer is available.
