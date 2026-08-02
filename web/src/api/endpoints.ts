@@ -49,7 +49,7 @@ export async function getDashboardSummary(recentLimit = 10): Promise<DashboardDa
   return data.data!;
 }
 
-export type ExportFormat = "json" | "txt" | "csv";
+export type ExportFormat = "json" | "txt" | "csv" | "pdi";
 
 /** Download URL for the validated-invoice export (browser follows the
  * Content-Disposition attachment header). */

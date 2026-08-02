@@ -6,11 +6,13 @@ import {
   FileJson,
   FileSpreadsheet,
   FileText,
+  ListOrdered,
   Search,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import type { InvoiceDecision } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
 import { ErrorState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
@@ -83,13 +85,16 @@ function filterJson(value: Json, query: string): Json | undefined {
  */
 export function StructuredOutput({
   invoiceId,
+  status,
   enabled,
 }: {
   invoiceId: string;
+  status: InvoiceDecision;
   enabled: boolean;
 }) {
   const { data, isPending, isError, error, refetch } = useInvoiceExport(invoiceId, enabled);
   const [query, setQuery] = useState("");
+  const isValidated = status === "VALIDATED";
 
   const shown = useMemo(() => {
     if (!data) return undefined;
@@ -103,7 +108,7 @@ export function StructuredOutput({
     toast.success("Validated invoice JSON copied to clipboard");
   };
 
-  const download = (format: "json" | "txt" | "csv") => {
+  const download = (format: "json" | "txt" | "csv" | "pdi") => {
     // Anchor-free download keeps the dropdown item semantics simple.
     window.location.assign(invoiceExportUrl(invoiceId, format));
   };
@@ -142,6 +147,17 @@ export function StructuredOutput({
             <DropdownMenuItem onClick={() => download("csv")}>
               <FileSpreadsheet className="size-3.5" /> Download CSV
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => download("pdi")}
+              disabled={!isValidated}
+              title={
+                isValidated
+                  ? undefined
+                  : "This invoice needs review before it can be exported for PDI import."
+              }
+            >
+              <ListOrdered className="size-3.5" /> Download PDI
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => void copyJson()}>
               <Copy className="size-3.5" /> Copy JSON
@@ -176,7 +192,10 @@ export function StructuredOutput({
       )}
       <p className="text-[0.7rem] text-muted-foreground">
         Final validated invoice — post-validation, as persisted. This object is the canonical
-        source for the TXT/CSV exports and future ERP integrations.
+        source for the TXT/CSV/PDI exports.
+        {!isValidated && (
+          <> PDI export is unavailable until this invoice passes review.</>
+        )}
       </p>
     </div>
   );

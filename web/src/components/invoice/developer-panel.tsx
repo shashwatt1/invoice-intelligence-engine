@@ -84,7 +84,11 @@ export function DeveloperPanel({ detail }: { detail: InvoiceDetail }) {
                 <TabsTrigger value="ids">Database IDs</TabsTrigger>
               </TabsList>
               <TabsContent value="structured">
-                <StructuredOutput invoiceId={detail.invoice_id} enabled={open} />
+                <StructuredOutput
+                  invoiceId={detail.invoice_id}
+                  status={detail.status}
+                  enabled={open}
+                />
               </TabsContent>
               <TabsContent value="ocr">
                 <JsonBlock value={detail.ocr_text ?? "(no text stored)"} />

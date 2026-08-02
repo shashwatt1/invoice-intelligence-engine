@@ -212,6 +212,45 @@ class TestPdiExport:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith(content_type)
 
+    async def test_review_required_invoice_cannot_be_exported_as_pdi(
+        self, api_client, app  # noqa: F811
+    ):
+        # PDI import is intended to feed the target system with minimal
+        # human review — an invoice that failed validation must not reach
+        # it in this format, even though json/txt/csv remain available.
+        from app.api.v1.invoices import get_pipeline
+
+        unreviewed = extracted_invoice(
+            line_items=[ExtractedLineItem(
+                description="Mismatched item", quantity=2.0,
+                unit_price=5.0, line_total=18.9,  # 2 x 5.0 != 18.9
+            )],
+        )
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(unreviewed)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["unreviewed invoice " + "pad " * 300]),
+            filename="unreviewed.pdf",
+        )
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+        assert status["status"] == "REVIEW_REQUIRED"
+
+        response = await api_client.get(
+            f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
+        )
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error"]["error_code"] == "ERR_VALIDATION_FAILED"
+        assert body["error"]["detail"]["status"] == "REVIEW_REQUIRED"
+
+        # The other formats remain available for a reviewer to inspect why.
+        for fmt in ["json", "txt", "csv"]:
+            ok = await api_client.get(
+                f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": fmt}
+            )
+            assert ok.status_code == 200
+
 
 class TestExportErrors:
     async def test_unknown_invoice_is_404(self, api_client):  # noqa: F811

@@ -17,7 +17,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import RecordNotFoundError
+from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
 from app.repositories.invoice_repository import InvoiceRepository
 from app.services.export_service import (
@@ -45,7 +45,8 @@ ExportFormat = Literal["json", "txt", "csv", "pdi"]
         "- `format=pdi` — fixed-width PDI import format (item code, description, "
         "quantity are high-confidence; cost fields are emitted as documented "
         "zero-value placeholders pending confirmation of PDI's price encoding — "
-        "see the field mapping report before relying on this for a live import)\n\n"
+        "see the field mapping report before relying on this for a live import). "
+        "Only available for invoices that passed validation.\n\n"
         "Responses carry a `Content-Disposition` attachment header with a "
         "filename derived from the invoice number."
     ),
@@ -58,6 +59,7 @@ ExportFormat = Literal["json", "txt", "csv", "pdi"]
             }
         },
         404: {"description": "Invoice not found"},
+        422: {"description": "format=pdi requested for an invoice that has not passed validation"},
     },
 )
 async def export_invoice(
@@ -81,6 +83,18 @@ async def export_invoice(
         media_type = "text/csv"
         filename = f"{basename}_items.csv"
     elif format == "pdi":
+        if invoice.status != "VALIDATED":
+            # PDI import is intended to feed the target system with minimal
+            # human review, so a REVIEW_REQUIRED invoice must not reach it
+            # in this format — the other formats (json/txt/csv) remain
+            # available for inspection regardless of status.
+            raise ValidationError(
+                message=(
+                    "This invoice has not passed validation and cannot be "
+                    "exported for PDI import. Review it first."
+                ),
+                detail={"invoice_id": str(invoice.id), "status": invoice.status},
+            )
         content = build_pdi_export(invoice)
         media_type = "text/plain"
         filename = f"{basename}_pdi.txt"
