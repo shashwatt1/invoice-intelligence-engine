@@ -9,7 +9,11 @@ left as documented placeholders rather than guessed values.
 Each unresolved field is isolated behind its own small function
 (`_pdi_cost_block`, `_pdi_cost_tail`, `_pdi_trailer_lines`) so that
 confirming an answer below means changing exactly one function — nothing
-else in the formatter, the API, or the frontend needs to change.
+else in the formatter, the API, or the frontend needs to change. As of
+this milestone, every record type real PDI files use (header, detail,
+trailer) is structurally implemented with a confirmed byte layout; what
+remains open is narrower — specific digit scaling and one missing data
+source, not missing record types.
 
 ---
 
@@ -85,25 +89,36 @@ entirely a delivery or entirely a return, never mixed line-by-line).
 
 ## Q4 — Fuel surcharge / itemized tax trailer records
 
-**What's unknown:** whether fuel surcharge and prepaid-tax line items
-(the `CFUE`/`CPPT` trailer records seen in the sample PDI files) need to
-be included, and if so, how they should be captured from the source
-invoice.
+**Resolved in part:** the trailer record's byte LAYOUT is confirmed — all
+three ground-truth files end with the same 38-char shape: `C` + 3-char
+subtype code + 25-char label + sign + 8-digit cents (`_pdi_trailer_line()`).
+The formatter now emits a real `CPPT` (prepaid sales tax) trailer whenever
+`invoice.tax_amount` is present and non-zero — using data this system
+already captures, not a new extraction field.
 
-**Why it matters:** these are real, material amounts — one of your own
-supplier invoices shows a $5.00 fuel surcharge as its own line. If PDI
-reconciles a file's total against its detail + trailer lines, an import
-missing these could fail a totals check even when every item line is
-correct.
+**What's still unknown:**
+1. Whether `invoice.tax_amount` (our only invoice-level tax figure) is the
+   same figure PDI's `CPPT` expects, or something more specific (e.g.
+   excluding certain tax types).
+2. `CFUE` (fuel surcharge) — no source field exists anywhere in extraction
+   today (not deposit, not fuel surcharge), so it is never emitted. One of
+   your own supplier invoices shows a $5.00 fuel surcharge as its own
+   line; if PDI reconciles a file's total against its detail + trailer
+   lines, an import missing this could fail a totals check even when
+   every item line is correct.
 
-**Affects:** `_pdi_trailer_lines()` — currently a no-op.
+**Affects:** `_pdi_trailer_lines()` (content), `_pdi_trailer_line()`
+(layout — confirmed, unaffected).
 
-**Can development continue without it?** Yes, with one caveat: unlike
-Q1–Q3, closing this gap isn't a formatter-only change. It would first
-require capturing deposit/fuel-surcharge/tax data at extraction time
-(an addition to the extraction schema, similar to how `product_code` was
-added) — which was explicitly deferred as its own scope decision in an
-earlier milestone, not yet approved.
+**Can development continue without it?** Yes. The `CPPT` trailer is now
+populated with real, non-fabricated data where available. Resolving
+`CFUE` remains a data-capture gap, not a formatter gap — it requires
+adding fuel-surcharge capture at extraction time (similar to how
+`product_code` was added), which is out of this milestone's scope.
+
+**What would resolve it:** confirmation that `tax_amount` maps to `CPPT`
+(or the correct source if not), plus a business decision on whether
+fuel-surcharge capture is worth adding to extraction.
 
 ---
 
@@ -114,9 +129,11 @@ earlier milestone, not yet approved.
 | Q1 | Cost/price digit layout | Calculation resolved; layout open | No | Yes |
 | Q2 | Batch number semantics | RESOLVED | No | Yes |
 | Q3 | Return/credit sign | RESOLVED | No | Yes |
-| Q4 | Fuel surcharge / tax trailers | Open | No | No — needs extraction schema change first |
+| Q4 | Fuel surcharge / tax trailers | Layout resolved; CPPT content live, CFUE open | No | CPPT: done. CFUE: no — needs extraction schema change |
 
 None of the remaining open items block the parts of the export that most
 directly reduce manual entry today (which item, how many, and now cost).
-Each is isolated to a single named function, ready to be filled in as
-soon as an answer is available.
+The full record structure (header, detail, trailer) is now in place and
+byte-layout-confirmed end to end — what remains open is verifying exact
+digit scaling (Q1) and the `CFUE` data gap (Q4), both isolated to a single
+named function each.

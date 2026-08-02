@@ -266,10 +266,22 @@ def build_items_csv(invoice: Invoice) -> str:
 # line, matching every real sample: a file is either entirely a delivery or
 # entirely a return, never mixed.
 #
-# Trailer records (CFUE/CPPT fee lines) — PLACEHOLDER (_pdi_trailer_lines),
-# currently always empty: no source data is captured for fuel surcharge or
-# itemized tax. Omitting is safer than fabricating a $0 line that looks
-# like real, verified data.
+# Trailer record layout (38 chars) — CONFIRMED against three real PDI
+# ground-truth files, every one of which ended with exactly these two
+# lines:
+#   [0:4]   record code             "CFUE" or "CPPT"
+#   [4:29]  label                   25 chars, space-padded ("FUEL SURCHARGE",
+#                                     "PREPAID SALES TAX")
+#   [29]    sign
+#   [30:38] amount                  8 digits, cents, magnitude only
+#
+# Content is a separate question from layout: CPPT is populated from
+# invoice.tax_amount (the only invoice-level tax figure this system
+# captures) — the byte position is confirmed, but whether this is the same
+# figure PDI's CPPT expects is not (see docs/PDI_OPEN_QUESTIONS.md Q4).
+# CFUE (fuel surcharge) has no captured source field anywhere in extraction
+# today, so it is never emitted — a data gap, not a formatter gap; adding
+# that capture is out of this milestone's scope.
 # ---------------------------------------------------------------------------
 
 PDI_ITEM_CODE_WIDTH = 11
@@ -280,6 +292,8 @@ PDI_BLOCK_B_TAIL_WIDTH = 8  # extended cost in cents — digit-layout unconfirme
 PDI_BATCH_WIDTH = 7
 PDI_DATE_FORMAT = "%m%d%y"
 PDI_AMOUNT_WIDTH = 9
+PDI_TRAILER_LABEL_WIDTH = 25
+PDI_TRAILER_AMOUNT_WIDTH = 8
 
 _NON_DIGITS = re.compile(r"\D")
 
@@ -436,16 +450,40 @@ def _pdi_batch_number(invoice: Invoice) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Structural placeholder — no source data, not an encoding question
+# Trailer records — layout CONFIRMED, content partially available
 # ---------------------------------------------------------------------------
 
 
+def _pdi_trailer_line(code: str, label: str, cents: int, *, invoice: Invoice) -> str:
+    """
+    One 38-char trailer record. CONFIRMED byte layout (see module note
+    above): "C" + 3-char subtype code + 25-char label + sign + 8-digit
+    cents. Sign follows the same invoice-level direction as the header and
+    every detail line (_pdi_sign) — never observed to differ within a
+    single real sample file.
+    """
+    return (
+        f"C{code}"
+        + label[:PDI_TRAILER_LABEL_WIDTH].ljust(PDI_TRAILER_LABEL_WIDTH)
+        + _pdi_sign(invoice)
+        + str(cents).rjust(PDI_TRAILER_AMOUNT_WIDTH, "0")
+    )
+
+
 def _pdi_trailer_lines(invoice: Invoice) -> list[str]:
-    """PLACEHOLDER — fuel surcharge / prepaid tax trailer records
-    (CFUE/CPPT). See docs/PDI_OPEN_QUESTIONS.md Q4. No source data is
-    captured for these today, so nothing is emitted. This is the function
-    to implement once that capture is confirmed as in scope."""
-    return []
+    """
+    CFUE (fuel surcharge) / CPPT (prepaid sales tax) trailer records.
+
+    Only emitted when a real, non-zero source value exists — no fabricated
+    $0.00 lines. Today that means CPPT only, from invoice.tax_amount (see
+    docs/PDI_OPEN_QUESTIONS.md Q4 for what remains unconfirmed about this
+    mapping). CFUE has no source field at all and is never emitted.
+    """
+    lines = []
+    if invoice.tax_amount is not None and invoice.tax_amount != 0:
+        cents = round(float(abs(invoice.tax_amount)) * 100)
+        lines.append(_pdi_trailer_line("PPT", "PREPAID SALES TAX", cents, invoice=invoice))
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -477,12 +515,13 @@ def build_pdi_export(invoice: Invoice) -> str:
     Deterministic PDI-compatible fixed-width export.
 
     Confirmed fields (verified against real PDI samples, or a confirmed
-    business rule): record structure, item code, description, quantity,
-    sign (return vs. normal invoice), batch number, unit/extended cost
-    calculation. Still-open fields (exact cost digit-layout, trailer
-    records): emitted as documented placeholders, never fabricated to
-    look more certain than they are. See docs/PDI_OPEN_QUESTIONS.md for
-    the full breakdown before relying on this for a live import.
+    business rule): record structure (header, detail, and trailer layout),
+    item code, description, quantity, sign (return vs. normal invoice),
+    batch number, unit/extended cost calculation, trailer byte layout.
+    Still-open fields (exact cost digit-layout, CFUE trailer content):
+    emitted using the best available data, never fabricated to look more
+    certain than they are. See docs/PDI_OPEN_QUESTIONS.md for the full
+    breakdown before relying on this for a live import.
     """
     lines = [_pdi_header_line(invoice)]
     lines.extend(_pdi_detail_line(item, invoice=invoice) for item in _sorted_items(invoice))

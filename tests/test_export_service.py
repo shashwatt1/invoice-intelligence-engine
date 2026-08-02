@@ -217,7 +217,8 @@ class TestPdiExport:
         assert header.split()[1] == "0260042"
 
     def test_detail_line_is_exactly_70_characters(self):
-        pdi = build_pdi_export(make_invoice())
+        invoice = make_invoice(tax_amount=None)  # isolate from the CPPT trailer
+        pdi = build_pdi_export(invoice)
         detail_lines = pdi.splitlines()[1:]
 
         assert len(detail_lines) == 2
@@ -259,14 +260,6 @@ class TestPdiExport:
         line = build_pdi_export(invoice).splitlines()[2]  # second item
         assert line[58:62] == "0002"
 
-    def test_no_trailer_records_are_emitted(self):
-        # Fuel surcharge / prepaid tax are real PDI trailer record types, but
-        # we don't extract that data this milestone — omitting is safer than
-        # emitting a fabricated $0.00 line that looks like verified data.
-        pdi = build_pdi_export(make_invoice())
-        assert "CFUE" not in pdi
-        assert "CPPT" not in pdi
-
     def test_missing_grand_total_and_date_do_not_crash(self):
         invoice = make_invoice(grand_total=None, invoice_date=None, invoice_number=None)
         header = build_pdi_export(invoice).splitlines()[0]
@@ -276,12 +269,12 @@ class TestPdiExport:
         assert build_pdi_export(make_invoice()).endswith("\n")
 
     def test_line_count_matches_header_plus_items(self):
-        invoice = make_invoice()
+        invoice = make_invoice(tax_amount=None)  # isolate from the CPPT trailer
         lines = build_pdi_export(invoice).rstrip("\n").split("\n")
         assert len(lines) == 1 + len(invoice.items)
 
     def test_large_invoice_produces_one_line_per_item(self):
-        invoice = make_invoice()
+        invoice = make_invoice(tax_amount=None)  # isolate from the CPPT trailer
         invoice.items = [
             InvoiceItem(
                 invoice_id=invoice.id, description=f"Item {i:03d}",
@@ -371,9 +364,15 @@ class TestPdiReturnInvoice:
         assert header == "AMOUNT 0260042   033126-000004668"
 
     def test_return_invoice_detail_line_sign_is_negative(self):
-        invoice = make_invoice(grand_total=Decimal("-46.68"))
-        lines = build_pdi_export(invoice).splitlines()[1:]
+        invoice = make_invoice(grand_total=Decimal("-46.68"), tax_amount=None)
+        lines = build_pdi_export(invoice).splitlines()[1:]  # no trailer: fixed-width detail lines only
         assert all(line[57] == "-" for line in lines)
+
+    def test_return_invoice_trailer_sign_is_negative(self):
+        invoice = make_invoice(grand_total=Decimal("-46.68"))  # keeps default tax_amount=7.78
+        trailer = build_pdi_export(invoice).splitlines()[-1]
+        assert trailer.startswith("CPPT")
+        assert trailer[29] == "-"  # trailer sign position
 
     def test_return_invoice_amount_field_stays_magnitude_only(self):
         invoice = make_invoice(grand_total=Decimal("-46.68"))
@@ -388,7 +387,7 @@ class TestPdiReturnInvoice:
         assert line[62:70] == "00006585"
 
     def test_normal_invoice_sign_is_positive(self):
-        invoice = make_invoice(grand_total=Decimal("46.68"))
+        invoice = make_invoice(grand_total=Decimal("46.68"), tax_amount=None)
         pdi = build_pdi_export(invoice)
         assert pdi.splitlines()[0][23] == "+"  # header sign position
         assert all(line[57] == "+" for line in pdi.splitlines()[1:])
@@ -403,3 +402,48 @@ class TestPdiReturnInvoice:
         invoice = make_invoice(grand_total=None)
         pdi = build_pdi_export(invoice)
         assert pdi.splitlines()[1][57] == "+"
+
+
+class TestPdiTrailerRecords:
+    """
+    Trailer record layout (CFUE/CPPT, 38 chars) is CONFIRMED against three
+    real PDI ground-truth files — see the module note in export_service.py.
+    Content is a separate question (docs/PDI_OPEN_QUESTIONS.md Q4): CPPT is
+    populated from the already-captured invoice.tax_amount; CFUE has no
+    source field anywhere in extraction and is never emitted.
+    """
+
+    def test_cppt_trailer_emitted_from_tax_amount(self):
+        invoice = make_invoice(tax_amount=Decimal("7.78"))
+        trailer = build_pdi_export(invoice).splitlines()[-1]
+        assert trailer == "CPPTPREPAID SALES TAX        +00000778"
+
+    def test_cppt_trailer_is_thirty_eight_characters(self):
+        invoice = make_invoice(tax_amount=Decimal("7.78"))
+        trailer = build_pdi_export(invoice).splitlines()[-1]
+        assert len(trailer) == 38
+
+    def test_cfue_trailer_is_never_emitted(self):
+        # No fuel-surcharge figure is captured anywhere in extraction today
+        # — a data gap, not a formatter gap. Never fabricated.
+        invoice = make_invoice(tax_amount=Decimal("7.78"))
+        pdi = build_pdi_export(invoice)
+        assert "CFUE" not in pdi
+
+    def test_no_trailer_when_tax_amount_is_missing(self):
+        invoice = make_invoice(tax_amount=None)
+        pdi = build_pdi_export(invoice)
+        assert "CPPT" not in pdi
+
+    def test_no_trailer_when_tax_amount_is_zero(self):
+        # A real zero (no tax charged) is not the same as "unknown" — but
+        # we still don't fabricate a $0.00 line for it either way.
+        invoice = make_invoice(tax_amount=Decimal("0.00"))
+        pdi = build_pdi_export(invoice)
+        assert "CPPT" not in pdi
+
+    def test_trailer_appears_after_all_detail_lines(self):
+        invoice = make_invoice(tax_amount=Decimal("7.78"))
+        lines = build_pdi_export(invoice).rstrip("\n").split("\n")
+        assert len(lines) == 1 + len(invoice.items) + 1  # header + items + trailer
+        assert lines[-1].startswith("CPPT")

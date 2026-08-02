@@ -192,13 +192,49 @@ class TestPdiExport:
         detail_line = response.text.splitlines()[1]
         assert detail_line[1:12] == "00000" + " " * 6
 
-    async def test_pdi_export_omits_trailer_records(self, api_client):  # noqa: F811
+    async def test_pdi_export_omits_trailer_records_when_no_tax_amount(
+        self, api_client  # noqa: F811
+    ):
+        # Default fixture invoice carries no extracted tax_amount, so
+        # neither trailer type is emitted — CFUE has no source field at
+        # all, and CPPT is only emitted when tax_amount is present.
         invoice_id = await processed_invoice_id(api_client)
         response = await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
         )
         assert "CFUE" not in response.text
         assert "CPPT" not in response.text
+
+    async def test_tax_amount_flows_to_cppt_trailer(self, api_client, app):  # noqa: F811
+        # Proves the trailer record's confirmed byte layout is reachable
+        # through the real pipeline, populated from the invoice's own
+        # already-captured tax_amount — no new extraction field needed.
+        from app.api.v1.invoices import get_pipeline
+
+        taxed_invoice = extracted_invoice(
+            line_items=[
+                ExtractedLineItem(
+                    description="Blue Widget", quantity=2.0, unit_price=9.45, line_total=18.9,
+                )
+            ],
+            subtotal=18.9, tax_amount=7.78, grand_total=26.68,
+        )
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(taxed_invoice)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["taxed invoice " + "pad " * 300]),
+            filename="taxed-invoice.pdf",
+        )
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+
+        response = await api_client.get(
+            f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
+        )
+        assert response.status_code == 200
+        trailer = response.text.splitlines()[-1]
+        assert trailer == "CPPTPREPAID SALES TAX        +00000778"
+        assert "CFUE" not in response.text
 
     async def test_existing_exports_unaffected_by_pdi_addition(self, api_client):  # noqa: F811
         # Regression guard: adding format=pdi must not perturb json/txt/csv.
