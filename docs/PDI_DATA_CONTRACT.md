@@ -7,29 +7,39 @@ Phase 1 deliverable of the PDI/EDI compatibility effort: a field-by-field
 account of what the ground truth proves, what it contradicts in the
 current formatter, and what remains genuinely unknown.
 
+**Redaction note:** the source files named real vendor and customer
+businesses, real product brand names, and real invoice numbers. None of
+that identity is load-bearing for the *encoding* findings below, so it
+has been replaced with fictional stand-ins throughout this document
+(`Acme Distribution Co` as the wholesale vendor, `Northgate Grocery` as
+the receiving store, generic item labels like "Item A"). The numeric
+codes, digit positions, and dollar amounts are preserved exactly as
+observed — those are the actual evidence.
+
 **Method note, stated up front:** none of the newly supplied files form a
-matched (photographed invoice) → (accepted EDI) pair. The 5 invoice photos
-are Apple Food & Grocery receiving from Rocco J. Testani / PepsiCo /
-Coca-Cola / Balkan Beverage on invoice numbers that do not appear in any
+matched (photographed invoice) → (accepted EDI) pair. The 5 invoice
+photos are Northgate Grocery receiving from several different regional
+beverage/grocery suppliers, on invoice numbers that do not appear in any
 of the 17 EDI ground-truth files, which are themselves a *different*
-Balkan Beverage → Apple Food Mart delivery stream (cigarettes, candy,
-snacks, tobacco accessories). So this analysis is **cross-file structural
-reverse engineering of the EDI side alone** — extremely strong for
-recovering the EDI's internal encoding rules (comparing the same item
-code across many invoices), but it cannot confirm that our OCR/extraction
-pipeline produces the correct *input* values for those rules, because no
-invoice/EDI pair exists in this batch to check that against.
+Acme Distribution Co → Northgate Grocery delivery stream (cigarettes,
+candy, snacks, tobacco accessories). So this analysis is **cross-file
+structural reverse engineering of the EDI side alone** — extremely
+strong for recovering the EDI's internal encoding rules (comparing the
+same item code across many invoices), but it cannot confirm that our
+OCR/extraction pipeline produces the correct *input* values for those
+rules, because no invoice/EDI pair exists in this batch to check that
+against.
 
 ---
 
 ## 0. Two structurally distinct ground-truth formats were supplied
 
-**Format A ("AMOUNT")** — 11 files, all Balkan Beverage LLC → Apple Food
-Mart, e.g. `992990.txt`, `933133.txt`. This is the format the current
-formatter targets and was built from.
+**Format A ("AMOUNT")** — 11 files, all Acme Distribution Co → Northgate
+Grocery, e.g. `sample-01.txt`, `sample-02.txt`. This is the format the
+current formatter targets and was built from.
 
-**Format B ("AHLA")** — 6 files, e.g. `Store-302165 Invoice-3173409
-(1).txt`. Structurally incompatible with Format A:
+**Format B ("AHLA")** — 6 files, e.g. `store-warehouse-sample-04.txt`.
+Structurally incompatible with Format A:
 
 | | Format A (AMOUNT) | Format B (AHLA) |
 |---|---|---|
@@ -80,7 +90,7 @@ cents ("extended cost").
 **This is disproven by the data.** Tracked 59 items that appear ≥3 times
 across different invoices with *different delivered quantities*. In every
 single case, `cost_tail` (and `cost_block`) stayed **constant** regardless
-of quantity — e.g. `TURKEY CRK OLD FASHION 2OZ` shows `cost_tail =
+of quantity — e.g. one small snack-bag item ("Item A") shows `cost_tail =
 00179001` at delivered quantities of 1, 1, 1, and 4, with zero variation.
 Across all 908 records, not one shows `cost_tail` scaling with quantity.
 
@@ -90,11 +100,11 @@ lines up with a different source invoice (different pricing period), not
 a different quantity.
 
 **What `cost_tail` actually looks like, decomposed:**
-- `[62:67]` (5 digits): a plausible price in cents. `GURLEY 2/$2 SMARTIES`
-  — whose description literally prints "2/$2" — decodes to exactly
-  `$2.00`. Dozens of other items decode to plausible per-unit retail
-  prices ($1.79, $2.99, $7.59, $12.09, $25.29 for a 2-gallon gas can,
-  etc.).
+- `[62:67]` (5 digits): a plausible price in cents. One item whose
+  description literally prints a "2 for $2" promo price ("Item B")
+  decodes to exactly `$2.00`. Dozens of other items decode to plausible
+  per-unit retail prices ($1.79, $2.99, $7.59, $12.09, $25.29 for a
+  2-gallon gas can, etc.).
 - `[67:70]` (3 digits): **`"001"` in all 908 records, without exception.**
   A fixed suffix of unconfirmed meaning (candidate: a unit-of-measure or
   record-subtype flag).
@@ -116,11 +126,12 @@ with multiple observed values):
 **The central finding:** none of this — retail price, a second product
 code, case-pack size — is data our system captures. `item.unit_price` in
 our database is the wholesale price the store paid, as printed on their
-invoice. What `cost_tail` decodes to (confirmed via the "2/$2" match) is
-closer to a **retail/shelf price**, which is not printed on a wholesale
-supplier invoice at all. **This is product-master data that lives in
-PDI's own database, keyed by item code — not something extraction can
-produce from a photographed invoice, no matter how good OCR gets.**
+invoice. What `cost_tail` decodes to (confirmed via the "2 for $2" match)
+is closer to a **retail/shelf price**, which is not printed on a
+wholesale supplier invoice at all. **This is product-master data that
+lives in PDI's own database, keyed by item code — not something
+extraction can produce from a photographed invoice, no matter how good
+OCR gets.**
 
 ### 2.2 CPPT trailer ("PREPAID SALES TAX")
 
@@ -136,16 +147,16 @@ produce from a photographed invoice, no matter how good OCR gets.**
    case-pack-size finding above, pack size = 10) across all 9 blocks that
    carry a `CPPT` trailer:
 
-   | File | Carton qty | CPPT | $/carton |
+   | Sample file | Carton qty | CPPT | $/carton |
    |---|---|---|---|
-   | 933133.txt | 27 | $337.50 | **$12.50** |
-   | 992990.txt | 47 | $587.50 | **$12.50** |
-   | 992990 (1).txt | 35 | $437.50 | **$12.50** |
-   | 992990 (2).txt | 39 | $437.50 | $11.22 |
-   | 933133 (2).txt | 29 | $325.00 | $11.21 |
-   | 901587 (2).txt | 43 | $500.00 | $11.63 |
-   | 933130 (1).txt | 24 | $275.00 | $11.46 |
-   | 933130.txt | 31 | $350.00 | $11.29 |
+   | sample-03.txt | 27 | $337.50 | **$12.50** |
+   | sample-01.txt | 47 | $587.50 | **$12.50** |
+   | sample-11.txt | 35 | $437.50 | **$12.50** |
+   | sample-04.txt | 39 | $437.50 | $11.22 |
+   | sample-05.txt | 29 | $325.00 | $11.21 |
+   | sample-06.txt | 43 | $500.00 | $11.63 |
+   | sample-07.txt | 24 | $275.00 | $11.46 |
+   | sample-08.txt | 31 | $350.00 | $11.29 |
 
    Three of eight land on *exactly* $12.50/carton; the rest cluster
    $11.2–$11.6/carton rather than matching `invoice.tax_amount` (which we
@@ -183,21 +194,22 @@ derive a formula. New open item, not implemented.
 
 ## 3. Side finding: two concrete OCR/AI extraction errors (upstream of the formatter)
 
-Comparing `invoice_3712823.txt` (our system's own TXT export, supplied in
-this batch) against the photographed picklist for that same invoice
-(Balkan Beverage → Apple Food Mart #07, `Invoice# 3712823`):
+Comparing our own system's TXT export for one processed invoice against
+the photographed picklist for that same invoice (Northgate Grocery
+receiving from Acme Distribution Co):
 
 | Item | Our extraction | Real picklist |
 |---|---|---|
-| `RB PINK BRY 2 24/8.4OZ CN` (line 4) | Unit Price **$0.00**, Line Total **$0.00** | D.PRICE **$36.00**, EXT **$37.20** |
-| `NESQ MILK 12/14 CHOCOLAT` (line 17) | Unit Price **$0.00**, Line Total **$0.00** | D.PRICE **$18.96**, EXT **$18.96** |
+| Item C (a flavored drink case) | Unit Price **$0.00**, Line Total **$0.00** | D.PRICE **$36.00**, EXT **$37.20** |
+| Item D (a flavored milk case) | Unit Price **$0.00**, Line Total **$0.00** | D.PRICE **$18.96**, EXT **$18.96** |
 
 Both are real, verifiable extraction failures (correctly resulted in this
 invoice landing in `REVIEW_REQUIRED` at 75.9% confidence — the validation
 engine did its job). This is upstream of the PDI formatter and out of
 this phase's scope per the explicit instruction not to touch OCR/AI
 extraction unless required for EDI compatibility — noted here for
-awareness, not proposed for a fix.
+awareness, not proposed for a fix. (Addressed directly as Priority 1 in
+the next milestone.)
 
 ---
 
@@ -210,45 +222,30 @@ awareness, not proposed for a fix.
 | CFUE not implemented | **Missing business input** — flat constant, needs confirmation | Yes, once the constant is confirmed |
 | CTAX not implemented | **Insufficient data** — only 3 samples, formula unknown | Unknown — needs more samples |
 | Format B (AHLA) unsupported | **Scope question** — may be a different system entirely | N/A — business decision first |
-| Two $0.00 line items on invoice 3712823 | **OCR/AI extraction failure**, not a formatter issue | No — different layer entirely, out of scope here |
+| Two $0.00 line items on the sample invoice | **OCR/AI extraction failure**, not a formatter issue | No — different layer entirely, out of scope here |
 
 ---
 
-## 5. Implementation plan (smallest possible change, pending approval)
+## 5. Implementation plan — status
 
-Only the formatter is touched. No schema changes, no new extraction
-fields, no architecture changes, no Format B support.
+The plan below was proposed in this phase and has since been **applied**
+(see the "revert cost/CPPT calculations" milestone): cost block/tail and
+the CPPT trailer were reverted to honest placeholders rather than
+continue emitting values this analysis disproved. Recorded here for
+history.
 
-1. **Revert `_pdi_cost_block` / `_pdi_cost_tail`** from `unit_price ×
-   quantity` back to a documented, honestly-uncertain placeholder. We now
-   have *evidence* this calculation is wrong, not just "unconfirmed" —
-   continuing to emit a confident-looking wrong number is worse than the
-   zero-value placeholder it replaced. Isolate the change entirely inside
-   these two functions, per the existing pattern.
-2. **Revert `_pdi_trailer_lines`'s `CPPT = invoice.tax_amount` mapping.**
-   Same reasoning: evidence points to a cigarette-excise calculation we
-   cannot currently perform, not a straight copy of a field we do have.
-   Stop emitting `CPPT` until a real source is confirmed, rather than
-   emitting a plausible-looking but evidenced-wrong number.
-3. **Leave `CFUE`, `CTAX`, and Format B entirely unimplemented** — each is
-   a business question (confirm a constant, gather more samples, decide
-   scope) rather than an engineering gap.
-4. **Update `docs/PDI_OPEN_QUESTIONS.md`** to replace the "calculation
-   confirmed, digit-layout open" framing of Q1 with the corrected
-   understanding above, and to add Q5 (CPPT is not tax_amount) and Q6
-   (Format B / AHLA scope question).
-5. **Add regression tests** pinning the new behavior: cost fields no
-   longer scale with quantity/unit_price (since that relationship is now
-   known to be false), and `CPPT` is no longer emitted from
-   `tax_amount`.
-6. Run the full test suite, confirm no regressions, report line-by-line
-   change list.
+1. Revert `_pdi_cost_block` / `_pdi_cost_tail` from `unit_price ×
+   quantity` back to a documented, honestly-uncertain placeholder — done.
+2. Revert `_pdi_trailer_lines`'s `CPPT = invoice.tax_amount` mapping —
+   done.
+3. Leave `CFUE`, `CTAX`, and Format B entirely unimplemented — done (no
+   change proposed).
+4. Update `docs/PDI_OPEN_QUESTIONS.md` — done.
+5. Add regression tests pinning the reverted, non-fabricating behavior —
+   done.
+6. Full test suite green, no regressions — confirmed.
 
-This plan touches `app/services/export_service.py` (two functions
-reverted) plus its two test files and `docs/PDI_OPEN_QUESTIONS.md`.
-Nothing else in the backend, frontend, or schema changes.
-
-**Not proposed, and why:**
+**Not proposed, and why (still holds):**
 - Implementing a "case pack size" or "retail price" field — would
   require a new extraction/schema capability with no confirmed source on
   a generic supplier invoice; a scope expansion, not a formatter fix.
@@ -256,7 +253,6 @@ Nothing else in the backend, frontend, or schema changes.
   fabricating a business constant without confirmation violates the same
   "don't guess" principle as everything else in this document.
 - Any Format B (AHLA) work — scope not yet confirmed.
-- Fixing the two OCR $0.00 extraction misses — different layer, not
-  requested, and already correctly caught by the validation gate.
-
-Waiting for approval before making any of the above changes.
+- Fixing the two OCR $0.00 extraction misses — a different layer,
+  picked up separately as Priority 1 in the following milestone rather
+  than folded into this formatter-focused analysis.
