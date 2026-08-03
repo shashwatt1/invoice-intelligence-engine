@@ -25,9 +25,7 @@ from app.services.export_service import (
     PDI_ITEM_CODE_WIDTH,
     _pdi_cost_block,
     _pdi_cost_tail,
-    _pdi_extended_cost_cents,
     _pdi_item_code,
-    _pdi_unit_cost_cents,
     build_export_payload,
     build_items_csv,
     build_pdi_export,
@@ -217,8 +215,7 @@ class TestPdiExport:
         assert header.split()[1] == "0260042"
 
     def test_detail_line_is_exactly_70_characters(self):
-        invoice = make_invoice(tax_amount=None)  # isolate from the CPPT trailer
-        pdi = build_pdi_export(invoice)
+        pdi = build_pdi_export(make_invoice())
         detail_lines = pdi.splitlines()[1:]
 
         assert len(detail_lines) == 2
@@ -226,15 +223,15 @@ class TestPdiExport:
 
     def test_detail_line_field_positions(self):
         invoice = make_invoice()
-        line = build_pdi_export(invoice).splitlines()[1]  # first item: unit_price=21.9500, qty=3
+        line = build_pdi_export(invoice).splitlines()[1]  # first item
 
         assert line[0] == "B"
         assert line[1:12] == "00000012345"  # product_sku "0000012345" -> zero-padded 11
         assert line[12:37] == "NORTHWIND LAGER 12PK CAN".ljust(25)
-        assert line[37:57] == "00000000000000002195"  # unit cost 21.95 -> cents, 20-digit
+        assert line[37:57] == "0" * PDI_BLOCK_A_WIDTH  # placeholder, see PDI_DATA_CONTRACT.md
         assert line[57] == "+"
         assert line[58:62] == "0003"  # quantity 3.0000
-        assert line[62:70] == "00006585"  # extended cost 21.95 x 3 = 65.85 -> cents, 8-digit
+        assert line[62:70] == "0" * PDI_BLOCK_B_TAIL_WIDTH  # placeholder
 
     def test_long_description_is_truncated_to_25_chars(self):
         invoice = make_invoice()
@@ -269,12 +266,19 @@ class TestPdiExport:
         assert build_pdi_export(make_invoice()).endswith("\n")
 
     def test_line_count_matches_header_plus_items(self):
-        invoice = make_invoice(tax_amount=None)  # isolate from the CPPT trailer
+        invoice = make_invoice()
         lines = build_pdi_export(invoice).rstrip("\n").split("\n")
         assert len(lines) == 1 + len(invoice.items)
 
+    def test_no_trailer_records_are_emitted(self):
+        # CFUE/CPPT content was reverted — see docs/PDI_DATA_CONTRACT.md
+        # §2.2-2.3 — so no trailer lines are emitted at all right now.
+        pdi = build_pdi_export(make_invoice())
+        assert "CFUE" not in pdi
+        assert "CPPT" not in pdi
+
     def test_large_invoice_produces_one_line_per_item(self):
-        invoice = make_invoice(tax_amount=None)  # isolate from the CPPT trailer
+        invoice = make_invoice()
         invoice.items = [
             InvoiceItem(
                 invoice_id=invoice.id, description=f"Item {i:03d}",
@@ -291,41 +295,36 @@ class TestPdiExport:
         assert detail_lines[149][12:37].strip() == "Item 149"
 
 
-class TestPdiCostCalculation:
+class TestPdiCostFields:
     """
-    Business rule: cost section is derived from unit cost x quantity.
-    Calculation is CONFIRMED; the 20/8-digit layout it's packed into is not
-    (docs/PDI_OPEN_QUESTIONS.md Q1) — these tests pin the calculation and
-    its magnitude-only encoding, not the still-open digit layout itself.
+    _pdi_cost_block/_pdi_cost_tail are PLACEHOLDERS. A prior "unit cost x
+    quantity" calculation was disproven by cross-file analysis of 18 real
+    accepted PDI files (docs/PDI_DATA_CONTRACT.md §2.1): neither field
+    scales with delivered quantity in any real sample. Evidence points to
+    product-master data (retail price, case pack, a secondary code) not
+    present on a supplier invoice — a missing-data problem, not a
+    digit-layout problem. These tests pin the safe, non-fabricating
+    placeholder behavior.
     """
 
-    def test_unit_cost_cents_rounds_to_nearest_cent(self):
-        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
-        assert _pdi_unit_cost_cents(item) == 2195
-
-    def test_extended_cost_cents_is_unit_cost_times_quantity(self):
-        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
-        assert _pdi_extended_cost_cents(item) == 6585
-
-    def test_cost_block_is_zero_padded_to_twenty_digits(self):
+    def test_cost_block_is_zero_padded_placeholder(self):
         item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
         block = _pdi_cost_block(item)
         assert len(block) == PDI_BLOCK_A_WIDTH
-        assert block == "00000000000000002195"
+        assert block == "0" * PDI_BLOCK_A_WIDTH
 
-    def test_cost_tail_is_zero_padded_to_eight_digits(self):
+    def test_cost_tail_is_zero_padded_placeholder(self):
         item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
         tail = _pdi_cost_tail(item)
         assert len(tail) == PDI_BLOCK_B_TAIL_WIDTH
-        assert tail == "00006585"
+        assert tail == "0" * PDI_BLOCK_B_TAIL_WIDTH
 
-    def test_cost_fields_are_magnitude_only_for_negative_unit_price(self):
-        # Return-invoice line items may carry a negative unit_price; the
-        # cost fields themselves stay positive-looking — direction is
-        # carried solely by the dedicated sign character (_pdi_sign).
+    def test_cost_fields_never_fabricate_from_negative_unit_price(self):
+        # Even for a return-invoice line item with a negative unit_price,
+        # nothing is derived from it — still a plain placeholder.
         item = InvoiceItem(unit_price=Decimal("-21.9500"), quantity=Decimal("3.0000"))
-        assert _pdi_cost_block(item) == "00000000000000002195"
-        assert _pdi_cost_tail(item) == "00006585"
+        assert _pdi_cost_block(item) == "0" * PDI_BLOCK_A_WIDTH
+        assert _pdi_cost_tail(item) == "0" * PDI_BLOCK_B_TAIL_WIDTH
 
 
 class TestPdiBatchNumber:
@@ -364,30 +363,22 @@ class TestPdiReturnInvoice:
         assert header == "AMOUNT 0260042   033126-000004668"
 
     def test_return_invoice_detail_line_sign_is_negative(self):
-        invoice = make_invoice(grand_total=Decimal("-46.68"), tax_amount=None)
-        lines = build_pdi_export(invoice).splitlines()[1:]  # no trailer: fixed-width detail lines only
+        invoice = make_invoice(grand_total=Decimal("-46.68"))
+        lines = build_pdi_export(invoice).splitlines()[1:]
         assert all(line[57] == "-" for line in lines)
-
-    def test_return_invoice_trailer_sign_is_negative(self):
-        invoice = make_invoice(grand_total=Decimal("-46.68"))  # keeps default tax_amount=7.78
-        trailer = build_pdi_export(invoice).splitlines()[-1]
-        assert trailer.startswith("CPPT")
-        assert trailer[29] == "-"  # trailer sign position
 
     def test_return_invoice_amount_field_stays_magnitude_only(self):
         invoice = make_invoice(grand_total=Decimal("-46.68"))
         header = build_pdi_export(invoice).splitlines()[0]
         assert header.endswith("-000004668")  # digits carry no minus sign
 
-    def test_return_invoice_cost_and_quantity_fields_stay_magnitude_only(self):
+    def test_return_invoice_quantity_field_stays_magnitude_only(self):
         invoice = make_invoice(grand_total=Decimal("-46.68"))
         line = build_pdi_export(invoice).splitlines()[1]
-        assert line[37:57] == "00000000000000002195"
         assert line[58:62] == "0003"
-        assert line[62:70] == "00006585"
 
     def test_normal_invoice_sign_is_positive(self):
-        invoice = make_invoice(grand_total=Decimal("46.68"), tax_amount=None)
+        invoice = make_invoice(grand_total=Decimal("46.68"))
         pdi = build_pdi_export(invoice)
         assert pdi.splitlines()[0][23] == "+"  # header sign position
         assert all(line[57] == "+" for line in pdi.splitlines()[1:])
@@ -406,47 +397,29 @@ class TestPdiReturnInvoice:
 
 class TestPdiTrailerRecords:
     """
-    Trailer record layout (CFUE/CPPT, 38 chars) is CONFIRMED against three
+    Trailer record byte layout (CFUE/CPPT, 38 chars) is CONFIRMED against
     real PDI ground-truth files — see the module note in export_service.py.
-    Content is a separate question (docs/PDI_OPEN_QUESTIONS.md Q4): CPPT is
-    populated from the already-captured invoice.tax_amount; CFUE has no
-    source field anywhere in extraction and is never emitted.
+    Content is reverted to never-emitted: a prior CPPT-from-tax_amount
+    mapping was disproven by cross-file analysis showing CPPT tracks
+    cigarette-carton volume, not a generic tax total
+    (docs/PDI_DATA_CONTRACT.md §2.2). CFUE was never implemented — it's a
+    flat per-delivery constant in every real sample, pending business
+    confirmation (§2.3).
     """
 
-    def test_cppt_trailer_emitted_from_tax_amount(self):
-        invoice = make_invoice(tax_amount=Decimal("7.78"))
-        trailer = build_pdi_export(invoice).splitlines()[-1]
-        assert trailer == "CPPTPREPAID SALES TAX        +00000778"
-
-    def test_cppt_trailer_is_thirty_eight_characters(self):
-        invoice = make_invoice(tax_amount=Decimal("7.78"))
-        trailer = build_pdi_export(invoice).splitlines()[-1]
-        assert len(trailer) == 38
-
-    def test_cfue_trailer_is_never_emitted(self):
-        # No fuel-surcharge figure is captured anywhere in extraction today
-        # — a data gap, not a formatter gap. Never fabricated.
+    def test_cppt_is_never_emitted_regardless_of_tax_amount(self):
         invoice = make_invoice(tax_amount=Decimal("7.78"))
         pdi = build_pdi_export(invoice)
+        assert "CPPT" not in pdi
+
+    def test_cfue_is_never_emitted(self):
+        pdi = build_pdi_export(make_invoice())
         assert "CFUE" not in pdi
 
-    def test_no_trailer_when_tax_amount_is_missing(self):
-        invoice = make_invoice(tax_amount=None)
-        pdi = build_pdi_export(invoice)
-        assert "CPPT" not in pdi
-
-    def test_no_trailer_when_tax_amount_is_zero(self):
-        # A real zero (no tax charged) is not the same as "unknown" — but
-        # we still don't fabricate a $0.00 line for it either way.
-        invoice = make_invoice(tax_amount=Decimal("0.00"))
-        pdi = build_pdi_export(invoice)
-        assert "CPPT" not in pdi
-
-    def test_trailer_appears_after_all_detail_lines(self):
-        invoice = make_invoice(tax_amount=Decimal("7.78"))
+    def test_no_trailer_lines_at_all(self):
+        invoice = make_invoice()
         lines = build_pdi_export(invoice).rstrip("\n").split("\n")
-        assert len(lines) == 1 + len(invoice.items) + 1  # header + items + trailer
-        assert lines[-1].startswith("CPPT")
+        assert len(lines) == 1 + len(invoice.items)  # header + items only, no trailer
 
 
 class TestPdiDeterminism:

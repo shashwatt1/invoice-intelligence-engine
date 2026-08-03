@@ -192,12 +192,7 @@ class TestPdiExport:
         detail_line = response.text.splitlines()[1]
         assert detail_line[1:12] == "00000" + " " * 6
 
-    async def test_pdi_export_omits_trailer_records_when_no_tax_amount(
-        self, api_client  # noqa: F811
-    ):
-        # Default fixture invoice carries no extracted tax_amount, so
-        # neither trailer type is emitted — CFUE has no source field at
-        # all, and CPPT is only emitted when tax_amount is present.
+    async def test_pdi_export_omits_trailer_records(self, api_client):  # noqa: F811
         invoice_id = await processed_invoice_id(api_client)
         response = await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
@@ -205,10 +200,14 @@ class TestPdiExport:
         assert "CFUE" not in response.text
         assert "CPPT" not in response.text
 
-    async def test_tax_amount_flows_to_cppt_trailer(self, api_client, app):  # noqa: F811
-        # Proves the trailer record's confirmed byte layout is reachable
-        # through the real pipeline, populated from the invoice's own
-        # already-captured tax_amount — no new extraction field needed.
+    async def test_cppt_not_emitted_even_with_tax_amount_present(
+        self, api_client, app  # noqa: F811
+    ):
+        # A prior CPPT-from-tax_amount mapping was reverted: cross-file
+        # analysis of real accepted PDI files showed CPPT tracks
+        # cigarette-carton volume, not a generic tax total
+        # (docs/PDI_DATA_CONTRACT.md §2.2) — so a present tax_amount must
+        # NOT produce a CPPT trailer through the real pipeline.
         from app.api.v1.invoices import get_pipeline
 
         taxed_invoice = extracted_invoice(
@@ -232,8 +231,7 @@ class TestPdiExport:
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
         )
         assert response.status_code == 200
-        trailer = response.text.splitlines()[-1]
-        assert trailer == "CPPTPREPAID SALES TAX        +00000778"
+        assert "CPPT" not in response.text
         assert "CFUE" not in response.text
 
     async def test_repeated_pdi_export_is_byte_identical(self, api_client):  # noqa: F811
@@ -302,9 +300,9 @@ class TestPdiExport:
         assert header[23] == "-"  # header sign position
         assert "-" not in header[24:]  # amount digits stay magnitude-only
         assert detail_line[57] == "-"  # detail-line sign position
-        assert detail_line[37:57].isdigit()  # cost block stays magnitude-only
+        assert detail_line[37:57] == "0" * 20  # cost block: placeholder, never fabricated
         assert detail_line[58:62] == "0003"  # quantity stays magnitude-only
-        assert detail_line[62:70].isdigit()  # cost tail stays magnitude-only
+        assert detail_line[62:70] == "0" * 8  # cost tail: placeholder, never fabricated
 
     async def test_review_required_invoice_cannot_be_exported_as_pdi(
         self, api_client, app  # noqa: F811

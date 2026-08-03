@@ -245,16 +245,28 @@ def build_items_csv(invoice: Invoice) -> str:
 #   [0]      "B"                     record type
 #   [1:12]   item code               11 digits — CONFIRMED (_pdi_item_code)
 #   [12:37]  description             25 chars  — CONFIRMED (_pdi_description)
-#   [37:57]  cost block              20 digits — calculation CONFIRMED (unit
-#                                                 cost, per business rule),
-#                                                 digit-layout UNCONFIRMED
-#                                                 (_pdi_cost_block)
+#   [37:57]  cost block              20 digits — PLACEHOLDER (_pdi_cost_block).
+#                                                 A prior "unit cost in cents"
+#                                                 hypothesis was DISPROVEN by
+#                                                 cross-file analysis of 18
+#                                                 real accepted PDI files: this
+#                                                 field is a per-product
+#                                                 constant that does not derive
+#                                                 from anything on a supplier
+#                                                 invoice. See
+#                                                 docs/PDI_DATA_CONTRACT.md §2.1.
 #   [57]     sign                    1 char    — CONFIRMED (_pdi_sign)
 #   [58:62]  quantity                4 digits  — CONFIRMED (_pdi_quantity)
-#   [62:70]  cost block tail         8 digits  — calculation CONFIRMED
-#                                                 (extended cost = unit cost
-#                                                 × quantity), digit-layout
-#                                                 UNCONFIRMED (_pdi_cost_tail)
+#   [62:70]  cost block tail         8 digits  — PLACEHOLDER (_pdi_cost_tail).
+#                                                 Proven NOT to scale with
+#                                                 delivered quantity (a prior
+#                                                 "extended cost = unit cost ×
+#                                                 quantity" hypothesis was
+#                                                 disproven); decodes to a
+#                                                 retail-price-like value not
+#                                                 present on a supplier
+#                                                 invoice. See
+#                                                 docs/PDI_DATA_CONTRACT.md §2.1.
 #
 # Header record: "AMOUNT {batch}   {date}{sign}{amount}"
 #   batch  — CONFIRMED (_pdi_batch_number: the invoice's own reference number)
@@ -275,20 +287,22 @@ def build_items_csv(invoice: Invoice) -> str:
 #   [29]    sign
 #   [30:38] amount                  8 digits, cents, magnitude only
 #
-# Content is a separate question from layout: CPPT is populated from
-# invoice.tax_amount (the only invoice-level tax figure this system
-# captures) — the byte position is confirmed, but whether this is the same
-# figure PDI's CPPT expects is not (see docs/PDI_OPEN_QUESTIONS.md Q4).
-# CFUE (fuel surcharge) has no captured source field anywhere in extraction
-# today, so it is never emitted — a data gap, not a formatter gap; adding
-# that capture is out of this milestone's scope.
+# Content is a separate question from layout: neither trailer type is
+# currently emitted. CPPT was previously populated from invoice.tax_amount;
+# cross-file analysis showed CPPT tracks cigarette-carton volume (near
+# $12.50/carton in real files) — a specific excise calculation, not a copy
+# of a generic tax total — so that mapping was reverted rather than continue
+# emitting a plausible-but-wrong number. CFUE (fuel surcharge) is a flat
+# per-delivery constant in every real sample ($12.45) — not derived from
+# invoice content, so no formatter logic can produce it without a confirmed
+# business constant. See docs/PDI_DATA_CONTRACT.md §2.2-2.3.
 # ---------------------------------------------------------------------------
 
 PDI_ITEM_CODE_WIDTH = 11
 PDI_DESCRIPTION_WIDTH = 25
 PDI_QUANTITY_WIDTH = 4
-PDI_BLOCK_A_WIDTH = 20  # unit cost in cents — digit-layout unconfirmed
-PDI_BLOCK_B_TAIL_WIDTH = 8  # extended cost in cents — digit-layout unconfirmed
+PDI_BLOCK_A_WIDTH = 20  # PLACEHOLDER — see docs/PDI_DATA_CONTRACT.md §2.1
+PDI_BLOCK_B_TAIL_WIDTH = 8  # PLACEHOLDER — see docs/PDI_DATA_CONTRACT.md §2.1
 PDI_BATCH_WIDTH = 7
 PDI_DATE_FORMAT = "%m%d%y"
 PDI_AMOUNT_WIDTH = 9
@@ -383,59 +397,32 @@ def _pdi_amount_cents(invoice: Invoice) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Cost calculation — CONFIRMED business rule, isolated from its encoding
+# Cost block/tail — PLACEHOLDER, reverted from a disproven calculation
 #
-# Business rule: the cost section is derived from the line's unit cost and
-# quantity. This is now a real calculation, not a placeholder. What is
-# still unconfirmed is the fixed-width DIGIT LAYOUT the calculated values
-# are packed into — see docs/PDI_OPEN_QUESTIONS.md Q1. Keeping calculation
-# and encoding as separate functions means a future correction to the
-# digit layout touches only the two _pdi_cost_* encoders below, never this
-# calculation.
-# ---------------------------------------------------------------------------
-
-
-def _pdi_unit_cost_cents(item: InvoiceItem) -> int:
-    """Unit cost in cents, magnitude only. CONFIRMED calculation."""
-    return round(float(abs(item.unit_price)) * 100)
-
-
-def _pdi_extended_cost_cents(item: InvoiceItem) -> int:
-    """Extended cost (unit cost x quantity) in cents, magnitude only.
-    CONFIRMED calculation."""
-    return round(float(abs(item.unit_price)) * float(abs(item.quantity)) * 100)
-
-
-# ---------------------------------------------------------------------------
-# Field encoders — calculation confirmed, exact digit-layout unconfirmed
-#
-# Placement rationale, not a guess: cross-file comparison of the supplied
-# PDI ground-truth files showed the 20-digit block is IDENTICAL for the
-# same item across invoices with different delivered quantities — the
-# signature of a per-product constant (unit cost), not a per-delivery
-# total. The 8-digit tail sits beside the quantity field and was observed
-# to vary per delivery, consistent with an extended (quantity-dependent)
-# cost. See docs/PDI_OPEN_QUESTIONS.md Q1 for what remains open: whether
-# cents-scaled, right-justified magnitude is the correct layout within
-# each block, or whether either block holds additional sub-fields.
+# A prior milestone implemented these as unit_cost and unit_cost x quantity
+# (in cents), per a business-provided rule. Cross-file analysis of 18 real
+# accepted PDI files (docs/PDI_DATA_CONTRACT.md §2.1) disproved this: across
+# 908 detail lines and 59 items observed at multiple different delivered
+# quantities, neither field ever scales with quantity — both are per-product
+# constants that only change between pricing periods. Decoded structure
+# points to product-master data (a secondary code, a price-period value, a
+# case-pack size) that does not exist anywhere in our schema or on a
+# supplier invoice — not a digit-layout question, a missing-data question.
+# Reverted to an honest placeholder rather than continue emitting a
+# confident-looking wrong number.
 # ---------------------------------------------------------------------------
 
 
 def _pdi_cost_block(item: InvoiceItem) -> str:
-    """Unit cost in cents, zero-padded to 20 digits. Not truncated on
-    overflow (practically impossible at this width, but consistent with
-    _pdi_quantity: never silently corrupt a real value into a
-    wrong-but-plausible one). See module note above and
-    docs/PDI_OPEN_QUESTIONS.md Q1."""
-    return str(_pdi_unit_cost_cents(item)).rjust(PDI_BLOCK_A_WIDTH, "0")
+    """PLACEHOLDER — zero, not a fabricated guess. See module note above
+    and docs/PDI_DATA_CONTRACT.md §2.1."""
+    return "0" * PDI_BLOCK_A_WIDTH
 
 
 def _pdi_cost_tail(item: InvoiceItem) -> str:
-    """Extended cost (unit cost x quantity) in cents, zero-padded to 8
-    digits. Not truncated on overflow, for the same reason as
-    _pdi_cost_block. See module note above and
-    docs/PDI_OPEN_QUESTIONS.md Q1."""
-    return str(_pdi_extended_cost_cents(item)).rjust(PDI_BLOCK_B_TAIL_WIDTH, "0")
+    """PLACEHOLDER — zero, not a fabricated guess. See module note above
+    and docs/PDI_DATA_CONTRACT.md §2.1."""
+    return "0" * PDI_BLOCK_B_TAIL_WIDTH
 
 
 def _pdi_batch_number(invoice: Invoice) -> str:
@@ -472,18 +459,24 @@ def _pdi_trailer_line(code: str, label: str, cents: int, *, invoice: Invoice) ->
 
 def _pdi_trailer_lines(invoice: Invoice) -> list[str]:
     """
-    CFUE (fuel surcharge) / CPPT (prepaid sales tax) trailer records.
+    PLACEHOLDER — CFUE (fuel surcharge) / CPPT (prepaid sales tax) trailer
+    records. Byte layout is confirmed (_pdi_trailer_line); neither is
+    currently emitted:
 
-    Only emitted when a real, non-zero source value exists — no fabricated
-    $0.00 lines. Today that means CPPT only, from invoice.tax_amount (see
-    docs/PDI_OPEN_QUESTIONS.md Q4 for what remains unconfirmed about this
-    mapping). CFUE has no source field at all and is never emitted.
+    CPPT was previously sourced from invoice.tax_amount. Cross-file
+    analysis (docs/PDI_DATA_CONTRACT.md §2.2) shows real CPPT values track
+    cigarette-carton volume (near $12.50/carton), not a generic tax total —
+    we don't capture carton/tax-category classification, so this can't be
+    computed correctly yet. Reverted rather than emit a plausible-but-wrong
+    number.
+
+    CFUE is a flat per-delivery constant in every real sample ($12.45) —
+    implementing it needs only a confirmed business constant, not new data
+    capture, but that confirmation hasn't happened.
+
+    See docs/PDI_DATA_CONTRACT.md §2.2-2.3.
     """
-    lines = []
-    if invoice.tax_amount is not None and invoice.tax_amount != 0:
-        cents = round(float(abs(invoice.tax_amount)) * 100)
-        lines.append(_pdi_trailer_line("PPT", "PREPAID SALES TAX", cents, invoice=invoice))
-    return lines
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -514,14 +507,16 @@ def build_pdi_export(invoice: Invoice) -> str:
     """
     Deterministic PDI-compatible fixed-width export.
 
-    Confirmed fields (verified against real PDI samples, or a confirmed
-    business rule): record structure (header, detail, and trailer layout),
-    item code, description, quantity, sign (return vs. normal invoice),
-    batch number, unit/extended cost calculation, trailer byte layout.
-    Still-open fields (exact cost digit-layout, CFUE trailer content):
-    emitted using the best available data, never fabricated to look more
-    certain than they are. See docs/PDI_OPEN_QUESTIONS.md for the full
-    breakdown before relying on this for a live import.
+    Confirmed fields (verified against real PDI samples): record structure
+    (header, detail, and trailer byte layout), item code, description,
+    quantity, sign (return vs. normal invoice), batch number. Still-open
+    fields (cost block/tail, CPPT/CFUE trailer content) are emitted as
+    documented zero-value placeholders — evidence shows these encode
+    product-master data (retail price, case pack, a cigarette excise rate)
+    that does not exist on a supplier invoice, so nothing is fabricated to
+    look more certain than it is. See docs/PDI_DATA_CONTRACT.md and
+    docs/PDI_OPEN_QUESTIONS.md for the full breakdown before relying on
+    this for a live import.
     """
     lines = [_pdi_header_line(invoice)]
     lines.extend(_pdi_detail_line(item, invoice=invoice) for item in _sorted_items(invoice))
