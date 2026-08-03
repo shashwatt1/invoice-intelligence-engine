@@ -192,24 +192,45 @@ derive a formula. New open item, not implemented.
 
 ---
 
-## 3. Side finding: two concrete OCR/AI extraction errors (upstream of the formatter)
+## 3. Side finding: two $0.00 line items — corrected root cause
 
+**Original assessment (this section, as first written) was wrong.**
 Comparing our own system's TXT export for one processed invoice against
-the photographed picklist for that same invoice (Northgate Grocery
-receiving from Acme Distribution Co):
+the photographed picklist for that same invoice initially looked like an
+OCR/AI extraction failure: two items showed Unit Price/Line Total
+$0.00 where the picklist showed real prices ($36.00/$37.20 and
+$18.96/$18.96).
 
-| Item | Our extraction | Real picklist |
-|---|---|---|
-| Item C (a flavored drink case) | Unit Price **$0.00**, Line Total **$0.00** | D.PRICE **$36.00**, EXT **$37.20** |
-| Item D (a flavored milk case) | Unit Price **$0.00**, Line Total **$0.00** | D.PRICE **$18.96**, EXT **$18.96** |
+**Direct inspection of the real database record's `raw_extraction_json`
+disproved this.** The LLM's actual output for both items was
+`unit_price: null, line_total: null, confidence: 0.5` — exactly the
+correct behavior for an illegible field per the extraction prompt's own
+rules. Normalization correctly preserved `None`. The deterministic
+`LINE_ITEM_MATH` validation check correctly fired a `WARNING` on both
+items ("missing quantity, unit price, or line total; math not
+verifiable") before persistence, contributing to the invoice's low
+composite confidence and correct `REVIEW_REQUIRED` routing.
 
-Both are real, verifiable extraction failures (correctly resulted in this
-invoice landing in `REVIEW_REQUIRED` at 75.9% confidence — the validation
-engine did its job). This is upstream of the PDI formatter and out of
-this phase's scope per the explicit instruction not to touch OCR/AI
-extraction unless required for EDI compatibility — noted here for
-awareness, not proposed for a fix. (Addressed directly as Priority 1 in
-the next milestone.)
+**The actual defect is in persistence, not extraction:**
+`app/repositories/invoice_repository.py` (constructing `InvoiceItem`)
+coerces `None → Decimal("0")` for `quantity`, `unit_price`, and
+`line_total`, because those columns are `NOT NULL` on
+`InvoiceItem`. This silently converts a correctly-flagged "unknown"
+value into a confident-looking `$0.00` — indistinguishable from a
+genuinely free item — in the persisted row and therefore in every
+export (JSON/TXT/CSV/PDI) and any later view of the invoice. The
+granular per-item `WARNING` that correctly diagnosed the problem is
+never persisted anywhere; only the coarse `composite_confidence` /
+`status` survive past the initial processing response.
+
+Every other field checked against the real picklist for this invoice —
+vendor name, dates, subtotal, discount, grand total, and UPCs on every
+legible line — matched exactly. Extraction was not the problem here.
+
+This is upstream of the PDI formatter (out of this phase's scope) but
+directly relevant to the following milestone's extraction-quality work,
+where it's addressed as the primary finding rather than "extraction
+improvement."
 
 ---
 
@@ -222,7 +243,7 @@ the next milestone.)
 | CFUE not implemented | **Missing business input** — flat constant, needs confirmation | Yes, once the constant is confirmed |
 | CTAX not implemented | **Insufficient data** — only 3 samples, formula unknown | Unknown — needs more samples |
 | Format B (AHLA) unsupported | **Scope question** — may be a different system entirely | N/A — business decision first |
-| Two $0.00 line items on the sample invoice | **OCR/AI extraction failure**, not a formatter issue | No — different layer entirely, out of scope here |
+| Two $0.00 line items on the sample invoice | **Persistence-layer coercion** (`None → Decimal("0")` forced by NOT NULL columns), not an extraction failure — extraction and validation both worked correctly | No — different layer entirely, out of scope here |
 
 ---
 
