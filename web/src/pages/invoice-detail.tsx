@@ -1,7 +1,8 @@
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ListOrdered } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
 import type { InvoiceDetail } from "@/api/types";
+import { invoiceExportUrl } from "@/api/endpoints";
 import { PageHeader } from "@/components/layout/page-header";
 import { DatabaseConfirmationCard } from "@/components/invoice/database-confirmation";
 import { DeveloperPanel } from "@/components/invoice/developer-panel";
@@ -21,6 +22,36 @@ import {
 } from "@/components/ui/table";
 import { useInvoice } from "@/hooks/use-api";
 import { formatDate, formatDateTime, formatMoney, formatPercent } from "@/lib/format";
+
+/**
+ * Primary product deliverable: the machine-readable PDI EDI file, ready
+ * to drag into PDI with no further processing. This is the one-click
+ * action the app exists to produce — kept visible at the top of the page
+ * rather than behind the Developer panel's Export dropdown, which still
+ * offers JSON/TXT/CSV/PDI for debugging and manual review.
+ */
+function DownloadPdiButton({ invoiceId, status }: { invoiceId: string; status: string }) {
+  const isValidated = status === "VALIDATED";
+  if (!isValidated) {
+    return (
+      <Button
+        variant="default"
+        size="sm"
+        disabled
+        title="This invoice needs review before it can be exported for PDI import."
+      >
+        <ListOrdered className="size-3.5" /> Download PDI
+      </Button>
+    );
+  }
+  return (
+    <Button asChild variant="default" size="sm">
+      <a href={invoiceExportUrl(invoiceId, "pdi")}>
+        <ListOrdered className="size-3.5" /> Download PDI
+      </a>
+    </Button>
+  );
+}
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -221,6 +252,7 @@ export function InvoiceDetailPage() {
                 {(data.document_status as string) !== (data.status as string) && (
                   <StatusBadge status={data.document_status} />
                 )}
+                <DownloadPdiButton invoiceId={data.invoice_id} status={data.status} />
               </div>
             }
           />
