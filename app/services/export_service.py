@@ -517,8 +517,14 @@ def build_pdi_export(invoice: Invoice) -> str:
     look more certain than it is. See docs/PDI_DATA_CONTRACT.md and
     docs/PDI_OPEN_QUESTIONS.md for the full breakdown before relying on
     this for a live import.
+
+    Line endings are CRLF ("\\r\\n"), confirmed against every real ground
+    truth file (both formats) — a plain "\\n" file was rejected by a real
+    PDI import attempt with a generic "file format was not right one"
+    error, consistent with a legacy fixed-width importer that expects
+    DOS/Windows-style line endings.
     """
     lines = [_pdi_header_line(invoice)]
     lines.extend(_pdi_detail_line(item, invoice=invoice) for item in _sorted_items(invoice))
     lines.extend(_pdi_trailer_lines(invoice))
-    return "\n".join(lines) + "\n"
+    return "\r\n".join(lines) + "\r\n"

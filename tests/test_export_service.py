@@ -262,12 +262,18 @@ class TestPdiExport:
         header = build_pdi_export(invoice).splitlines()[0]
         assert header == "AMOUNT 0000000   000000+000000000"
 
-    def test_output_ends_with_trailing_newline(self):
-        assert build_pdi_export(make_invoice()).endswith("\n")
+    def test_output_uses_crlf_line_endings(self):
+        # Confirmed against every real ground-truth file (both formats) —
+        # a plain "\n" file was rejected by a real PDI import attempt with
+        # a generic "wrong file format" error.
+        pdi = build_pdi_export(make_invoice())
+        assert pdi.endswith("\r\n")
+        assert "\r\n" in pdi
+        assert "\n" not in pdi.replace("\r\n", "")  # no bare LF anywhere
 
     def test_line_count_matches_header_plus_items(self):
         invoice = make_invoice()
-        lines = build_pdi_export(invoice).rstrip("\n").split("\n")
+        lines = build_pdi_export(invoice).rstrip("\r\n").split("\r\n")
         assert len(lines) == 1 + len(invoice.items)
 
     def test_no_trailer_records_are_emitted(self):
@@ -418,7 +424,7 @@ class TestPdiTrailerRecords:
 
     def test_no_trailer_lines_at_all(self):
         invoice = make_invoice()
-        lines = build_pdi_export(invoice).rstrip("\n").split("\n")
+        lines = build_pdi_export(invoice).rstrip("\r\n").split("\r\n")
         assert len(lines) == 1 + len(invoice.items)  # header + items only, no trailer
 
 

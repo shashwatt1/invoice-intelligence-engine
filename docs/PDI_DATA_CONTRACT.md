@@ -277,3 +277,31 @@ history.
 - Fixing the two OCR $0.00 extraction misses — a different layer,
   picked up separately as Priority 1 in the following milestone rather
   than folded into this formatter-focused analysis.
+
+---
+
+## 6. First real PDI import attempt — line-ending fix
+
+A generated file was uploaded to a live PDI account through "Upload EDI
+File" (no format selector — a plain file picker) and rejected outright
+with a generic *"file format was not right one"* error. No byte offset
+or field name was given — a coarse, structural rejection, not a
+field-level one.
+
+**Root cause, confirmed directly against the original attachment
+bytes** (not a re-derived copy): every real ground-truth file — both
+Format A and Format B, all 18 files — uses `\r\n` (CRLF) line endings
+throughout, including the trailer records and the final line. Our
+formatter emitted plain `\n` (LF) only. This is a classic rejection
+cause for legacy fixed-width import systems that expect DOS/Windows-
+style text.
+
+**Fixed:** `build_pdi_export` now joins records with `\r\n` and ends the
+file with `\r\n`. This is a transport/encoding-level change, orthogonal
+to the still-open content questions in §2 (cost fields, CPPT/CFUE) — it
+does not touch any of the placeholder logic. Confirmed working end to end
+through the live backend against a real invoice.
+
+**Not yet confirmed:** whether this alone resolves the real PDI
+rejection, or whether it was masking a second, content-level issue. The
+next real import attempt is the only way to know.

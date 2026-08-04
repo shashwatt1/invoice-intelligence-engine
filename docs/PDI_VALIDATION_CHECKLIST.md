@@ -1,11 +1,21 @@
 # PDI Export — First Real Import Validation Checklist
 
 The formatter (`app/services/export_service.py::build_pdi_export`) is
-**frozen** as of this milestone. Header, detail, and trailer record byte
-layouts are all confirmed against 18 real accepted PDI files (up from the
-original 3) — see `docs/PDI_DATA_CONTRACT.md` for the full evidence
-trail. What it has *not* had is a validated round-trip through the
-actual PDI system. This checklist is for that first real import.
+**frozen on content** as of this milestone. Header, detail, and trailer
+record byte layouts are all confirmed against 18 real accepted PDI files
+(up from the original 3) — see `docs/PDI_DATA_CONTRACT.md` for the full
+evidence trail.
+
+**Update — first real import attempted.** A generated file (a real,
+`VALIDATED` invoice's `format=pdi` export) was uploaded to a live PDI
+account via "Upload EDI File" and rejected with a generic *"file format
+was not right one"* error — a coarse, pre-parse rejection, not a
+field-level one. Root cause: the file used plain `\n` line endings; every
+real ground-truth file (both formats) uses `\r\n` (CRLF), confirmed
+directly against the original attachment bytes. Fixed — `build_pdi_export`
+now emits CRLF throughout. **Not yet re-tested against real PDI** — the
+next real import attempt should confirm whether this alone resolves the
+rejection, or whether a deeper content issue was masked behind it.
 
 **Known gap, stated up front:** the 20-digit cost block, 8-digit cost
 tail, and the `CFUE`/`CPPT` trailer records are currently emitted as
