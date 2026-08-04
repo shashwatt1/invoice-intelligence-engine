@@ -198,6 +198,47 @@ What keeps it from being higher — named, not hand-waved:
 
 ---
 
+## 6a. Verification against every available item — and a reversal
+
+Before implementing Fix #1, it was checked against every comparable
+line item available. Result: **it doesn't hold up, and this section
+reverses §4/§5 above rather than leave a wrong conclusion on record.**
+
+No matched (photographed invoice, accepted EDI) pair exists anywhere in
+this repository or this conversation — reconfirmed directly: none of the
+5 photographed invoice numbers (3712823, 3376587, 226244, 76303505,
+51999376014) appear in any of the 15 unique ground-truth batch numbers,
+which are all a different distributor's own 1,206,xxx–1,208,xxx
+sequence. The literal comparison ("invoice unit price" vs. "decoded cost
+tail") cannot be built from data that doesn't exist.
+
+The closest real substitute: 19 ground-truth items print their own price
+inside their description (e.g. "GURLEY 2/\$2 SMARTIES"). Checked all 19
+against decoded cost tail:
+
+**18/19 (94.7%) match exactly — but they match the full printed deal
+price ("\$2.00"), never the per-unit price ("\$1.00").** Full table with
+every item is in the conversation record for this investigation step.
+
+"2 for \$2" printed as part of an item's own description is a retail
+shelf/merchandising price point — not how wholesale case pricing is
+structured. A field that consistently equals that exact retail bundle
+price behaves like a **retail price field**, not a case cost. This is
+the original `PDI_DATA_CONTRACT.md` reading, and §4/§5 above reversed it
+on the strength of a single data point (the same "2/\$2" item) without
+checking the other 18 available. That was premature.
+
+**Revised position:** do not implement the Fix #1 proposed in §5. The
+live evidence that Case Cost fails on import is still real, but this
+stronger internal check weakens confidence that cost tail specifically
+is the responsible field — it now looks more likely to be a retail-price
+field PDI may already ignore in favor of its own Product Master, which
+would mean the actual Case Cost field is still unidentified (most likely
+inside cost block's unsolved `[45:51]` sub-field, or outside the mapped
+layout entirely). Confidence in *any* specific fix at this point: too
+low to propose one. The evidence needed to move forward hasn't changed
+— see §7.
+
 ## 7. What's still needed — the minimum, not generic documentation
 
 One concrete data point would resolve most of the remaining uncertainty:
