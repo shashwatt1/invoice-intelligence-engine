@@ -31,6 +31,7 @@ from app.services.export_service import (
     build_pdi_export,
     build_txt,
     export_basename,
+    pdi_export_eligibility,
 )
 
 
@@ -445,3 +446,36 @@ class TestPdiDeterminism:
         # produce identical bytes — nothing keyed off object identity,
         # memory address, or a fresh timestamp/uuid.
         assert build_pdi_export(make_invoice()) == build_pdi_export(make_invoice())
+
+
+class TestPdiExportEligibility:
+    """
+    Single source of truth for whether format=pdi is allowed, shared by
+    the export endpoint's gate and the invoice-detail API's
+    pdi_export_allowed/pdi_export_requires_confirmation fields — the
+    frontend reads the computed result rather than re-deriving the rule,
+    so the two layers can't drift apart.
+    """
+
+    def test_validated_invoice_is_allowed_without_confirmation(self):
+        invoice = make_invoice(status="VALIDATED")
+        result = pdi_export_eligibility(invoice)
+        assert result.allowed is True
+        assert result.requires_confirmation is False
+        assert result.blocked_reason is None
+
+    def test_review_required_invoice_with_items_is_allowed_with_confirmation(self):
+        invoice = make_invoice(status="REVIEW_REQUIRED")
+        result = pdi_export_eligibility(invoice)
+        assert result.allowed is True
+        assert result.requires_confirmation is True
+        assert result.blocked_reason is None
+
+    def test_invoice_with_no_items_is_blocked_regardless_of_status(self):
+        for status in ("VALIDATED", "REVIEW_REQUIRED"):
+            invoice = make_invoice(status=status)
+            invoice.items = []
+            result = pdi_export_eligibility(invoice)
+            assert result.allowed is False
+            assert result.requires_confirmation is False
+            assert result.blocked_reason  # non-empty, explains why

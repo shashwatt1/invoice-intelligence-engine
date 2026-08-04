@@ -86,7 +86,9 @@ export function DeveloperPanel({ detail }: { detail: InvoiceDetail }) {
               <TabsContent value="structured">
                 <StructuredOutput
                   invoiceId={detail.invoice_id}
-                  status={detail.status}
+                  pdiExportAllowed={detail.pdi_export_allowed}
+                  pdiExportRequiresConfirmation={detail.pdi_export_requires_confirmation}
+                  pdiExportBlockedReason={detail.pdi_export_blocked_reason}
                   enabled={open}
                 />
               </TabsContent>

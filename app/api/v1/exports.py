@@ -26,6 +26,7 @@ from app.services.export_service import (
     build_pdi_export,
     build_txt,
     export_basename,
+    pdi_export_eligibility,
 )
 
 router = APIRouter(tags=["Invoices"])
@@ -49,7 +50,9 @@ ExportFormat = Literal["json", "txt", "csv", "pdi"]
         "documented zero-value placeholders — evidence shows they encode "
         "product-master data not present on a supplier invoice, see "
         "docs/PDI_DATA_CONTRACT.md before relying on this for a live import). "
-        "Only available for invoices that passed validation.\n\n"
+        "Available for VALIDATED and REVIEW_REQUIRED invoices with at least "
+        "one extracted line item; blocked only when there's no usable "
+        "extracted data (see pdi_export_allowed on GET /invoices/{id}).\n\n"
         "Responses carry a `Content-Disposition` attachment header with a "
         "filename derived from the invoice number."
     ),
@@ -62,7 +65,7 @@ ExportFormat = Literal["json", "txt", "csv", "pdi"]
             }
         },
         404: {"description": "Invoice not found"},
-        422: {"description": "format=pdi requested for an invoice that has not passed validation"},
+        422: {"description": "format=pdi requested for an invoice with no usable extracted data"},
     },
 )
 async def export_invoice(
@@ -86,16 +89,11 @@ async def export_invoice(
         media_type = "text/csv"
         filename = f"{basename}_items.csv"
     elif format == "pdi":
-        if invoice.status != "VALIDATED":
-            # PDI import is intended to feed the target system with minimal
-            # human review, so a REVIEW_REQUIRED invoice must not reach it
-            # in this format — the other formats (json/txt/csv) remain
-            # available for inspection regardless of status.
+        eligibility = pdi_export_eligibility(invoice)
+        if not eligibility.allowed:
             raise ValidationError(
-                message=(
-                    "This invoice has not passed validation and cannot be "
-                    "exported for PDI import. Review it first."
-                ),
+                message=eligibility.blocked_reason
+                or "This invoice cannot be exported for PDI import.",
                 detail={"invoice_id": str(invoice.id), "status": invoice.status},
             )
         content = build_pdi_export(invoice)

@@ -12,8 +12,8 @@ import {
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import type { InvoiceDecision } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
+import { PdiExportConfirmDialog } from "@/components/invoice/pdi-export-confirm-dialog";
 import { ErrorState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import {
@@ -85,16 +85,20 @@ function filterJson(value: Json, query: string): Json | undefined {
  */
 export function StructuredOutput({
   invoiceId,
-  status,
+  pdiExportAllowed,
+  pdiExportRequiresConfirmation,
+  pdiExportBlockedReason,
   enabled,
 }: {
   invoiceId: string;
-  status: InvoiceDecision;
+  pdiExportAllowed: boolean;
+  pdiExportRequiresConfirmation: boolean;
+  pdiExportBlockedReason: string | null;
   enabled: boolean;
 }) {
   const { data, isPending, isError, error, refetch } = useInvoiceExport(invoiceId, enabled);
   const [query, setQuery] = useState("");
-  const isValidated = status === "VALIDATED";
+  const [pdiConfirmOpen, setPdiConfirmOpen] = useState(false);
 
   const shown = useMemo(() => {
     if (!data) return undefined;
@@ -108,9 +112,21 @@ export function StructuredOutput({
     toast.success("Validated invoice JSON copied to clipboard");
   };
 
-  const download = (format: "json" | "txt" | "csv" | "pdi") => {
+  const download = (format: "json" | "txt" | "csv") => {
     // Anchor-free download keeps the dropdown item semantics simple.
     window.location.assign(invoiceExportUrl(invoiceId, format));
+  };
+
+  // PDI eligibility comes from the backend (InvoiceDetail.pdi_export_*),
+  // never re-derived here — same rule the export endpoint enforces, so
+  // this dropdown item and the page's primary Download PDI Format button
+  // can't drift apart.
+  const handlePdiClick = () => {
+    if (pdiExportRequiresConfirmation) {
+      setPdiConfirmOpen(true);
+    } else {
+      window.location.assign(invoiceExportUrl(invoiceId, "pdi"));
+    }
   };
 
   if (isError) {
@@ -148,12 +164,12 @@ export function StructuredOutput({
               <FileSpreadsheet className="size-3.5" /> Download CSV
             </DropdownMenuItem>
             <DropdownMenuItem
-              onClick={() => download("pdi")}
-              disabled={!isValidated}
+              onClick={handlePdiClick}
+              disabled={!pdiExportAllowed}
               title={
-                isValidated
+                pdiExportAllowed
                   ? undefined
-                  : "This invoice needs review before it can be exported for PDI import."
+                  : (pdiExportBlockedReason ?? "This invoice cannot be exported for PDI import.")
               }
             >
               <ListOrdered className="size-3.5" /> Download PDI
@@ -165,6 +181,12 @@ export function StructuredOutput({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      <PdiExportConfirmDialog
+        invoiceId={invoiceId}
+        open={pdiConfirmOpen}
+        onOpenChange={setPdiConfirmOpen}
+      />
 
       {isPending || !data ? (
         <div className="space-y-2 rounded-lg border bg-secondary/40 p-3">
@@ -193,9 +215,7 @@ export function StructuredOutput({
       <p className="text-[0.7rem] text-muted-foreground">
         Final validated invoice — post-validation, as persisted. This object is the canonical
         source for the TXT/CSV/PDI exports.
-        {!isValidated && (
-          <> PDI export is unavailable until this invoice passes review.</>
-        )}
+        {!pdiExportAllowed && pdiExportBlockedReason && <> {pdiExportBlockedReason}</>}
       </p>
     </div>
   );

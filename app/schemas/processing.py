@@ -131,6 +131,20 @@ class InvoiceDetailData(BaseModel):
     extraction_model: str | None = None
     created_at: datetime
 
+    pdi_export_allowed: bool = Field(
+        description="Whether GET .../export?format=pdi will succeed for this invoice."
+    )
+    pdi_export_requires_confirmation: bool = Field(
+        description=(
+            "True for REVIEW_REQUIRED invoices: the export is allowed, but the "
+            "client should confirm with the user before downloading, since the "
+            "underlying data may contain extraction inaccuracies."
+        )
+    )
+    pdi_export_blocked_reason: str | None = Field(
+        default=None, description="Why the export is blocked, when pdi_export_allowed is false."
+    )
+
     vendor: VendorData | None = None
     line_items: list[LineItemData] = Field(default_factory=list)
 

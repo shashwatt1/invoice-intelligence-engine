@@ -42,6 +42,7 @@ from app.schemas.processing import (
     ProcessAccepted,
     VendorData,
 )
+from app.services.export_service import pdi_export_eligibility
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.storage_service import get_storage_service
 from app.services.upload_service import UploadService
@@ -204,6 +205,7 @@ async def get_invoice(
     logs = await ProcessingLogRepository(db).for_document(invoice.document_id)
     payloads = {log.stage: log.payload for log in logs if log.payload}
     document = invoice.document
+    pdi_eligibility = pdi_export_eligibility(invoice)
 
     data = InvoiceDetailData(
         invoice_id=invoice.id,
@@ -227,6 +229,9 @@ async def get_invoice(
         else None,
         extraction_model=invoice.extraction_model,
         created_at=invoice.created_at,
+        pdi_export_allowed=pdi_eligibility.allowed,
+        pdi_export_requires_confirmation=pdi_eligibility.requires_confirmation,
+        pdi_export_blocked_reason=pdi_eligibility.blocked_reason,
         vendor=VendorData.model_validate(invoice.vendor, from_attributes=True)
         if invoice.vendor
         else None,

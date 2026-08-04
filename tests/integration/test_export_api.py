@@ -304,12 +304,13 @@ class TestPdiExport:
         assert detail_line[58:62] == "0003"  # quantity stays magnitude-only
         assert detail_line[62:70] == "0" * 8  # cost tail: placeholder, never fabricated
 
-    async def test_review_required_invoice_cannot_be_exported_as_pdi(
+    async def test_review_required_invoice_with_items_can_be_exported_as_pdi(
         self, api_client, app  # noqa: F811
     ):
-        # PDI import is intended to feed the target system with minimal
-        # human review — an invoice that failed validation must not reach
-        # it in this format, even though json/txt/csv remain available.
+        # REVIEW_REQUIRED invoices are eligible as long as they have usable
+        # extracted data — the frontend is responsible for confirming with
+        # the user first; the backend's job is just to allow the request
+        # once that's happened. See export_service.pdi_export_eligibility.
         from app.api.v1.invoices import get_pipeline
 
         unreviewed = extracted_invoice(
@@ -331,17 +332,90 @@ class TestPdiExport:
         response = await api_client.get(
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
         )
-        assert response.status_code == 422
-        body = response.json()
-        assert body["error"]["error_code"] == "ERR_VALIDATION_FAILED"
-        assert body["error"]["detail"]["status"] == "REVIEW_REQUIRED"
+        assert response.status_code == 200
+        assert response.text.splitlines()[0].startswith("AMOUNT ")
 
-        # The other formats remain available for a reviewer to inspect why.
+        # The other formats remain available too.
         for fmt in ["json", "txt", "csv"]:
             ok = await api_client.get(
                 f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": fmt}
             )
             assert ok.status_code == 200
+
+    async def test_review_required_invoice_without_items_cannot_be_exported(
+        self, api_client, app  # noqa: F811
+    ):
+        # The only remaining block: no usable extracted data at all.
+        from app.api.v1.invoices import get_pipeline
+
+        empty = extracted_invoice(line_items=[])
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(empty)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["empty invoice " + "pad " * 300]),
+            filename="empty.pdf",
+        )
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+        assert status["status"] == "REVIEW_REQUIRED"
+
+        response = await api_client.get(
+            f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
+        )
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error"]["error_code"] == "ERR_VALIDATION_FAILED"
+        assert "no extracted line items" in body["error"]["message"]
+
+    async def test_invoice_detail_exposes_pdi_export_eligibility(
+        self, api_client, app  # noqa: F811
+    ):
+        # The frontend reads these fields instead of re-deriving the rule,
+        # so it can never drift from what the export endpoint actually does.
+        from app.api.v1.invoices import get_pipeline
+
+        # VALIDATED: allowed, no confirmation needed.
+        invoice_id = await processed_invoice_id(api_client)
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        assert detail["status"] == "VALIDATED"
+        assert detail["pdi_export_allowed"] is True
+        assert detail["pdi_export_requires_confirmation"] is False
+        assert detail["pdi_export_blocked_reason"] is None
+
+        # REVIEW_REQUIRED with items: allowed, but flagged for confirmation.
+        unreviewed = extracted_invoice(
+            line_items=[ExtractedLineItem(
+                description="Mismatched item", quantity=2.0, unit_price=5.0, line_total=18.9,
+            )],
+        )
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(unreviewed)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["unreviewed invoice " + "pad " * 300]),
+            filename="unreviewed2.pdf",
+        )
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+        detail = (await api_client.get(f"/api/v1/invoices/{status['invoice_id']}")).json()["data"]
+        assert detail["status"] == "REVIEW_REQUIRED"
+        assert detail["pdi_export_allowed"] is True
+        assert detail["pdi_export_requires_confirmation"] is True
+        assert detail["pdi_export_blocked_reason"] is None
+
+        # REVIEW_REQUIRED with no items: blocked, with a reason.
+        empty = extracted_invoice(line_items=[])
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(empty)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["empty invoice " + "pad " * 300]),
+            filename="empty2.pdf",
+        )
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+        detail = (await api_client.get(f"/api/v1/invoices/{status['invoice_id']}")).json()["data"]
+        assert detail["pdi_export_allowed"] is False
+        assert detail["pdi_export_requires_confirmation"] is False
+        assert detail["pdi_export_blocked_reason"]
 
 
 class TestExportErrors:

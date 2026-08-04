@@ -8,6 +8,7 @@ import { invoiceExportUrl } from "@/api/endpoints";
 import { PageHeader } from "@/components/layout/page-header";
 import { DatabaseConfirmationCard } from "@/components/invoice/database-confirmation";
 import { DeveloperPanel } from "@/components/invoice/developer-panel";
+import { PdiExportConfirmDialog } from "@/components/invoice/pdi-export-confirm-dialog";
 import { ValidationReportCard } from "@/components/invoice/validation-report";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ErrorState } from "@/components/shared/states";
@@ -42,19 +43,45 @@ import { formatDate, formatDateTime, formatMoney, formatPercent } from "@/lib/fo
  * action the app exists to produce — kept visible at the top of the page
  * rather than behind the Developer panel's Export dropdown, which still
  * offers JSON/TXT/CSV/PDI for debugging and manual review.
+ *
+ * Eligibility (allowed / needs confirmation / blocked) comes entirely
+ * from the backend (InvoiceDetail.pdi_export_*) rather than being
+ * re-derived from `status` here — the export endpoint enforces the same
+ * computed rule, so the two can't drift apart.
  */
-function DownloadPdiButton({ invoiceId, status }: { invoiceId: string; status: string }) {
-  const isValidated = status === "VALIDATED";
-  if (!isValidated) {
+function DownloadPdiButton({
+  invoiceId,
+  allowed,
+  requiresConfirmation,
+  blockedReason,
+}: {
+  invoiceId: string;
+  allowed: boolean;
+  requiresConfirmation: boolean;
+  blockedReason: string | null;
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  if (!allowed) {
     return (
       <Button
         variant="default"
         size="sm"
         disabled
-        title="This invoice needs review before it can be exported for PDI import."
+        title={blockedReason ?? "This invoice cannot be exported for PDI import."}
       >
         <ListOrdered className="size-3.5" /> Download PDI Format
       </Button>
+    );
+  }
+  if (requiresConfirmation) {
+    return (
+      <>
+        <Button variant="default" size="sm" onClick={() => setConfirmOpen(true)}>
+          <ListOrdered className="size-3.5" /> Download PDI Format
+        </Button>
+        <PdiExportConfirmDialog invoiceId={invoiceId} open={confirmOpen} onOpenChange={setConfirmOpen} />
+      </>
     );
   }
   return (
@@ -321,7 +348,12 @@ export function InvoiceDetailPage() {
                 {(data.document_status as string) !== (data.status as string) && (
                   <StatusBadge status={data.document_status} />
                 )}
-                <DownloadPdiButton invoiceId={data.invoice_id} status={data.status} />
+                <DownloadPdiButton
+                  invoiceId={data.invoice_id}
+                  allowed={data.pdi_export_allowed}
+                  requiresConfirmation={data.pdi_export_requires_confirmation}
+                  blockedReason={data.pdi_export_blocked_reason}
+                />
                 <DeleteInvoiceButton invoiceId={data.invoice_id} />
               </div>
             }

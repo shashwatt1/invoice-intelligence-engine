@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -501,6 +502,43 @@ def _pdi_header_line(invoice: Invoice) -> str:
         f"AMOUNT {_pdi_batch_number(invoice)}   {_pdi_date(invoice)}"
         f"{_pdi_sign(invoice)}{_pdi_amount_cents(invoice)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# PDI export eligibility — gating, not formatting
+#
+# Single source of truth for whether an invoice can be exported as PDI,
+# shared by the export endpoint's gate (app/api/v1/exports.py) and the
+# invoice-detail API (app/api/v1/invoices.py) so the frontend and backend
+# can never drift on this rule — the frontend reads the computed result,
+# it never re-implements the condition.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PdiExportEligibility:
+    allowed: bool
+    requires_confirmation: bool
+    blocked_reason: str | None = None
+
+
+def pdi_export_eligibility(invoice: Invoice) -> PdiExportEligibility:
+    """
+    VALIDATED and REVIEW_REQUIRED invoices are both eligible, as long as
+    there's at least one extracted line item — a PDI file with only a
+    header and no detail lines isn't a usable import. REVIEW_REQUIRED
+    invoices are eligible but flagged for confirmation: the underlying
+    data may contain extraction inaccuracies that haven't been reviewed.
+    """
+    if not invoice.items:
+        return PdiExportEligibility(
+            allowed=False,
+            requires_confirmation=False,
+            blocked_reason="This invoice has no extracted line items to export.",
+        )
+    if invoice.status == "VALIDATED":
+        return PdiExportEligibility(allowed=True, requires_confirmation=False)
+    return PdiExportEligibility(allowed=True, requires_confirmation=True)
 
 
 def build_pdi_export(invoice: Invoice) -> str:

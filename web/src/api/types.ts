@@ -176,6 +176,15 @@ export interface InvoiceDetail {
   extraction_model: string | null;
   created_at: string;
 
+  /** Whether GET .../export?format=pdi will succeed for this invoice —
+   * computed once on the backend so this and the export endpoint's own
+   * gate can never drift apart. */
+  pdi_export_allowed: boolean;
+  /** True for REVIEW_REQUIRED invoices: export is allowed, but the UI
+   * should confirm with the user first (possible extraction inaccuracies). */
+  pdi_export_requires_confirmation: boolean;
+  pdi_export_blocked_reason: string | null;
+
   vendor: Vendor | null;
   line_items: LineItem[];
 
