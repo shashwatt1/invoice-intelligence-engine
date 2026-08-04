@@ -9,6 +9,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  deleteInvoice,
   getDashboardSummary,
   getDocumentStatus,
   getInvoice,
@@ -67,6 +68,17 @@ export function useProcessInvoice() {
     onSettled: () => {
       // Any outcome (success or duplicate rejection) can change the
       // dashboard and history projections.
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+  });
+}
+
+export function useDeleteInvoice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteInvoice,
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
     },

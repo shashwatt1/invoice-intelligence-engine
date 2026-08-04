@@ -38,6 +38,14 @@ class ProcessAccepted(BaseModel):
     status_url: str = Field(description="Poll this endpoint for live progress.")
 
 
+class InvoiceDeleteResult(BaseModel):
+    """Returned by DELETE /invoices/{id}."""
+
+    invoice_id: uuid.UUID
+    document_id: uuid.UUID
+    deleted: bool = True
+
+
 class StageEntry(BaseModel):
     """One processing-log entry in the document timeline."""
 

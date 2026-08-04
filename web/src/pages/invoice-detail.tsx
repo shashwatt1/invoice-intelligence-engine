@@ -1,5 +1,7 @@
-import { ArrowLeft, ListOrdered } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
+import { ArrowLeft, ListOrdered, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { toast } from "sonner";
 
 import type { InvoiceDetail } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
@@ -9,7 +11,18 @@ import { DeveloperPanel } from "@/components/invoice/developer-panel";
 import { ValidationReportCard } from "@/components/invoice/validation-report";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ErrorState } from "@/components/shared/states";
-import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -20,7 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useInvoice } from "@/hooks/use-api";
+import { useDeleteInvoice, useInvoice } from "@/hooks/use-api";
 import { formatDate, formatDateTime, formatMoney, formatPercent } from "@/lib/format";
 
 /**
@@ -40,16 +53,72 @@ function DownloadPdiButton({ invoiceId, status }: { invoiceId: string; status: s
         disabled
         title="This invoice needs review before it can be exported for PDI import."
       >
-        <ListOrdered className="size-3.5" /> Download PDI
+        <ListOrdered className="size-3.5" /> Download PDI Format
       </Button>
     );
   }
   return (
     <Button asChild variant="default" size="sm">
       <a href={invoiceExportUrl(invoiceId, "pdi")}>
-        <ListOrdered className="size-3.5" /> Download PDI
+        <ListOrdered className="size-3.5" /> Download PDI Format
       </a>
     </Button>
+  );
+}
+
+/**
+ * Permanent delete — development/testing workflow for reprocessing the
+ * same invoice while refining OCR, extraction, and PDI generation.
+ * Requires explicit confirmation; no soft-delete.
+ */
+function DeleteInvoiceButton({ invoiceId }: { invoiceId: string }) {
+  const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+  const deleteInvoice = useDeleteInvoice();
+
+  const confirmDelete = () => {
+    deleteInvoice.mutate(invoiceId, {
+      onSuccess: () => {
+        setOpen(false);
+        toast.success("Invoice deleted.");
+        navigate("/invoices");
+      },
+      onError: (error) => {
+        toast.error(error instanceof Error ? error.message : "Failed to delete invoice.");
+      },
+    });
+  };
+
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogTrigger asChild>
+        <Button variant="destructive" size="sm">
+          <Trash2 className="size-3.5" /> Delete Invoice
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this invoice?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will permanently remove the invoice, all associated invoice items, extracted
+            data, generated exports, and any related records from the database.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleteInvoice.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className={buttonVariants({ variant: "destructive" })}
+            disabled={deleteInvoice.isPending}
+            onClick={(event) => {
+              event.preventDefault(); // keep the dialog open until the request settles
+              confirmDelete();
+            }}
+          >
+            {deleteInvoice.isPending ? "Deleting…" : "Delete Invoice"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -253,6 +322,7 @@ export function InvoiceDetailPage() {
                   <StatusBadge status={data.document_status} />
                 )}
                 <DownloadPdiButton invoiceId={data.invoice_id} status={data.status} />
+                <DeleteInvoiceButton invoiceId={data.invoice_id} />
               </div>
             }
           />

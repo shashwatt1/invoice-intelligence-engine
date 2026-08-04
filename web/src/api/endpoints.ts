@@ -37,6 +37,12 @@ export async function getInvoice(invoiceId: string): Promise<InvoiceDetail> {
   return data.data!;
 }
 
+/** Permanently deletes the invoice, its items, and its source document
+ * (cascades at the database level — see DELETE /invoices/{id}). */
+export async function deleteInvoice(invoiceId: string): Promise<void> {
+  await apiClient.delete(`/invoices/${invoiceId}`);
+}
+
 export async function listInvoices(params: InvoiceListParams): Promise<Paginated<HistoryRow>> {
   const { data } = await apiClient.get<Paginated<HistoryRow>>("/invoices", { params });
   return data;

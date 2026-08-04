@@ -67,6 +67,19 @@ class DocumentRepository:
         )
         return result.scalar_one_or_none()
 
+    async def delete(self, document: Document) -> None:
+        """
+        Delete a document and everything derived from it.
+
+        Relies entirely on existing DB-level ON DELETE CASCADE foreign keys
+        (invoices.document_id, invoice_items.invoice_id,
+        processing_logs.document_id) — no manual child-row cleanup needed.
+        The physical file on disk is a separate concern handled by the
+        caller via StorageService.
+        """
+        await self._session.delete(document)
+        await self._session.flush()
+
     async def set_status(self, document: Document, status: DocumentStatus) -> None:
         document.status = status
         await self._session.flush()

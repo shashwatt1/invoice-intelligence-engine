@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.mappers import to_history_row
 from app.api.v1.upload import get_upload_service
-from app.core.exceptions import InvoiceBaseException, RecordNotFoundError
+from app.core.exceptions import InvoiceBaseException, RecordNotFoundError, StorageError
 from app.core.logging import get_logger
 from app.database.session import get_db, get_session_factory
 from app.models.document import DocumentStatus
@@ -36,12 +36,14 @@ from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import (
     DatabaseConfirmation,
     HistoryRow,
+    InvoiceDeleteResult,
     InvoiceDetailData,
     LineItemData,
     ProcessAccepted,
     VendorData,
 )
 from app.services.pipeline_service import InvoiceProcessingPipeline
+from app.services.storage_service import get_storage_service
 from app.services.upload_service import UploadService
 
 logger = get_logger(__name__)
@@ -253,3 +255,57 @@ async def get_invoice(
         raw_extraction=invoice.raw_extraction_json,
     )
     return APIResponse(data=data)
+
+
+@router.delete(
+    "/invoices/{invoice_id}",
+    response_model=APIResponse[InvoiceDeleteResult],
+    summary="Permanently delete an invoice",
+    description=(
+        "Deletes the underlying document, which cascades (via existing "
+        "database foreign keys) to the invoice, its line items, and its "
+        "processing logs — no partial state, no orphaned rows. Also "
+        "removes the stored source file on a best-effort basis. This is a "
+        "hard delete with no undo; intended for the development workflow "
+        "of reprocessing the same invoice while refining extraction."
+    ),
+    responses={404: {"description": "Invoice not found"}},
+)
+async def delete_invoice(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[InvoiceDeleteResult]:
+    invoice = await InvoiceRepository(db).get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(
+            message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
+        )
+
+    document = invoice.document
+    document_id = document.id
+    file_path = document.file_path
+
+    # Deleting the document cascades to the invoice, its items, and its
+    # processing logs at the database level — nothing else to clean up
+    # manually. Commit explicitly so the deletion is durable before the
+    # (separate, best-effort) physical file removal below.
+    await DocumentRepository(db).delete(document)
+    await db.commit()
+
+    try:
+        await get_storage_service().delete(file_path)
+    except StorageError as exc:
+        # The database is already correctly cleaned up — a leftover file
+        # on disk is not user-visible and not worth failing the request
+        # over, but it's worth knowing about.
+        logger.warning(
+            "invoice_delete_file_cleanup_failed",
+            invoice_id=str(invoice_id),
+            document_id=str(document_id),
+            file_path=file_path,
+            error=str(exc),
+        )
+
+    return APIResponse(
+        data=InvoiceDeleteResult(invoice_id=invoice_id, document_id=document_id)
+    )

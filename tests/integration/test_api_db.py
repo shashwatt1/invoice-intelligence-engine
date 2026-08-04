@@ -18,6 +18,7 @@ import uuid
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.exceptions import AIStructuringError
@@ -228,3 +229,72 @@ class TestHistoryAndDashboard:
         assert data["status_breakdown"] == {"COMPLETED": 1, "FAILED": 1}
         assert len(data["recent"]) == 2
         assert data["recent"][0]["filename"] == "bad.pdf"  # newest first
+
+
+class TestDeleteInvoice:
+    async def test_delete_removes_invoice_from_the_api(self, api_client):
+        accepted = await process_file(api_client)
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+        invoice_id = status["invoice_id"]
+
+        response = await api_client.delete(f"/api/v1/invoices/{invoice_id}")
+        assert response.status_code == 200
+        body = response.json()["data"]
+        assert body["invoice_id"] == invoice_id
+        assert body["document_id"] == accepted["document_id"]
+        assert body["deleted"] is True
+
+        follow_up = await api_client.get(f"/api/v1/invoices/{invoice_id}")
+        assert follow_up.status_code == 404
+
+    async def test_delete_leaves_no_rows_in_postgres(self, api_client, db_session):
+        accepted = await process_file(api_client)
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+        invoice_id, document_id = status["invoice_id"], accepted["document_id"]
+
+        response = await api_client.delete(f"/api/v1/invoices/{invoice_id}")
+        assert response.status_code == 200
+
+        # Independent session/connection — proves the deletion was actually
+        # committed to Postgres, not just reflected in the request's own
+        # in-memory session.
+        for table, id_value in [
+            ("documents", document_id),
+            ("invoices", invoice_id),
+            ("invoice_items", None),
+            ("processing_logs", document_id),
+        ]:
+            if id_value is not None:
+                count = await db_session.scalar(
+                    text(f"SELECT count(*) FROM {table} WHERE id = :id"),  # noqa: S608
+                    {"id": id_value},
+                )
+                assert count == 0, f"{table} still has a row for {id_value}"
+
+        items_count = await db_session.scalar(
+            text("SELECT count(*) FROM invoice_items WHERE invoice_id = :id"),
+            {"id": invoice_id},
+        )
+        assert items_count == 0
+
+    async def test_delete_unknown_invoice_is_404(self, api_client):
+        response = await api_client.delete(f"/api/v1/invoices/{uuid.uuid4()}")
+        assert response.status_code == 404
+        assert response.json()["error"]["error_code"] == "ERR_NOT_FOUND"
+
+    async def test_reupload_after_delete_creates_a_fresh_record(self, api_client):
+        # The exact friction this feature exists to remove: reprocessing
+        # the same invoice while refining extraction, without a manual
+        # Postgres cleanup step in between.
+        first = await process_file(api_client)
+        first_status = (await api_client.get(first["status_url"])).json()["data"]
+
+        delete_response = await api_client.delete(f"/api/v1/invoices/{first_status['invoice_id']}")
+        assert delete_response.status_code == 200
+
+        second = await process_file(api_client)  # identical bytes, same filename
+        assert second["document_id"] != first["document_id"]
+        second_status = (await api_client.get(second["status_url"])).json()["data"]
+        assert second_status["status"] == "COMPLETED"
+        assert second_status["invoice_id"] is not None
+        assert second_status["invoice_id"] != first_status["invoice_id"]
