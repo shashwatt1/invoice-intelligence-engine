@@ -156,6 +156,22 @@ class TestOpenAIProviderSuccess:
         schema_props = response_format["json_schema"]["schema"]["properties"]
         assert "vendor" in schema_props and "line_items" in schema_props
 
+    async def test_sends_deterministic_sampling_parameters(self):
+        # Invoice extraction is transcription, not generation: the same
+        # document must always produce the same output. Without these, the
+        # API default (temperature 1.0) applies and re-processing one
+        # invoice was observed to pick different adjacent price columns.
+        # Asserted against the real outgoing request body so a refactor
+        # can't silently drop them.
+        captured: list[httpx.Request] = []
+        provider = make_provider(completion_payload(VALID_INVOICE_CONTENT), captured=captured)
+
+        await call(provider)
+
+        body = json.loads(captured[0].content)
+        assert body["temperature"] == 0.0
+        assert body["seed"] == 42
+
     async def test_raw_response_is_json_safe_and_strips_parsed(self):
         provider = make_provider(completion_payload(VALID_INVOICE_CONTENT))
 

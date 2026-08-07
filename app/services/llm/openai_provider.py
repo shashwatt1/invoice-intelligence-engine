@@ -92,6 +92,8 @@ class OpenAIProvider(LLMProvider):
     ) -> None:
         settings = get_settings()
         self._model = model or settings.openai_model
+        self._temperature = settings.openai_temperature
+        self._seed = settings.openai_seed
 
         if client is not None:
             self._client = client
@@ -132,6 +134,8 @@ class OpenAIProvider(LLMProvider):
                     {"role": "user", "content": user_prompt},
                 ],
                 response_format=schema,
+                temperature=self._temperature,
+                seed=self._seed,
             )
         except openai.AuthenticationError as exc:
             logger.error("openai_auth_failed", status_code=exc.status_code)

@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     openai_timeout_seconds: int = 30
     openai_max_tokens_per_document: int = 6000
 
+    # Invoice extraction is transcription, not generation: the same document
+    # must always produce the same structured output. Without these, the API
+    # default (temperature 1.0) applies and re-processing one invoice can
+    # yield different prices — observed picking adjacent price columns
+    # (19.41 vs 18.96) on separate runs of the same document.
+    openai_temperature: float = 0.0
+    openai_seed: int = 42
+
     # -------------------------------------------------------------------------
     # Validation
     # -------------------------------------------------------------------------
