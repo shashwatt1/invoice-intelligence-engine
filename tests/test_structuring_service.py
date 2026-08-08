@@ -112,6 +112,76 @@ class TestPromptRegistry:
         assert "ocr" in rendered
 
 
+class TestPromptV3ColumnDisambiguation:
+    """
+    v3 exists to fix one observed production failure: on a real 7-line
+    invoice the model took unit_price from the gross pre-discount column
+    on every row while taking line_total from the net column, overstating
+    cost by exactly the invoice's printed total discount (9.3%).
+
+    These tests pin the specific instructions that prevent it, so a future
+    prompt edit can't quietly drop them.
+    """
+
+    def test_v3_is_active(self):
+        assert ACTIVE_VERSION == "v3"
+
+    def test_teaches_net_vs_gross_price_selection(self):
+        system = get_prompt("v3").system_prompt
+        assert "NET" in system and "gross" in system.lower()
+        assert "D.PRICE" in system  # names the real column that was mis-read
+        assert "U.PRICE" in system
+
+    def test_separates_quantity_from_pack_size(self):
+        system = get_prompt("v3").system_prompt
+        assert "QUANTITY IS NOT PACK SIZE" in system
+
+    def test_distinguishes_wholesale_cost_from_retail(self):
+        system = get_prompt("v3").system_prompt
+        assert "WHOLESALE COST IS NOT RETAIL PRICE" in system
+
+    def test_requires_arithmetic_self_verification(self):
+        system = get_prompt("v3").system_prompt
+        assert "quantity x unit_price ~= line_total" in system
+
+    def test_warns_against_vendor_customer_confusion(self):
+        # Observed on a receipt-style invoice: the customer's address block
+        # was extracted as the vendor.
+        system = get_prompt("v3").system_prompt
+        assert "VENDOR vs CUSTOMER" in system
+
+    def test_prefers_null_over_guessing(self):
+        system = get_prompt("v3").system_prompt
+        assert "Prefer null" in system
+
+    def test_vendor_profile_is_injected_when_supplied(self):
+        rendered = get_prompt("v3").render_user_prompt(
+            "SOME TEXT", "ocr", "Acme Co: net cost is the D.PRICE column."
+        )
+        assert "<vendor_profile>" in rendered
+        assert "net cost is the D.PRICE column" in rendered
+        assert "<document>\nSOME TEXT\n</document>" in rendered
+
+    def test_vendor_profile_omitted_when_absent(self):
+        rendered = get_prompt("v3").render_user_prompt("SOME TEXT", "ocr")
+        assert "<vendor_profile>" not in rendered
+
+    def test_older_versions_ignore_vendor_profile(self):
+        # Shipped prompt versions must render identically forever, or
+        # stored ProcessingLog entries stop being reproducible.
+        for version in ("v1", "v2"):
+            template = get_prompt(version)
+            assert template.render_user_prompt("T", "ocr", "a profile") == (
+                template.render_user_prompt("T", "ocr")
+            )
+
+    def test_shipped_versions_are_never_mutated(self):
+        # v1/v2 are immutable production assets; v3 must be additive.
+        assert "product_code" not in get_prompt("v1").system_prompt
+        assert "product_code" in get_prompt("v2").system_prompt
+        assert get_prompt("v1").system_prompt != get_prompt("v3").system_prompt
+
+
 class TestLLMFactory:
     def test_returns_openai_provider_when_configured(self, monkeypatch):
         monkeypatch.setenv("LLM_PROVIDER", "openai")

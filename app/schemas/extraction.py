@@ -24,6 +24,72 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class ColumnMapping(BaseModel):
+    """
+    The model's explicit reading of the line-item table's columns.
+
+    Declared FIRST on ExtractedInvoice deliberately: with Structured
+    Outputs the model fills fields in declaration order, so forcing it to
+    name the columns and justify the unit-cost choice *before* it reads a
+    single line item makes the column decision explicit and reviewable
+    instead of an implicit guess repeated per row.
+
+    Motivated by an observed production failure: on a 7-line invoice the
+    model took unit_price from the gross pre-discount column on every row
+    while taking line_total from the net column, overstating cost by
+    9.3% (exactly the invoice's printed total discount).
+    """
+
+    column_headers_found: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every column header printed above the line-item table, left to "
+            "right, exactly as written (e.g. ['ITEM#','QTY','DESCRIPTION',"
+            "'UPC','U.PRICE','DISC','D.PRICE','DEP','EXT']). Empty list if "
+            "the table has no printed headers."
+        ),
+    )
+    unit_cost_column: str | None = Field(
+        default=None,
+        description=(
+            "Header of the column you chose as the NET wholesale unit cost "
+            "(what the store actually pays per unit, after any per-line "
+            "discount). Null if the table has no headers."
+        ),
+    )
+    unit_cost_reasoning: str | None = Field(
+        default=None,
+        description=(
+            "One sentence: why that column is the net unit cost and not a "
+            "gross/list price, a retail price, or an extended total."
+        ),
+    )
+    extended_total_column: str | None = Field(
+        default=None, description="Header of the per-line extended total column, if present."
+    )
+    discount_column: str | None = Field(
+        default=None, description="Header of the per-line discount column, if present."
+    )
+    deposit_column: str | None = Field(
+        default=None, description="Header of the per-line container-deposit column, if present."
+    )
+
+
+class FieldConcern(BaseModel):
+    """One field the model is not confident about, and why."""
+
+    field_path: str = Field(
+        description="Dotted path, e.g. 'line_items[3].unit_price' or 'grand_total'."
+    )
+    reason: str = Field(
+        description=(
+            "Short reason code plus detail. Use one of: blurry_ocr, "
+            "ambiguous_column, missing_value, conflicting_totals, "
+            "illegible_digit."
+        )
+    )
+
+
 class ExtractedVendor(BaseModel):
     """Vendor identity as printed on the invoice."""
 
@@ -56,18 +122,55 @@ class ExtractedLineItem(BaseModel):
             "or construct a code that is not directly printed on the line."
         ),
     )
+    pack_size: str | None = Field(
+        default=None,
+        description=(
+            "Units per case / pack configuration exactly as printed, if shown "
+            "as its own column or embedded in the description (e.g. '24/12OZ', "
+            "'12 CT'). Null if not printed. Never infer it from the product name."
+        ),
+    )
     quantity: float | None = Field(
-        default=None, description="Quantity ordered. May be fractional (e.g. 1.5)."
+        default=None,
+        description=(
+            "Number of cases/units delivered for this line — the QTY column. "
+            "This is NOT the pack size. On a line reading '1 RB COCONUT "
+            "24/12OZ', quantity is 1 and pack_size is '24/12OZ'."
+        ),
     )
     unit_price: float | None = Field(
         default=None,
         description=(
-            "Price per unit. If not printed but quantity and line total are both "
-            "present, derive it as line_total / quantity."
+            "NET wholesale cost per unit — what the store actually pays after "
+            "any per-line discount. If the table shows both a gross/list price "
+            "and a discounted price, this is the DISCOUNTED one. This is never "
+            "a retail/shelf price. If not printed but quantity and line total "
+            "are both present, derive it as line_total / quantity."
+        ),
+    )
+    unit_discount: float | None = Field(
+        default=None,
+        description=(
+            "Per-unit discount printed on this line (the DISC column), as a "
+            "positive number. Null if no per-line discount column exists."
+        ),
+    )
+    unit_deposit: float | None = Field(
+        default=None,
+        description=(
+            "Per-unit container/bottle deposit printed on this line (the DEP "
+            "column), as a positive number. This is real money owed and is "
+            "separate from the cost of goods. Null if not printed."
         ),
     )
     line_total: float | None = Field(
-        default=None, description="Total for this line as printed (after item discount)."
+        default=None,
+        description=(
+            "Extended total for this line as printed. Must be consistent with "
+            "quantity x unit_price (some layouts additionally include the "
+            "deposit in this figure — if so, still report it as printed and "
+            "flag the discrepancy in concerns)."
+        ),
     )
     tax_rate: float | None = Field(
         default=None, description="Tax rate for this line as a percentage (e.g. 18.0 for 18%)."
@@ -85,6 +188,13 @@ class ExtractedInvoice(BaseModel):
     This is the canonical output of the AI structuring layer.
     """
 
+    column_mapping: ColumnMapping = Field(
+        default_factory=ColumnMapping,
+        description=(
+            "Resolve the line-item table's columns HERE, before extracting any "
+            "line item. This field is answered first on purpose."
+        ),
+    )
     vendor: ExtractedVendor = Field(description="Vendor identity block.")
     invoice_number: str | None = Field(
         default=None, description="Invoice number / ID exactly as printed."
@@ -113,11 +223,32 @@ class ExtractedInvoice(BaseModel):
     discount_amount: float | None = Field(
         default=None, description="Invoice-level discount amount, if any."
     )
+    deposit_total: float | None = Field(
+        default=None,
+        description=(
+            "Invoice-level container/bottle deposit total, if printed "
+            "(e.g. a 'Total Deposit' line). Positive number."
+        ),
+    )
+    fuel_surcharge: float | None = Field(
+        default=None,
+        description=(
+            "Fuel surcharge / delivery fee total, if printed as its own line. "
+            "Positive number."
+        ),
+    )
     grand_total: float | None = Field(
         default=None, description="Final amount payable as printed."
     )
     line_items: list[ExtractedLineItem] = Field(
         description="All line items in the order they appear on the document."
+    )
+    concerns: list[FieldConcern] = Field(
+        default_factory=list,
+        description=(
+            "Every field you were not confident about, with a reason. Empty "
+            "list if none. Prefer listing a concern over silently guessing."
+        ),
     )
     confidence: float | None = Field(
         default=None,
