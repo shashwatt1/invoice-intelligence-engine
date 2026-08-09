@@ -122,7 +122,18 @@ def check_line_item_math(invoice: NormalizedInvoice, tolerance: Decimal) -> list
             )
             continue
         expected = (item.quantity * item.unit_price).quantize(Decimal("0.01"))
-        if _within(expected, item.line_total, tolerance):
+        # A layout that folds the per-unit deposit into the extended total
+        # is internally consistent, just on a different identity. The
+        # reconciliation engine already proves which case applies; this
+        # check must recognise the same one rather than contradict it.
+        with_deposit = (
+            (item.quantity * (item.unit_price + item.unit_deposit)).quantize(Decimal("0.01"))
+            if item.unit_deposit is not None
+            else None
+        )
+        if _within(expected, item.line_total, tolerance) or (
+            with_deposit is not None and _within(with_deposit, item.line_total, tolerance)
+        ):
             checks.append(
                 CheckResult(name="LINE_ITEM_MATH", status=CheckStatus.PASSED, field=prefix)
             )
@@ -153,7 +164,14 @@ def check_subtotal(invoice: NormalizedInvoice, tolerance: Decimal) -> list[Check
             )
         ]
     computed = sum(line_totals, Decimal("0.00"))
-    if _within(computed, invoice.subtotal, tolerance):
+    # Some layouts include the per-unit deposit in each extended line total
+    # while the printed subtotal covers goods only; the sums then differ by
+    # exactly the deposit total. Both are consistent readings of the
+    # document, so accept either.
+    deposits = invoice.deposit_total or Decimal("0")
+    if _within(computed, invoice.subtotal, tolerance) or _within(
+        computed, invoice.subtotal + deposits, tolerance
+    ):
         return [CheckResult(name="SUBTOTAL_MATCHES_ITEMS", status=CheckStatus.PASSED, field="subtotal")]
     return [
         CheckResult(
@@ -194,16 +212,45 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
                 message="No subtotal or line totals available to verify against.",
             )
         ]
-    computed = base + (invoice.tax_amount or Decimal("0")) - (invoice.discount_amount or Decimal("0"))
-    if _within(computed, invoice.grand_total, tolerance):
-        return [CheckResult(name="GRAND_TOTAL_MATH", status=CheckStatus.PASSED, field="grand_total")]
+    # Charges that sit outside the goods subtotal but inside the amount
+    # payable. Extracted from the document, never assumed.
+    extras = (
+        (invoice.tax_amount or Decimal("0"))
+        + (invoice.deposit_total or Decimal("0"))
+        + (invoice.fuel_surcharge or Decimal("0"))
+    )
+    discount = invoice.discount_amount or Decimal("0")
+
+    # Vendors compose totals two ways, and which one applies is a property
+    # of the document, not something we can assume: some print a GROSS
+    # subtotal with the discount still to come off, others print a subtotal
+    # already net of it (e.g. a "Total Content" line). Accept whichever
+    # matches the printed grand total rather than forcing one convention
+    # and raising a false review on the other.
+    for label, computed in (
+        ("subtotal + tax + deposit + fuel − discount", base + extras - discount),
+        ("subtotal + tax + deposit + fuel (discount already in subtotal)", base + extras),
+    ):
+        if _within(computed, invoice.grand_total, tolerance):
+            return [
+                CheckResult(
+                    name="GRAND_TOTAL_MATH",
+                    status=CheckStatus.PASSED,
+                    field="grand_total",
+                    message=label,
+                )
+            ]
+
     return [
         CheckResult(
             name="GRAND_TOTAL_MATH",
             status=CheckStatus.FAILED,
             field="grand_total",
-            message="subtotal + tax − discount does not match the printed grand total.",
-            expected=str(computed),
+            message=(
+                "subtotal + tax + deposit + fuel does not match the printed "
+                "grand total, with or without the discount applied."
+            ),
+            expected=str(base + extras - discount),
             actual=str(invoice.grand_total),
         )
     ]

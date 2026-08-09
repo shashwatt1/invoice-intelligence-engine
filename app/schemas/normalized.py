@@ -34,13 +34,18 @@ class NormalizedLineItem(BaseModel):
     description: str | None = None
     product_code: str | None = None          # UPC or vendor item #, exactly as printed
     quantity: Decimal | None = None          # 4 dp
-    unit_price: Decimal | None = None        # 4 dp
+    unit_price: Decimal | None = None        # 4 dp — NET cost per unit
+    unit_discount: Decimal | None = None     # 2 dp — per-unit discount, positive
+    unit_deposit: Decimal | None = None      # 2 dp — per-unit container deposit, positive
     line_total: Decimal | None = None        # 2 dp
     tax_rate: Decimal | None = None          # percentage, e.g. 18.00
     confidence: float | None = None
     sort_order: int = 0
     unit_price_derived: bool = False
     line_total_derived: bool = False
+    # Set when the reconciliation engine replaced a gross (pre-discount)
+    # unit_price with the net one it proved correct arithmetically.
+    unit_price_reconciled: bool = False
 
 
 class NormalizedInvoice(BaseModel):
@@ -61,9 +66,11 @@ class NormalizedInvoice(BaseModel):
     purchase_order: str | None = None
     payment_terms: str | None = None
 
-    subtotal: Decimal | None = None          # 2 dp
+    subtotal: Decimal | None = None          # 2 dp — NET goods total
     tax_amount: Decimal | None = None        # 2 dp
     discount_amount: Decimal | None = None   # 2 dp
+    deposit_total: Decimal | None = None     # 2 dp — container deposits, positive
+    fuel_surcharge: Decimal | None = None    # 2 dp — delivery/fuel fee, positive
     grand_total: Decimal | None = None       # 2 dp
 
     line_items: tuple[NormalizedLineItem, ...] = ()

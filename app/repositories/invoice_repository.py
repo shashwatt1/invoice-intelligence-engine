@@ -47,6 +47,8 @@ class InvoiceRepository:
             subtotal=normalized.subtotal,
             tax_amount=normalized.tax_amount,
             discount_amount=normalized.discount_amount,
+            deposit_total=normalized.deposit_total,
+            fuel_surcharge=normalized.fuel_surcharge,
             grand_total=normalized.grand_total,
             currency=normalized.currency or "USD",
             vendor_name=normalized.vendor_name,
@@ -70,6 +72,8 @@ class InvoiceRepository:
                     unit_price=item.unit_price if item.unit_price is not None else Decimal("0"),
                     line_total=item.line_total if item.line_total is not None else Decimal("0"),
                     tax_rate=item.tax_rate,
+                    discount=item.unit_discount,
+                    deposit=item.unit_deposit,
                     sort_order=item.sort_order,
                 )
             )

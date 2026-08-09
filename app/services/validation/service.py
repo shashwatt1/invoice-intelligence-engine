@@ -43,6 +43,7 @@ from app.services.validation.checks import (
 )
 from app.services.validation.confidence import compute_confidence
 from app.services.validation.normalization import normalize_invoice
+from app.services.validation.reconciliation import reconcile_invoice
 from app.services.validation.report import (
     CheckStatus,
     ProcessingDecision,
@@ -103,6 +104,11 @@ class ValidationService:
         start = time.monotonic()
 
         normalized, checks = normalize_invoice(extracted)
+        # Repair what arithmetic can prove before judging the result, so
+        # the checks below (and everything downstream) see the corrected
+        # invoice rather than re-flagging an error we can already fix.
+        normalized, reconciliation_checks = reconcile_invoice(normalized, self._tolerance)
+        checks += reconciliation_checks
         checks += check_required_fields(normalized)
         checks += check_missing_invoice_date(normalized, extracted.invoice_date)
         checks += check_line_item_math(normalized, self._tolerance)

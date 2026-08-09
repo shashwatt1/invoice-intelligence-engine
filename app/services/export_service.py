@@ -415,14 +415,30 @@ def _pdi_amount_cents(invoice: Invoice) -> str:
 
 
 def _pdi_cost_block(item: InvoiceItem) -> str:
-    """PLACEHOLDER — zero, not a fabricated guess. See module note above
-    and docs/PDI_DATA_CONTRACT.md §2.1."""
-    return "0" * PDI_BLOCK_A_WIDTH
+    """
+    EXPERIMENT 2 — live PDI test, not a confirmed encoding. See
+    docs/PDI_CASE_COST_INVESTIGATION.md before trusting this.
+
+    Experiment 1 (unit_price in cost tail) imported successfully but did
+    not move Case Cost — that hypothesis is closed. This is a coarse
+    whole-block test of the only field left: unit_price in cents, right-
+    justified to the full 20 digits, no attempt at the block's internal
+    sub-structure (a 6-digit item-family code, a 2-digit flag, a 4-digit
+    open sub-field too narrow to hold our known real prices, a constant
+    "0100", and a case-pack count — see docs/PDI_CASE_COST_INVESTIGATION.md
+    for the full re-derivation). This deliberately overwrites all of
+    that to answer one question: does Case Cost respond to this byte
+    range at all. _pdi_cost_tail() is reverted to its placeholder so
+    this test isolates cost block alone.
+    """
+    cents = round(float(abs(item.unit_price)) * 100)
+    return str(cents).rjust(PDI_BLOCK_A_WIDTH, "0")
 
 
 def _pdi_cost_tail(item: InvoiceItem) -> str:
-    """PLACEHOLDER — zero, not a fabricated guess. See module note above
-    and docs/PDI_DATA_CONTRACT.md §2.1."""
+    """PLACEHOLDER — zero, not a fabricated guess. Experiment 1
+    (docs/PDI_CASE_COST_INVESTIGATION.md) reverted here: it imported
+    successfully but did not change Case Cost inside PDI."""
     return "0" * PDI_BLOCK_B_TAIL_WIDTH
 
 

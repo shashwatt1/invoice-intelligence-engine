@@ -81,6 +81,12 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     discount_amount: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True, server_default=text("0"), doc="Total discount applied."
     )
+    deposit_total: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True, doc="Total container/bottle deposits, if printed."
+    )
+    fuel_surcharge: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True, doc="Fuel surcharge / delivery fee, if printed."
+    )
     grand_total: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True, doc="Final invoice total."
     )

@@ -61,6 +61,15 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
     discount: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True, server_default=text("0"), doc="Discount applied to this item."
     )
+    deposit: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2),
+        nullable=True,
+        doc=(
+            "Per-unit container/bottle deposit as printed. Real money owed, "
+            "separate from the cost of goods; needed to reconcile layouts "
+            "whose extended total includes the deposit."
+        ),
+    )
 
     # Phase 3 — product matching
     product_sku: Mapped[str | None] = mapped_column(
