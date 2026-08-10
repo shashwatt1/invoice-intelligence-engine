@@ -229,7 +229,10 @@ class TestPdiExport:
         assert line[0] == "B"
         assert line[1:12] == "00000012345"  # product_sku "0000012345" -> zero-padded 11
         assert line[12:37] == "NORTHWIND LAGER 12PK CAN".ljust(25)
-        assert line[37:57] == "0" * PDI_BLOCK_A_WIDTH  # placeholder, see PDI_DATA_CONTRACT.md
+        # cost block: 6 zeros + case cost (2195c) + "0100" + units/case
+        assert line[37:43] == "000000"
+        assert line[43:49] == "002195"
+        assert line[49:53] == "0100"
         assert line[57] == "+"
         assert line[58:62] == "0003"  # quantity 3.0000
         assert line[62:70] == "0" * PDI_BLOCK_B_TAIL_WIDTH  # placeholder
@@ -304,34 +307,57 @@ class TestPdiExport:
 
 class TestPdiCostFields:
     """
-    _pdi_cost_block/_pdi_cost_tail are PLACEHOLDERS. A prior "unit cost x
-    quantity" calculation was disproven by cross-file analysis of 18 real
-    accepted PDI files (docs/PDI_DATA_CONTRACT.md §2.1): neither field
-    scales with delivered quantity in any real sample. Evidence points to
-    product-master data (retail price, case pack, a secondary code) not
-    present on a supplier invoice — a missing-data problem, not a
-    digit-layout problem. These tests pin the safe, non-fabricating
-    placeholder behavior.
+    Byte map confirmed against live PDI (docs/PDI_CASE_COST_INVESTIGATION.md):
+      cost block [6:12]  -> Case Cost
+      cost block [16:20] -> Units Per Case
+      cost tail  [0:5]   -> EDI SRP (retail), deliberately left zero
     """
 
-    def test_cost_block_is_zero_padded_placeholder(self):
+    def test_case_cost_is_written_in_cents_at_block_bytes_6_to_12(self):
+        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
+        assert _pdi_cost_block(item)[6:12] == "002195"
+
+    def test_cost_block_keeps_the_confirmed_constant_marker(self):
+        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
+        assert _pdi_cost_block(item)[12:16] == "0100"
+
+    def test_cost_block_is_still_exactly_twenty_digits(self):
         item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
         block = _pdi_cost_block(item)
         assert len(block) == PDI_BLOCK_A_WIDTH
-        assert block == "0" * PDI_BLOCK_A_WIDTH
+        assert block.isdigit()
 
-    def test_cost_tail_is_zero_padded_placeholder(self):
+    def test_units_per_case_parsed_from_pack_size(self):
+        item = InvoiceItem(
+            unit_price=Decimal("50.20"), quantity=Decimal("1"), pack_size="24/12OZ"
+        )
+        assert _pdi_cost_block(item)[16:20] == "0024"
+
+    def test_units_per_case_defaults_to_one_when_pack_size_missing(self):
+        # 1 is benign (Case Retail == Item Retail); a guessed pack size
+        # would silently corrupt PDI's Case Retail calculation.
+        item = InvoiceItem(unit_price=Decimal("50.20"), quantity=Decimal("1"))
+        assert _pdi_cost_block(item)[16:20] == "0001"
+
+    def test_units_per_case_ignores_unparseable_pack_size(self):
+        item = InvoiceItem(
+            unit_price=Decimal("50.20"), quantity=Decimal("1"), pack_size="CASE"
+        )
+        assert _pdi_cost_block(item)[16:20] == "0001"
+
+    def test_expensive_case_cost_uses_the_full_six_digits(self):
+        # Cigarette cartons run past $100; the real vendor files show
+        # e.g. 014723 = $147.23 in this field.
+        item = InvoiceItem(unit_price=Decimal("147.23"), quantity=Decimal("1"))
+        assert _pdi_cost_block(item)[6:12] == "014723"
+
+    def test_cost_tail_stays_zero_because_srp_is_not_on_a_wholesale_invoice(self):
         item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
-        tail = _pdi_cost_tail(item)
-        assert len(tail) == PDI_BLOCK_B_TAIL_WIDTH
-        assert tail == "0" * PDI_BLOCK_B_TAIL_WIDTH
-
-    def test_cost_fields_never_fabricate_from_negative_unit_price(self):
-        # Even for a return-invoice line item with a negative unit_price,
-        # nothing is derived from it — still a plain placeholder.
-        item = InvoiceItem(unit_price=Decimal("-21.9500"), quantity=Decimal("3.0000"))
-        assert _pdi_cost_block(item) == "0" * PDI_BLOCK_A_WIDTH
         assert _pdi_cost_tail(item) == "0" * PDI_BLOCK_B_TAIL_WIDTH
+
+    def test_negative_unit_price_is_written_as_magnitude(self):
+        item = InvoiceItem(unit_price=Decimal("-21.9500"), quantity=Decimal("3.0000"))
+        assert _pdi_cost_block(item)[6:12] == "002195"
 
 
 class TestPdiBatchNumber:

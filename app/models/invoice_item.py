@@ -61,6 +61,11 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
     discount: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True, server_default=text("0"), doc="Discount applied to this item."
     )
+    pack_size: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        doc="Units per case as printed (e.g. '24/12OZ'); drives the PDI units-per-case field.",
+    )
     deposit: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2),
         nullable=True,

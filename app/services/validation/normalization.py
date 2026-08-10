@@ -149,6 +149,7 @@ def normalize_line_item(
     return NormalizedLineItem(
         description=clean_text(item.description),
         product_code=clean_text(item.product_code),
+        pack_size=clean_text(item.pack_size),
         quantity=quantity,
         unit_price=unit_price,
         unit_discount=to_decimal(item.unit_discount),

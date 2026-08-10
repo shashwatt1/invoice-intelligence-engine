@@ -33,6 +33,7 @@ class NormalizedLineItem(BaseModel):
 
     description: str | None = None
     product_code: str | None = None          # UPC or vendor item #, exactly as printed
+    pack_size: str | None = None             # e.g. "24/12OZ" — units per case lives here
     quantity: Decimal | None = None          # 4 dp
     unit_price: Decimal | None = None        # 4 dp — NET cost per unit
     unit_discount: Decimal | None = None     # 2 dp — per-unit discount, positive

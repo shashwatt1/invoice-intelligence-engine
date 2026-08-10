@@ -72,6 +72,7 @@ class InvoiceRepository:
                     unit_price=item.unit_price if item.unit_price is not None else Decimal("0"),
                     line_total=item.line_total if item.line_total is not None else Decimal("0"),
                     tax_rate=item.tax_rate,
+                    pack_size=item.pack_size,
                     discount=item.unit_discount,
                     deposit=item.unit_deposit,
                     sort_order=item.sort_order,

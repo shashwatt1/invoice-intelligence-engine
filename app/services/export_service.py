@@ -414,31 +414,71 @@ def _pdi_amount_cents(invoice: Invoice) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _pdi_units_per_case(item: InvoiceItem) -> str:
+    """
+    Units-per-case, 4 digits — cost block bytes [16:20] (absolute [53:57]).
+
+    CONFIRMED against live PDI: whatever lands here is displayed verbatim
+    as "Units Per Case", and PDI computes Case Retail = Item Retail x this
+    value. A test upload that put 1896 here produced "Units Per Case
+    1,896" and "Case Retail $5,100.24" (= $2.69 x 1896) exactly.
+
+    Parsed from pack_size as printed ("24/12OZ" -> 24, "12/14" -> 12): the
+    leading integer is the case pack. Falls back to 1 when pack_size is
+    absent or unparseable — 1 is what an all-zero block produced in an
+    earlier upload and is benign (Case Retail then equals Item Retail),
+    whereas a guessed pack size would silently corrupt Case Retail.
+    """
+    match = re.match(r"\s*(\d+)", item.pack_size or "")
+    units = int(match.group(1)) if match else 1
+    if not 1 <= units <= 9999:
+        units = 1
+    return str(units).rjust(4, "0")
+
+
 def _pdi_cost_block(item: InvoiceItem) -> str:
     """
-    EXPERIMENT 2 — live PDI test, not a confirmed encoding. See
-    docs/PDI_CASE_COST_INVESTIGATION.md before trusting this.
+    20-digit block. CONFIRMED structure (see docs/PDI_CASE_COST_INVESTIGATION.md):
 
-    Experiment 1 (unit_price in cost tail) imported successfully but did
-    not move Case Cost — that hypothesis is closed. This is a coarse
-    whole-block test of the only field left: unit_price in cents, right-
-    justified to the full 20 digits, no attempt at the block's internal
-    sub-structure (a 6-digit item-family code, a 2-digit flag, a 4-digit
-    open sub-field too narrow to hold our known real prices, a constant
-    "0100", and a case-pack count — see docs/PDI_CASE_COST_INVESTIGATION.md
-    for the full re-derivation). This deliberately overwrites all of
-    that to answer one question: does Case Cost respond to this byte
-    range at all. _pdi_cost_tail() is reverted to its placeholder so
-    this test isolates cost block alone.
+        [0:6]   unknown 6-digit product reference — not available to us,
+                left zero. PDI matches products on the UPC in [1:12], which
+                is confirmed working, so this does not block anything.
+        [6:12]  CASE COST in cents  <- the field PDI reads for Case Cost
+        [12:16] constant "0100"     — literal in all 908 ground-truth records
+        [16:20] units per case
+
+    Case Cost placement was proved by elimination plus arithmetic: live
+    PDI showed [16:20] driving Units Per Case and the cost tail driving
+    EDI SRP, leaving [6:12]; decoding that field across real accepted
+    vendor files gives cost/retail ratios with a median of 0.59, 27 of 28
+    inside a normal retail margin band, none above 1.0, and every
+    cigarette line at 0.93 — the razor-thin margin that category is known
+    for. Random bytes do not produce that.
     """
     cents = round(float(abs(item.unit_price)) * 100)
-    return str(cents).rjust(PDI_BLOCK_A_WIDTH, "0")
+    return (
+        "0" * 6
+        + str(cents).rjust(6, "0")[-6:]
+        + "0100"
+        + _pdi_units_per_case(item)
+    )
 
 
 def _pdi_cost_tail(item: InvoiceItem) -> str:
-    """PLACEHOLDER — zero, not a fabricated guess. Experiment 1
-    (docs/PDI_CASE_COST_INVESTIGATION.md) reverted here: it imported
-    successfully but did not change Case Cost inside PDI."""
+    """
+    8 digits: [0:5] EDI SRP (retail per unit, cents) + constant "001".
+
+    CONFIRMED as a RETAIL field, not a cost field: an earlier upload put
+    the invoice's gross unit prices here and PDI displayed them verbatim
+    in its "EDI SRP" column ($19.41, $56.50, $36.50, $43.50).
+
+    Left zero deliberately. A wholesale supplier invoice does not print a
+    retail price, so we have nothing truthful to put here, and sending
+    zero is safe: PDI keeps its own Product Master retail (it showed the
+    correct Item Retail of $2.69/$3.49/etc. on the upload where this
+    field was all zeros). Sending a wholesale cost here would overwrite a
+    correct retail price with a wrong one.
+    """
     return "0" * PDI_BLOCK_B_TAIL_WIDTH
 
 
