@@ -22,6 +22,19 @@ from tests.pdf_builder import build_pdf
 pytestmark = requires_db
 
 
+async def confirm_mapping(api_client, invoice_id, item_code="99900000001", units=12):  # noqa: F811
+    """Confirm a units-per-case mapping, as the review UI does.
+
+    format=pdi is blocked until every product on the invoice has one.
+    """
+    response = await api_client.post(
+        f"/api/v1/invoices/{invoice_id}/case-mappings",
+        json={"mappings": [{"item_code": item_code, "units_per_case": units}]},
+    )
+    assert response.status_code == 200, response.text
+    return response
+
+
 async def processed_invoice_id(api_client) -> str:  # noqa: F811
     accepted = await process_file(api_client)
     status = (await api_client.get(accepted["status_url"])).json()["data"]
@@ -160,6 +173,7 @@ class TestPdiExport:
         ).json()
         assert json_export["line_items"][0]["sku_upc"] == "999000000015"
 
+        await confirm_mapping(api_client, status["invoice_id"])
         response = await api_client.get(
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
         )
@@ -287,6 +301,7 @@ class TestPdiExport:
         )
         status = (await api_client.get(accepted["status_url"])).json()["data"]
 
+        await confirm_mapping(api_client, status["invoice_id"])
         response = await api_client.get(
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
         )
@@ -300,7 +315,10 @@ class TestPdiExport:
         assert header[23] == "-"  # header sign position
         assert "-" not in header[24:]  # amount digits stay magnitude-only
         assert detail_line[57] == "-"  # detail-line sign position
-        assert detail_line[37:57] == "0" * 20  # cost block: placeholder, never fabricated
+        assert detail_line[37:43] == "0" * 6  # unknown product ref, left zero
+        assert detail_line[43:49] == "001556"  # case cost: magnitude only, sign is [57]
+        assert detail_line[49:53] == "0100"  # confirmed constant marker
+        assert detail_line[53:57] == "0012"  # units per case, from the confirmed mapping
         assert detail_line[58:62] == "0003"  # quantity stays magnitude-only
         assert detail_line[62:70] == "0" * 8  # cost tail: placeholder, never fabricated
 

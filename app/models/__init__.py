@@ -10,6 +10,7 @@ from app.models.document import Document, DocumentStatus
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.processing_log import LogStatus, PipelineStage, ProcessingLog
+from app.models.product_case_mapping import ProductCaseMapping
 from app.models.vendor import Vendor
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     "LogStatus",
     "PipelineStage",
     "ProcessingLog",
+    "ProductCaseMapping",
     "Vendor",
 ]

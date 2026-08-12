@@ -59,7 +59,10 @@ async def db_engine():
 
     async with engine.begin() as conn:
         await conn.execute(
-            text("TRUNCATE processing_logs, invoice_items, invoices, vendors, documents CASCADE")
+            text(
+                "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
+                "documents, product_case_mappings CASCADE"
+            )
         )
     await engine.dispose()
 
@@ -71,7 +74,10 @@ async def db_session(db_engine) -> AsyncSession:
     async with factory() as session:
         # Start from clean tables — pipeline tests commit real transactions.
         await session.execute(
-            text("TRUNCATE processing_logs, invoice_items, invoices, vendors, documents CASCADE")
+            text(
+                "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
+                "documents, product_case_mappings CASCADE"
+            )
         )
         await session.commit()
         yield session

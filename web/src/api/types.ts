@@ -155,6 +155,38 @@ export interface LlmMetadata {
   ocr_text_truncated: boolean;
 }
 
+/**
+ * One product's units-per-case state on this invoice.
+ *
+ * `units_per_case` is the confirmed value from the mapping table — the
+ * only value the EDI is allowed to use. `suggested_units_per_case` is
+ * parsed from the document's pack descriptor and is a suggestion for a
+ * person to confirm, never applied on its own.
+ */
+export interface CaseMappingRow {
+  /** Normalized UPC — the mapping key. Null when the line has no usable code. */
+  item_code: string | null;
+  description: string | null;
+  pack_size: string | null;
+  units_per_case: number | null;
+  suggested_units_per_case: number | null;
+  mapped: boolean;
+}
+
+export interface CaseMappingConfirmation {
+  item_code: string;
+  units_per_case: number;
+  description?: string | null;
+}
+
+/** Response of POST /invoices/{id}/case-mappings — the refreshed state. */
+export interface CaseMappingResult {
+  saved: number;
+  case_mappings: CaseMappingRow[];
+  pdi_export_allowed: boolean;
+  pdi_export_blocked_reason: string | null;
+}
+
 export interface InvoiceDetail {
   invoice_id: string;
   document_id: string;
@@ -184,6 +216,9 @@ export interface InvoiceDetail {
    * should confirm with the user first (possible extraction inaccuracies). */
   pdi_export_requires_confirmation: boolean;
   pdi_export_blocked_reason: string | null;
+  /** Units-per-case state per product. A row with mapped=false is why
+   * pdi_export_allowed is false; confirming it unblocks the download. */
+  case_mappings: CaseMappingRow[];
 
   vendor: Vendor | null;
   line_items: LineItem[];

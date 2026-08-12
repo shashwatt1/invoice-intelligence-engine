@@ -24,16 +24,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.mappers import to_history_row
 from app.api.v1.upload import get_upload_service
-from app.core.exceptions import InvoiceBaseException, RecordNotFoundError, StorageError
+from app.core.exceptions import (
+    InvoiceBaseException,
+    RecordNotFoundError,
+    StorageError,
+    ValidationError,
+)
 from app.core.logging import get_logger
 from app.database.session import get_db, get_session_factory
 from app.models.document import DocumentStatus
 from app.models.processing_log import PipelineStage
+from app.models.product_case_mapping import SOURCE_VERIFIED_FROM_INVOICE
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
+from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import (
+    CaseMappingRequest,
+    CaseMappingResult,
+    CaseMappingRow,
     DatabaseConfirmation,
     HistoryRow,
     InvoiceDeleteResult,
@@ -42,7 +52,11 @@ from app.schemas.processing import (
     ProcessAccepted,
     VendorData,
 )
-from app.services.export_service import pdi_export_eligibility
+from app.services.case_mapping_service import (
+    build_case_mapping_status,
+    invoice_units_by_item_code,
+)
+from app.services.export_service import normalize_item_code, pdi_export_eligibility
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.storage_service import get_storage_service
 from app.services.upload_service import UploadService
@@ -205,7 +219,12 @@ async def get_invoice(
     logs = await ProcessingLogRepository(db).for_document(invoice.document_id)
     payloads = {log.stage: log.payload for log in logs if log.payload}
     document = invoice.document
-    pdi_eligibility = pdi_export_eligibility(invoice)
+    units = await invoice_units_by_item_code(db, invoice)
+    pdi_eligibility = pdi_export_eligibility(invoice, units)
+    case_mappings = [
+        CaseMappingRow(**vars(status))
+        for status in build_case_mapping_status(invoice, units)
+    ]
 
     data = InvoiceDetailData(
         invoice_id=invoice.id,
@@ -232,6 +251,7 @@ async def get_invoice(
         pdi_export_allowed=pdi_eligibility.allowed,
         pdi_export_requires_confirmation=pdi_eligibility.requires_confirmation,
         pdi_export_blocked_reason=pdi_eligibility.blocked_reason,
+        case_mappings=case_mappings,
         vendor=VendorData.model_validate(invoice.vendor, from_attributes=True)
         if invoice.vendor
         else None,
@@ -313,4 +333,72 @@ async def delete_invoice(
 
     return APIResponse(
         data=InvoiceDeleteResult(invoice_id=invoice_id, document_id=document_id)
+    )
+
+
+@router.post(
+    "/invoices/{invoice_id}/case-mappings",
+    response_model=APIResponse[CaseMappingResult],
+    summary="Confirm units-per-case for one or more products",
+    description=(
+        "Saves confirmed UPC → units-per-case mappings and returns the "
+        "invoice's refreshed mapping state.\n\n"
+        "Mappings are stored per product, not per invoice: once confirmed, "
+        "the same UPC on any future invoice resolves automatically and is "
+        "never asked about again. Re-confirming an existing product updates "
+        "it in place rather than creating a duplicate.\n\n"
+        "The PDI export stays blocked until every line item on the invoice "
+        "has a mapping."
+    ),
+    responses={
+        404: {"description": "Invoice not found"},
+        422: {"description": "Invalid units_per_case or item code"},
+    },
+)
+async def confirm_case_mappings(
+    invoice_id: uuid.UUID,
+    payload: CaseMappingRequest,
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[CaseMappingResult]:
+    invoice = await InvoiceRepository(db).get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(
+            message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
+        )
+
+    repo = ProductCaseMappingRepository(db)
+    for confirmation in payload.mappings:
+        # Normalize on the way in so a mapping saved from a dashed UPC is
+        # found again from an undashed one — same key the formatter uses.
+        code = normalize_item_code(confirmation.item_code)
+        if not code:
+            raise ValidationError(
+                message="Item code contains no usable digits.",
+                detail={"item_code": confirmation.item_code},
+            )
+        try:
+            await repo.upsert(
+                item_code=code,
+                units_per_case=confirmation.units_per_case,
+                description=confirmation.description,
+                source=SOURCE_VERIFIED_FROM_INVOICE,
+            )
+        except ValueError as exc:
+            raise ValidationError(
+                message=str(exc), detail={"item_code": code}
+            ) from exc
+    await db.commit()
+
+    units = await invoice_units_by_item_code(db, invoice)
+    eligibility = pdi_export_eligibility(invoice, units)
+    return APIResponse(
+        data=CaseMappingResult(
+            saved=len(payload.mappings),
+            case_mappings=[
+                CaseMappingRow(**vars(status))
+                for status in build_case_mapping_status(invoice, units)
+            ],
+            pdi_export_allowed=eligibility.allowed,
+            pdi_export_blocked_reason=eligibility.blocked_reason,
+        )
     )

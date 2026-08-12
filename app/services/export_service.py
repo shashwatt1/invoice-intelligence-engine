@@ -24,12 +24,14 @@ from __future__ import annotations
 import csv
 import io
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
+from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
 
 EXPORT_SCHEMA_VERSION = "1.0"
 
@@ -246,28 +248,25 @@ def build_items_csv(invoice: Invoice) -> str:
 #   [0]      "B"                     record type
 #   [1:12]   item code               11 digits — CONFIRMED (_pdi_item_code)
 #   [12:37]  description             25 chars  — CONFIRMED (_pdi_description)
-#   [37:57]  cost block              20 digits — PLACEHOLDER (_pdi_cost_block).
-#                                                 A prior "unit cost in cents"
-#                                                 hypothesis was DISPROVEN by
-#                                                 cross-file analysis of 18
-#                                                 real accepted PDI files: this
-#                                                 field is a per-product
-#                                                 constant that does not derive
-#                                                 from anything on a supplier
-#                                                 invoice. See
-#                                                 docs/PDI_DATA_CONTRACT.md §2.1.
+#   [37:57]  cost block              20 digits — CONFIRMED structure
+#                                                 (_pdi_cost_block), resolved by
+#                                                 live PDI experiments — see
+#                                                 docs/PDI_CASE_COST_INVESTIGATION.md:
+#     [37:43]  unknown product ref     6 digits  — not available to us, left zero
+#                                                  (PDI product-matches on the UPC)
+#     [43:49]  CASE COST in cents      6 digits  — CONFIRMED
+#     [49:53]  constant "0100"         4 digits  — literal in all 908 samples
+#     [53:57]  units per case          4 digits  — CONFIRMED (_pdi_units_per_case),
+#                                                  sourced ONLY from a
+#                                                  human-confirmed mapping
 #   [57]     sign                    1 char    — CONFIRMED (_pdi_sign)
 #   [58:62]  quantity                4 digits  — CONFIRMED (_pdi_quantity)
-#   [62:70]  cost block tail         8 digits  — PLACEHOLDER (_pdi_cost_tail).
-#                                                 Proven NOT to scale with
-#                                                 delivered quantity (a prior
-#                                                 "extended cost = unit cost ×
-#                                                 quantity" hypothesis was
-#                                                 disproven); decodes to a
-#                                                 retail-price-like value not
-#                                                 present on a supplier
-#                                                 invoice. See
-#                                                 docs/PDI_DATA_CONTRACT.md §2.1.
+#   [62:70]  cost block tail         8 digits  — CONFIRMED as EDI SRP (retail),
+#                                                 deliberately left zero
+#                                                 (_pdi_cost_tail): a wholesale
+#                                                 invoice prints no retail price,
+#                                                 and zero leaves PDI's own
+#                                                 Product Master retail intact.
 #
 # Header record: "AMOUNT {batch}   {date}{sign}{amount}"
 #   batch  — CONFIRMED (_pdi_batch_number: the invoice's own reference number)
@@ -318,6 +317,29 @@ _NON_DIGITS = re.compile(r"\D")
 # ---------------------------------------------------------------------------
 
 
+def normalize_item_code(product_code: str | None) -> str | None:
+    """
+    Reduce a printed product code to its canonical digits: non-digits
+    stripped, a 12-digit UPC-A's trailing check digit dropped, truncated
+    to the PDI item-code width. Returns None when there is no usable code.
+
+    Public because it is also the key of the units-per-case mapping table
+    (app/models/product_case_mapping.py). A mapping must be found again
+    from any invoice carrying the same barcode regardless of how that
+    vendor printed it ("0-48500-20603-4" vs "048500206034"), which only
+    holds if the lookup key and the emitted EDI code come from the same
+    function — so they do.
+    """
+    if not product_code:
+        return None
+    digits = _NON_DIGITS.sub("", product_code)
+    if not digits:
+        return None
+    if len(digits) == 12:
+        digits = digits[:-1]
+    return digits[:PDI_ITEM_CODE_WIDTH]
+
+
 def _pdi_item_code(product_code: str | None) -> str:
     """
     Reduce an extracted product_code to PDI's 11-digit item-code field.
@@ -334,15 +356,9 @@ def _pdi_item_code(product_code: str | None) -> str:
     row in a supplied PDI ground-truth file — see the PDI compatibility
     report, Track A case 3.
     """
-    if not product_code:
+    digits = normalize_item_code(product_code)
+    if digits is None:
         return "00000" + " " * (PDI_ITEM_CODE_WIDTH - 5)
-    digits = _NON_DIGITS.sub("", product_code)
-    if not digits:
-        return "00000" + " " * (PDI_ITEM_CODE_WIDTH - 5)
-    if len(digits) == 12:
-        digits = digits[:-1]
-    if len(digits) > PDI_ITEM_CODE_WIDTH:
-        digits = digits[:PDI_ITEM_CODE_WIDTH]
     return digits.rjust(PDI_ITEM_CODE_WIDTH, "0")
 
 
@@ -414,7 +430,24 @@ def _pdi_amount_cents(invoice: Invoice) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _pdi_units_per_case(item: InvoiceItem) -> str:
+def suggested_units_per_case(pack_size: str | None) -> int | None:
+    """
+    Best guess at units-per-case from a printed pack descriptor
+    ("24/12OZ" -> 24, "12/14" -> 12): the leading integer is the case pack.
+
+    A SUGGESTION ONLY — offered to a human for confirmation, never used
+    directly for EDI generation. Returns None when nothing usable is
+    printed, so callers must handle "unknown" rather than receive a
+    fabricated default.
+    """
+    match = re.match(r"\s*(\d+)", pack_size or "")
+    if not match:
+        return None
+    units = int(match.group(1))
+    return units if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE else None
+
+
+def _pdi_units_per_case(item: InvoiceItem, units_by_item_code: Mapping[str, int]) -> str:
     """
     Units-per-case, 4 digits — cost block bytes [16:20] (absolute [53:57]).
 
@@ -423,20 +456,33 @@ def _pdi_units_per_case(item: InvoiceItem) -> str:
     value. A test upload that put 1896 here produced "Units Per Case
     1,896" and "Case Retail $5,100.24" (= $2.69 x 1896) exactly.
 
-    Parsed from pack_size as printed ("24/12OZ" -> 24, "12/14" -> 12): the
-    leading integer is the case pack. Falls back to 1 when pack_size is
-    absent or unparseable — 1 is what an all-zero block produced in an
-    earlier upload and is benign (Case Retail then equals Item Retail),
-    whereas a guessed pack size would silently corrupt Case Retail.
+    Sourced exclusively from the confirmed mapping passed in by the
+    caller. The LLM's pack_size is deliberately NOT consulted here: it is
+    a suggestion for a human to confirm, and a wrong value silently
+    corrupts Case Retail in PDI. build_pdi_export() refuses to run when a
+    mapping is missing, so an unmapped item can never reach this function.
     """
-    match = re.match(r"\s*(\d+)", item.pack_size or "")
-    units = int(match.group(1)) if match else 1
-    if not 1 <= units <= 9999:
-        units = 1
+    code = normalize_item_code(item.product_sku)
+    if code is None:
+        # No product code at all: nothing to key a mapping on, and the
+        # line already exports with the blank item-code convention, so PDI
+        # cannot product-match it either way. 1 keeps Case Retail equal to
+        # Item Retail. unmapped_item_codes() skips these lines for the
+        # same reason — the gate and this function must agree, or an
+        # invoice becomes permanently un-exportable.
+        return "0001"
+    units = units_by_item_code.get(code)
+    if units is None:
+        # Unreachable via build_pdi_export(), which gates on the same
+        # mapping. Fail loudly rather than emit a fabricated pack size.
+        raise ValueError(
+            f"No confirmed units-per-case mapping for item code {code!r} "
+            f"({item.description!r}). Confirm the mapping before exporting."
+        )
     return str(units).rjust(4, "0")
 
 
-def _pdi_cost_block(item: InvoiceItem) -> str:
+def _pdi_cost_block(item: InvoiceItem, units_by_item_code: Mapping[str, int]) -> str:
     """
     20-digit block. CONFIRMED structure (see docs/PDI_CASE_COST_INVESTIGATION.md):
 
@@ -460,7 +506,7 @@ def _pdi_cost_block(item: InvoiceItem) -> str:
         "0" * 6
         + str(cents).rjust(6, "0")[-6:]
         + "0100"
-        + _pdi_units_per_case(item)
+        + _pdi_units_per_case(item, units_by_item_code)
     )
 
 
@@ -541,12 +587,14 @@ def _pdi_trailer_lines(invoice: Invoice) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _pdi_detail_line(item: InvoiceItem, *, invoice: Invoice) -> str:
+def _pdi_detail_line(
+    item: InvoiceItem, *, invoice: Invoice, units_by_item_code: Mapping[str, int]
+) -> str:
     return (
         "B"
         + _pdi_item_code(item.product_sku)
         + _pdi_description(item.description)
-        + _pdi_cost_block(item)
+        + _pdi_cost_block(item, units_by_item_code)
         + _pdi_sign(invoice)
         + _pdi_quantity(item.quantity)
         + _pdi_cost_tail(item)
@@ -578,13 +626,40 @@ class PdiExportEligibility:
     blocked_reason: str | None = None
 
 
-def pdi_export_eligibility(invoice: Invoice) -> PdiExportEligibility:
+def unmapped_item_codes(
+    invoice: Invoice, units_by_item_code: Mapping[str, int]
+) -> list[str]:
+    """
+    Normalized item codes on this invoice with no confirmed
+    units-per-case mapping, in document order without duplicates.
+
+    Empty list means the invoice is ready to export. Items with no usable
+    product code at all are excluded: they already export with the blank
+    item-code convention and there is nothing to key a mapping on.
+    """
+    missing: list[str] = []
+    for item in _sorted_items(invoice):
+        code = normalize_item_code(item.product_sku)
+        if code and code not in units_by_item_code and code not in missing:
+            missing.append(code)
+    return missing
+
+
+def pdi_export_eligibility(
+    invoice: Invoice, units_by_item_code: Mapping[str, int] | None = None
+) -> PdiExportEligibility:
     """
     VALIDATED and REVIEW_REQUIRED invoices are both eligible, as long as
     there's at least one extracted line item — a PDI file with only a
     header and no detail lines isn't a usable import. REVIEW_REQUIRED
     invoices are eligible but flagged for confirmation: the underlying
     data may contain extraction inaccuracies that haven't been reviewed.
+
+    An invoice is additionally blocked while any line item lacks a
+    confirmed units-per-case mapping, so the export cannot silently
+    default an unknown product's pack size. `units_by_item_code` is
+    optional only so callers that genuinely have no session (unit tests
+    of the status rules) can skip that check.
     """
     if not invoice.items:
         return PdiExportEligibility(
@@ -592,14 +667,36 @@ def pdi_export_eligibility(invoice: Invoice) -> PdiExportEligibility:
             requires_confirmation=False,
             blocked_reason="This invoice has no extracted line items to export.",
         )
+
+    if units_by_item_code is not None:
+        missing = unmapped_item_codes(invoice, units_by_item_code)
+        if missing:
+            count = len(missing)
+            return PdiExportEligibility(
+                allowed=False,
+                requires_confirmation=False,
+                blocked_reason=(
+                    f"{count} product{'s' if count != 1 else ''} "
+                    f"need{'' if count != 1 else 's'} a units-per-case mapping "
+                    "before this invoice can be exported."
+                ),
+            )
+
     if invoice.status == "VALIDATED":
         return PdiExportEligibility(allowed=True, requires_confirmation=False)
     return PdiExportEligibility(allowed=True, requires_confirmation=True)
 
 
-def build_pdi_export(invoice: Invoice) -> str:
+def build_pdi_export(invoice: Invoice, units_by_item_code: Mapping[str, int]) -> str:
     """
     Deterministic PDI-compatible fixed-width export.
+
+    `units_by_item_code` maps normalized item code -> confirmed
+    units-per-case and MUST cover every line item; see
+    unmapped_item_codes(). Passing it in (rather than querying here) keeps
+    this module pure and synchronous — the caller owns the database
+    session. Raises ValueError on a missing mapping rather than guessing a
+    pack size, because a wrong value silently corrupts Case Retail in PDI.
 
     Confirmed fields (verified against real PDI samples): record structure
     (header, detail, and trailer byte layout), item code, description,
@@ -619,6 +716,9 @@ def build_pdi_export(invoice: Invoice) -> str:
     DOS/Windows-style line endings.
     """
     lines = [_pdi_header_line(invoice)]
-    lines.extend(_pdi_detail_line(item, invoice=invoice) for item in _sorted_items(invoice))
+    lines.extend(
+        _pdi_detail_line(item, invoice=invoice, units_by_item_code=units_by_item_code)
+        for item in _sorted_items(invoice)
+    )
     lines.extend(_pdi_trailer_lines(invoice))
     return "\r\n".join(lines) + "\r\n"

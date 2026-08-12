@@ -13,6 +13,8 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+import pytest
+
 from app.models.document import Document
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
@@ -31,8 +33,24 @@ from app.services.export_service import (
     build_pdi_export,
     build_txt,
     export_basename,
+    normalize_item_code,
     pdi_export_eligibility,
 )
+
+
+def units_for(invoice: Invoice, units: int = 1) -> dict[str, int]:
+    """
+    Confirmed units-per-case for every product on `invoice`.
+
+    build_pdi_export now requires a mapping for every line — an unmapped
+    product raises rather than guessing a pack size — so tests that are
+    about other fields supply a trivial one.
+    """
+    return {
+        code: units
+        for code in (normalize_item_code(i.product_sku) for i in invoice.items)
+        if code
+    }
 
 
 def make_invoice(**overrides) -> Invoice:
@@ -205,18 +223,18 @@ class TestPdiExport:
     def test_header_line_format(self):
         # 7-digit invoice number avoids any truncation ambiguity in the assertion.
         invoice = make_invoice(invoice_number="1234567", grand_total=Decimal("46.68"))
-        header = build_pdi_export(invoice).splitlines()[0]
+        header = build_pdi_export(invoice, units_for(invoice)).splitlines()[0]
 
         assert header == "AMOUNT 1234567   033126+000004668"
 
     def test_header_batch_uses_last_seven_digits_of_invoice_number(self):
         invoice = make_invoice(invoice_number="INV-2026-0042")
-        header = build_pdi_export(invoice).splitlines()[0]
+        header = build_pdi_export(invoice, units_for(invoice)).splitlines()[0]
         # digits-only "20260042" (8 chars) -> last 7 -> "0260042"
         assert header.split()[1] == "0260042"
 
     def test_detail_line_is_exactly_70_characters(self):
-        pdi = build_pdi_export(make_invoice())
+        pdi = build_pdi_export(make_invoice(), units_for(make_invoice()))
         detail_lines = pdi.splitlines()[1:]
 
         assert len(detail_lines) == 2
@@ -224,7 +242,7 @@ class TestPdiExport:
 
     def test_detail_line_field_positions(self):
         invoice = make_invoice()
-        line = build_pdi_export(invoice).splitlines()[1]  # first item
+        line = build_pdi_export(invoice, units_for(invoice)).splitlines()[1]  # first item
 
         assert line[0] == "B"
         assert line[1:12] == "00000012345"  # product_sku "0000012345" -> zero-padded 11
@@ -240,50 +258,50 @@ class TestPdiExport:
     def test_long_description_is_truncated_to_25_chars(self):
         invoice = make_invoice()
         invoice.items[0].description = "A" * 40
-        line = build_pdi_export(invoice).splitlines()[1]
+        line = build_pdi_export(invoice, units_for(invoice)).splitlines()[1]
         assert line[12:37] == "A" * PDI_DESCRIPTION_WIDTH
 
     def test_short_description_is_space_padded(self):
         invoice = make_invoice()
         invoice.items[0].description = "GUM"
-        line = build_pdi_export(invoice).splitlines()[1]
+        line = build_pdi_export(invoice, units_for(invoice)).splitlines()[1]
         assert line[12:37] == "GUM".ljust(PDI_DESCRIPTION_WIDTH)
 
     def test_item_without_product_code_gets_blank_item_code(self):
         invoice = make_invoice()
         invoice.items[0].product_sku = None
-        line = build_pdi_export(invoice).splitlines()[1]
+        line = build_pdi_export(invoice, units_for(invoice)).splitlines()[1]
         assert line[1:12] == "00000" + " " * 6
 
     def test_quantity_field_is_zero_padded_to_four_digits(self):
         invoice = make_invoice()
         invoice.items[1].quantity = Decimal("2.0000")
-        line = build_pdi_export(invoice).splitlines()[2]  # second item
+        line = build_pdi_export(invoice, units_for(invoice)).splitlines()[2]  # second item
         assert line[58:62] == "0002"
 
     def test_missing_grand_total_and_date_do_not_crash(self):
         invoice = make_invoice(grand_total=None, invoice_date=None, invoice_number=None)
-        header = build_pdi_export(invoice).splitlines()[0]
+        header = build_pdi_export(invoice, units_for(invoice)).splitlines()[0]
         assert header == "AMOUNT 0000000   000000+000000000"
 
     def test_output_uses_crlf_line_endings(self):
         # Confirmed against every real ground-truth file (both formats) —
         # a plain "\n" file was rejected by a real PDI import attempt with
         # a generic "wrong file format" error.
-        pdi = build_pdi_export(make_invoice())
+        pdi = build_pdi_export(make_invoice(), units_for(make_invoice()))
         assert pdi.endswith("\r\n")
         assert "\r\n" in pdi
         assert "\n" not in pdi.replace("\r\n", "")  # no bare LF anywhere
 
     def test_line_count_matches_header_plus_items(self):
         invoice = make_invoice()
-        lines = build_pdi_export(invoice).rstrip("\r\n").split("\r\n")
+        lines = build_pdi_export(invoice, units_for(invoice)).rstrip("\r\n").split("\r\n")
         assert len(lines) == 1 + len(invoice.items)
 
     def test_no_trailer_records_are_emitted(self):
         # CFUE/CPPT content was reverted — see docs/PDI_DATA_CONTRACT.md
         # §2.2-2.3 — so no trailer lines are emitted at all right now.
-        pdi = build_pdi_export(make_invoice())
+        pdi = build_pdi_export(make_invoice(), units_for(make_invoice()))
         assert "CFUE" not in pdi
         assert "CPPT" not in pdi
 
@@ -297,7 +315,7 @@ class TestPdiExport:
             )
             for i in range(150)
         ]
-        pdi = build_pdi_export(invoice)
+        pdi = build_pdi_export(invoice, units_for(invoice))
         detail_lines = pdi.splitlines()[1:]
         assert len(detail_lines) == 150
         assert all(len(line) == 70 for line in detail_lines)
@@ -311,53 +329,60 @@ class TestPdiCostFields:
       cost block [6:12]  -> Case Cost
       cost block [16:20] -> Units Per Case
       cost tail  [0:5]   -> EDI SRP (retail), deliberately left zero
+
+    Units per case now comes from the confirmed mapping only. pack_size is
+    a suggestion for a human to confirm and is never consulted here.
     """
 
+    MAPPED = {"12345": 24}
+
+    def _item(self, **overrides) -> InvoiceItem:
+        base = {
+            "unit_price": Decimal("21.9500"),
+            "quantity": Decimal("3.0000"),
+            "product_sku": "12345",
+        }
+        base.update(overrides)
+        return InvoiceItem(**base)
+
     def test_case_cost_is_written_in_cents_at_block_bytes_6_to_12(self):
-        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
-        assert _pdi_cost_block(item)[6:12] == "002195"
+        assert _pdi_cost_block(self._item(), self.MAPPED)[6:12] == "002195"
 
     def test_cost_block_keeps_the_confirmed_constant_marker(self):
-        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
-        assert _pdi_cost_block(item)[12:16] == "0100"
+        assert _pdi_cost_block(self._item(), self.MAPPED)[12:16] == "0100"
 
     def test_cost_block_is_still_exactly_twenty_digits(self):
-        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
-        block = _pdi_cost_block(item)
+        block = _pdi_cost_block(self._item(), self.MAPPED)
         assert len(block) == PDI_BLOCK_A_WIDTH
         assert block.isdigit()
 
-    def test_units_per_case_parsed_from_pack_size(self):
-        item = InvoiceItem(
-            unit_price=Decimal("50.20"), quantity=Decimal("1"), pack_size="24/12OZ"
-        )
-        assert _pdi_cost_block(item)[16:20] == "0024"
+    def test_units_per_case_comes_from_the_confirmed_mapping(self):
+        assert _pdi_cost_block(self._item(), {"12345": 24})[16:20] == "0024"
 
-    def test_units_per_case_defaults_to_one_when_pack_size_missing(self):
-        # 1 is benign (Case Retail == Item Retail); a guessed pack size
-        # would silently corrupt PDI's Case Retail calculation.
-        item = InvoiceItem(unit_price=Decimal("50.20"), quantity=Decimal("1"))
-        assert _pdi_cost_block(item)[16:20] == "0001"
+    def test_mapping_overrides_the_document_pack_size(self):
+        # The document says 6 per case; a human confirmed 24. The mapping
+        # wins — that is the entire point of the mapping table.
+        item = self._item(pack_size="6/12OZ")
+        assert _pdi_cost_block(item, {"12345": 24})[16:20] == "0024"
 
-    def test_units_per_case_ignores_unparseable_pack_size(self):
-        item = InvoiceItem(
-            unit_price=Decimal("50.20"), quantity=Decimal("1"), pack_size="CASE"
-        )
-        assert _pdi_cost_block(item)[16:20] == "0001"
+    def test_unmapped_product_raises_instead_of_guessing(self):
+        # Never silently default an unknown product's pack size: a wrong
+        # value corrupts Case Retail inside PDI.
+        with pytest.raises(ValueError, match="No confirmed units-per-case"):
+            _pdi_cost_block(self._item(pack_size="24/12OZ"), {})
 
     def test_expensive_case_cost_uses_the_full_six_digits(self):
         # Cigarette cartons run past $100; the real vendor files show
         # e.g. 014723 = $147.23 in this field.
-        item = InvoiceItem(unit_price=Decimal("147.23"), quantity=Decimal("1"))
-        assert _pdi_cost_block(item)[6:12] == "014723"
+        item = self._item(unit_price=Decimal("147.23"))
+        assert _pdi_cost_block(item, self.MAPPED)[6:12] == "014723"
 
     def test_cost_tail_stays_zero_because_srp_is_not_on_a_wholesale_invoice(self):
-        item = InvoiceItem(unit_price=Decimal("21.9500"), quantity=Decimal("3.0000"))
-        assert _pdi_cost_tail(item) == "0" * PDI_BLOCK_B_TAIL_WIDTH
+        assert _pdi_cost_tail(self._item()) == "0" * PDI_BLOCK_B_TAIL_WIDTH
 
     def test_negative_unit_price_is_written_as_magnitude(self):
-        item = InvoiceItem(unit_price=Decimal("-21.9500"), quantity=Decimal("3.0000"))
-        assert _pdi_cost_block(item)[6:12] == "002195"
+        item = self._item(unit_price=Decimal("-21.9500"))
+        assert _pdi_cost_block(item, self.MAPPED)[6:12] == "002195"
 
 
 class TestPdiBatchNumber:
@@ -367,17 +392,17 @@ class TestPdiBatchNumber:
 
     def test_batch_number_derived_from_invoice_number(self):
         invoice = make_invoice(invoice_number="1234567")
-        header = build_pdi_export(invoice).splitlines()[0]
+        header = build_pdi_export(invoice, units_for(invoice)).splitlines()[0]
         assert header.split()[1] == "1234567"
 
     def test_batch_number_uses_last_seven_digits_when_longer(self):
         invoice = make_invoice(invoice_number="INV-2026-0042")
-        header = build_pdi_export(invoice).splitlines()[0]
+        header = build_pdi_export(invoice, units_for(invoice)).splitlines()[0]
         assert header.split()[1] == "0260042"
 
     def test_batch_number_is_zero_padded_when_shorter(self):
         invoice = make_invoice(invoice_number="42")
-        header = build_pdi_export(invoice).splitlines()[0]
+        header = build_pdi_export(invoice, units_for(invoice)).splitlines()[0]
         assert header.split()[1] == "0000042"
 
 
@@ -392,39 +417,39 @@ class TestPdiReturnInvoice:
 
     def test_return_invoice_header_sign_is_negative(self):
         invoice = make_invoice(grand_total=Decimal("-46.68"))
-        header = build_pdi_export(invoice).splitlines()[0]
+        header = build_pdi_export(invoice, units_for(invoice)).splitlines()[0]
         assert header == "AMOUNT 0260042   033126-000004668"
 
     def test_return_invoice_detail_line_sign_is_negative(self):
         invoice = make_invoice(grand_total=Decimal("-46.68"))
-        lines = build_pdi_export(invoice).splitlines()[1:]
+        lines = build_pdi_export(invoice, units_for(invoice)).splitlines()[1:]
         assert all(line[57] == "-" for line in lines)
 
     def test_return_invoice_amount_field_stays_magnitude_only(self):
         invoice = make_invoice(grand_total=Decimal("-46.68"))
-        header = build_pdi_export(invoice).splitlines()[0]
+        header = build_pdi_export(invoice, units_for(invoice)).splitlines()[0]
         assert header.endswith("-000004668")  # digits carry no minus sign
 
     def test_return_invoice_quantity_field_stays_magnitude_only(self):
         invoice = make_invoice(grand_total=Decimal("-46.68"))
-        line = build_pdi_export(invoice).splitlines()[1]
+        line = build_pdi_export(invoice, units_for(invoice)).splitlines()[1]
         assert line[58:62] == "0003"
 
     def test_normal_invoice_sign_is_positive(self):
         invoice = make_invoice(grand_total=Decimal("46.68"))
-        pdi = build_pdi_export(invoice)
+        pdi = build_pdi_export(invoice, units_for(invoice))
         assert pdi.splitlines()[0][23] == "+"  # header sign position
         assert all(line[57] == "+" for line in pdi.splitlines()[1:])
 
     def test_zero_grand_total_is_not_treated_as_a_return(self):
         invoice = make_invoice(grand_total=Decimal("0.00"))
-        pdi = build_pdi_export(invoice)
+        pdi = build_pdi_export(invoice, units_for(invoice))
         assert pdi.splitlines()[0][23] == "+"
         assert pdi.splitlines()[1][57] == "+"
 
     def test_missing_grand_total_is_not_treated_as_a_return(self):
         invoice = make_invoice(grand_total=None)
-        pdi = build_pdi_export(invoice)
+        pdi = build_pdi_export(invoice, units_for(invoice))
         assert pdi.splitlines()[1][57] == "+"
 
 
@@ -442,16 +467,16 @@ class TestPdiTrailerRecords:
 
     def test_cppt_is_never_emitted_regardless_of_tax_amount(self):
         invoice = make_invoice(tax_amount=Decimal("7.78"))
-        pdi = build_pdi_export(invoice)
+        pdi = build_pdi_export(invoice, units_for(invoice))
         assert "CPPT" not in pdi
 
     def test_cfue_is_never_emitted(self):
-        pdi = build_pdi_export(make_invoice())
+        pdi = build_pdi_export(make_invoice(), units_for(make_invoice()))
         assert "CFUE" not in pdi
 
     def test_no_trailer_lines_at_all(self):
         invoice = make_invoice()
-        lines = build_pdi_export(invoice).rstrip("\r\n").split("\r\n")
+        lines = build_pdi_export(invoice, units_for(invoice)).rstrip("\r\n").split("\r\n")
         assert len(lines) == 1 + len(invoice.items)  # header + items only, no trailer
 
 
@@ -464,14 +489,14 @@ class TestPdiDeterminism:
 
     def test_same_invoice_produces_byte_identical_output_across_calls(self):
         invoice = make_invoice()
-        assert build_pdi_export(invoice) == build_pdi_export(invoice)
+        assert build_pdi_export(invoice, units_for(invoice)) == build_pdi_export(invoice, units_for(invoice))
 
     def test_independently_built_equal_invoices_produce_identical_output(self):
         # Two separate ORM instances built from the same values (as would
         # happen across two different requests/processes) must still
         # produce identical bytes — nothing keyed off object identity,
         # memory address, or a fresh timestamp/uuid.
-        assert build_pdi_export(make_invoice()) == build_pdi_export(make_invoice())
+        assert build_pdi_export(make_invoice(), units_for(make_invoice())) == build_pdi_export(make_invoice(), units_for(make_invoice()))
 
 
 class TestPdiExportEligibility:

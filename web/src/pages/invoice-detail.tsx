@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import type { InvoiceDetail } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
 import { PageHeader } from "@/components/layout/page-header";
+import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
 import { DatabaseConfirmationCard } from "@/components/invoice/database-confirmation";
 import { DeveloperPanel } from "@/components/invoice/developer-panel";
 import { PdiExportConfirmDialog } from "@/components/invoice/pdi-export-confirm-dialog";
@@ -231,6 +232,9 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
           </CardContent>
         </Card>
       </div>
+
+      {/* Case → unit mapping: the remaining gate on the PDI download */}
+      <CaseMappingCard invoiceId={detail.invoice_id} rows={detail.case_mappings} />
 
       {/* Line items */}
       <Card className="gap-0 p-0">

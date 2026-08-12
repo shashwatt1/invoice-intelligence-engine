@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
 from app.repositories.invoice_repository import InvoiceRepository
+from app.services.case_mapping_service import invoice_units_by_item_code
 from app.services.export_service import (
     build_export_payload,
     build_items_csv,
@@ -27,6 +28,7 @@ from app.services.export_service import (
     build_txt,
     export_basename,
     pdi_export_eligibility,
+    unmapped_item_codes,
 )
 
 router = APIRouter(tags=["Invoices"])
@@ -89,14 +91,19 @@ async def export_invoice(
         media_type = "text/csv"
         filename = f"{basename}_items.csv"
     elif format == "pdi":
-        eligibility = pdi_export_eligibility(invoice)
+        units = await invoice_units_by_item_code(db, invoice)
+        eligibility = pdi_export_eligibility(invoice, units)
         if not eligibility.allowed:
             raise ValidationError(
                 message=eligibility.blocked_reason
                 or "This invoice cannot be exported for PDI import.",
-                detail={"invoice_id": str(invoice.id), "status": invoice.status},
+                detail={
+                    "invoice_id": str(invoice.id),
+                    "status": invoice.status,
+                    "unmapped_item_codes": unmapped_item_codes(invoice, units),
+                },
             )
-        content = build_pdi_export(invoice)
+        content = build_pdi_export(invoice, units)
         media_type = "text/plain"
         filename = f"{basename}_pdi.txt"
     else:

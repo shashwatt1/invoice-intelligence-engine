@@ -46,6 +46,53 @@ class InvoiceDeleteResult(BaseModel):
     deleted: bool = True
 
 
+class CaseMappingRow(BaseModel):
+    """One line item's units-per-case state, for the review UI."""
+
+    item_code: str | None = Field(
+        default=None, description="Normalized UPC; null when the line has no usable code."
+    )
+    description: str | None = None
+    pack_size: str | None = Field(
+        default=None, description="Pack descriptor as printed, shown as evidence."
+    )
+    units_per_case: int | None = Field(
+        default=None, description="Confirmed units per case, when a mapping exists."
+    )
+    suggested_units_per_case: int | None = Field(
+        default=None,
+        description="Document-derived suggestion; requires confirmation before use.",
+    )
+    mapped: bool = Field(description="False when this product still needs a mapping.")
+
+
+class CaseMappingConfirmation(BaseModel):
+    """One product's units-per-case, as confirmed by a person."""
+
+    item_code: str = Field(min_length=1, description="Normalized UPC / item code.")
+    units_per_case: int = Field(ge=1, le=9999, description="Units contained in one case.")
+    description: str | None = Field(
+        default=None, description="Product description, stored to identify the row later."
+    )
+
+
+class CaseMappingRequest(BaseModel):
+    """Body of POST /invoices/{id}/case-mappings — confirm one or many."""
+
+    mappings: list[CaseMappingConfirmation] = Field(
+        min_length=1, description="Products to confirm; several can be resolved at once."
+    )
+
+
+class CaseMappingResult(BaseModel):
+    """Returned after confirming mappings: the invoice's refreshed state."""
+
+    saved: int
+    case_mappings: list[CaseMappingRow]
+    pdi_export_allowed: bool
+    pdi_export_blocked_reason: str | None = None
+
+
 class StageEntry(BaseModel):
     """One processing-log entry in the document timeline."""
 
@@ -143,6 +190,13 @@ class InvoiceDetailData(BaseModel):
     )
     pdi_export_blocked_reason: str | None = Field(
         default=None, description="Why the export is blocked, when pdi_export_allowed is false."
+    )
+    case_mappings: list[CaseMappingRow] = Field(
+        default_factory=list,
+        description=(
+            "Per-line units-per-case state. Any row with mapped=false must be "
+            "confirmed before the PDI export is allowed."
+        ),
     )
 
     vendor: VendorData | None = None

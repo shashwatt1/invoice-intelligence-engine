@@ -6,6 +6,8 @@
 import { apiClient } from "./client";
 import type {
   ApiEnvelope,
+  CaseMappingConfirmation,
+  CaseMappingResult,
   DashboardData,
   DocumentStatusData,
   HistoryRow,
@@ -34,6 +36,22 @@ export async function getDocumentStatus(documentId: string): Promise<DocumentSta
 
 export async function getInvoice(invoiceId: string): Promise<InvoiceDetail> {
   const { data } = await apiClient.get<ApiEnvelope<InvoiceDetail>>(`/invoices/${invoiceId}`);
+  return data.data!;
+}
+
+/**
+ * Confirms one or more products' units-per-case. The mapping is keyed by
+ * UPC and stored permanently, so every future invoice carrying the same
+ * product resolves without asking again.
+ */
+export async function confirmCaseMappings(
+  invoiceId: string,
+  mappings: CaseMappingConfirmation[],
+): Promise<CaseMappingResult> {
+  const { data } = await apiClient.post<ApiEnvelope<CaseMappingResult>>(
+    `/invoices/${invoiceId}/case-mappings`,
+    { mappings },
+  );
   return data.data!;
 }
 

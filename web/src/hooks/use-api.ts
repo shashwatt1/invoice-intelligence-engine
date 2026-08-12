@@ -9,6 +9,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  confirmCaseMappings,
   deleteInvoice,
   getDashboardSummary,
   getDocumentStatus,
@@ -17,7 +18,7 @@ import {
   listInvoices,
   processInvoice,
 } from "@/api/endpoints";
-import type { InvoiceListParams } from "@/api/types";
+import type { CaseMappingConfirmation, InvoiceListParams } from "@/api/types";
 
 export function useDashboard() {
   return useQuery({
@@ -70,6 +71,24 @@ export function useProcessInvoice() {
       // dashboard and history projections.
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+  });
+}
+
+/**
+ * Confirms units-per-case for one or more of the invoice's products.
+ *
+ * Invalidates the invoice so pdi_export_allowed and the mapping rows are
+ * re-read from the backend rather than patched locally — the export gate
+ * is computed there, and this keeps the button and the endpoint in step.
+ */
+export function useConfirmCaseMappings(invoiceId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (mappings: CaseMappingConfirmation[]) =>
+      confirmCaseMappings(invoiceId!, mappings),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
     },
   });
 }
