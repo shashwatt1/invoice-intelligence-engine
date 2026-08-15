@@ -65,7 +65,9 @@ def build_case_mapping_status(
                 item_code=code,
                 description=item.description,
                 units_per_case=units,
-                suggested_units_per_case=suggested_units_per_case(item.pack_size),
+                suggested_units_per_case=suggested_units_per_case(
+                    item.pack_size, item.description
+                ),
                 pack_size=item.pack_size,
                 mapped=units is not None or code is None,
             )

@@ -430,10 +430,29 @@ def _pdi_amount_cents(invoice: Invoice) -> str:
 # ---------------------------------------------------------------------------
 
 
-def suggested_units_per_case(pack_size: str | None) -> int | None:
+# "24/12OZ", "12/14", "2/12PK" — the packs-per-case/unit-size notation
+# standard on beverage and grocery invoices. Requires the slash form so a
+# bare size ("20OZ", "2L") can never be read as a case pack.
+_PACK_IN_DESCRIPTION = re.compile(r"(?<!\d)(\d{1,4})\s*/\s*\d")
+
+
+def suggested_units_per_case(
+    pack_size: str | None, description: str | None = None
+) -> int | None:
     """
-    Best guess at units-per-case from a printed pack descriptor
-    ("24/12OZ" -> 24, "12/14" -> 12): the leading integer is the case pack.
+    Best guess at units-per-case, from the printed pack descriptor when
+    the vendor prints one ("24/12OZ" -> 24, "12/14" -> 12), otherwise
+    from the same notation embedded in the description.
+
+    The description fallback exists because many suppliers have no pack
+    column at all — on the Balkan receipt layout every one of the seven
+    lines came back with pack_size null while the description read "RB
+    COCONUT 24/12OZ", so the operator was asked for seven values with no
+    help on screen. It is restricted to the explicit N/M form and to
+    N >= 2: a lone "1" recovered from prose like "1/2 GALLON" would be
+    indistinguishable from a genuine single-unit case, and quietly
+    proposing 1 for an unknown product is the exact failure this whole
+    mapping table exists to prevent.
 
     A SUGGESTION ONLY — offered to a human for confirmation, never used
     directly for EDI generation. Returns None when nothing usable is
@@ -441,10 +460,15 @@ def suggested_units_per_case(pack_size: str | None) -> int | None:
     fabricated default.
     """
     match = re.match(r"\s*(\d+)", pack_size or "")
-    if not match:
+    if match:
+        units = int(match.group(1))
+        return units if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE else None
+
+    found = _PACK_IN_DESCRIPTION.search(description or "")
+    if not found:
         return None
-    units = int(match.group(1))
-    return units if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE else None
+    units = int(found.group(1))
+    return units if 2 <= units <= MAX_UNITS_PER_CASE else None
 
 
 def _pdi_units_per_case(item: InvoiceItem, units_by_item_code: Mapping[str, int]) -> str:
@@ -721,4 +745,22 @@ def build_pdi_export(invoice: Invoice, units_by_item_code: Mapping[str, int]) ->
         for item in _sorted_items(invoice)
     )
     lines.extend(_pdi_trailer_lines(invoice))
-    return "\r\n".join(lines) + "\r\n"
+    text = "\r\n".join(lines) + "\r\n"
+
+    # Structural self-check before the file leaves this function. The
+    # audit decodes the finished bytes rather than re-running the
+    # encoders, so a field that changed width — the failure mode that
+    # silently shifts every later field and is invisible in a diff —
+    # cannot escape as a downloadable file. Only structural invariants
+    # (lengths, CRLF, digit fields, the "0100" marker) are enforced here;
+    # content comparisons are reported by the audit, not raised, and the
+    # header/detail balance is deliberately not judged at all (Q7).
+    from app.services.pdi_audit import audit_pdi_export  # local: avoids an import cycle
+
+    failures = audit_pdi_export(text).structural_failures
+    if failures:
+        raise ValueError(
+            "Generated PDI file violates the confirmed byte contract: "
+            + "; ".join(f"{f.name} (expected {f.expected}, got {f.actual})" for f in failures)
+        )
+    return text

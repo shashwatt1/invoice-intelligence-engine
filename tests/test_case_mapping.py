@@ -183,3 +183,60 @@ class TestReviewStatus:
         invoice = make_invoice(make_item(RB_COCONUT, "RB COCONUT"))
         [row] = build_case_mapping_status(invoice, {})
         assert row.suggested_units_per_case is None
+
+
+class TestSuggestionFromDescription:
+    """
+    Observed failure: on the Balkan receipt layout all 7 line items came
+    back with pack_size=None because that vendor prints no pack column —
+    the pack is inside the description ("RB COCONUT 24/12OZ"). The
+    operator was asked for 7 values with nothing offered on screen.
+    """
+
+    def test_pack_notation_in_description_is_recovered(self):
+        assert suggested_units_per_case(None, "RB COCONUT 24/12OZ") == 24
+        assert suggested_units_per_case(None, "NESQ MILK 12/14 CHO") == 12
+        assert suggested_units_per_case(None, "RED BULL 12/16OZ CN") == 12
+
+    def test_explicit_pack_size_still_wins_over_the_description(self):
+        # A vendor that prints a real pack column is authoritative; the
+        # description is only consulted when that column is empty.
+        assert suggested_units_per_case("6/12OZ", "RB COCONUT 24/12OZ") == 6
+
+    def test_a_bare_size_is_never_read_as_a_case_pack(self):
+        # No slash: "20OZ" is a container size, not 20 units per case.
+        for description in ("RED BULL 20OZ CAN", "SPRING WATER 2L", "CHIPS LARGE"):
+            assert suggested_units_per_case(None, description) is None
+
+    def test_one_is_never_suggested_from_a_description(self):
+        # "1/2 GALLON" is a fraction, not a single-unit case. Proposing 1
+        # for an unknown product is the failure this table exists to stop.
+        assert suggested_units_per_case(None, "MILK 1/2 GALLON") is None
+
+    def test_out_of_range_description_values_are_rejected(self):
+        assert suggested_units_per_case(None, "WIDGET 99999/12OZ") is None
+
+    def test_no_description_and_no_pack_size_yields_nothing(self):
+        assert suggested_units_per_case(None, None) is None
+
+
+class TestSuggestionReachesTheReviewUi:
+    def test_balkan_layout_now_offers_every_suggestion(self):
+        # The exact 7 descriptions from the real invoice, all with
+        # pack_size=None as extraction actually returned them.
+        descriptions = [
+            ("NESQ MILK 12/14 CHO", 12), ("NESQ MILK 12/14 STR", 12),
+            ("RB AMBER APRCT 24/1", 24), ("RB COCONUT 24/12OZ", 24),
+            ("RB RED WTRMEL 24/12", 24), ("RED BULL 12/16OZ CN", 12),
+            ("RED BULL 12/200Z CN", 12),
+        ]
+        invoice = make_invoice(*(
+            make_item(f"6112690013{i}", description, pack_size=None, sort_order=i)
+            for i, (description, _) in enumerate(descriptions)
+        ))
+        rows = build_case_mapping_status(invoice, {})
+
+        assert [row.suggested_units_per_case for row in rows] == [
+            units for _, units in descriptions
+        ]
+        assert all(row.mapped is False for row in rows)  # still needs confirming

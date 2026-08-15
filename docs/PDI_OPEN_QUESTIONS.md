@@ -173,16 +173,101 @@ different customer/warehouse config? Do we need to support it at all?
 
 ---
 
+## Q7 — Must the AMOUNT header balance against the detail lines?
+
+**This is the highest-value unresolved question in the contract, and it
+is not answerable from anything currently in our possession.**
+
+### The observation
+
+For Balkan invoice 3376587 the file we generate today contains:
+
+| | |
+|---|---|
+| `AMOUNT` header | **$273.66** — the printed Invoice Total |
+| Σ (case cost × quantity) over the 7 `B` records | **$263.86** — the printed Total Content |
+| **Difference** | **$9.80** |
+
+The $9.80 is fully explained and is not an extraction error. The invoice
+prints it explicitly:
+
+```
+Total Content     263.86      <- goods, net of discount
+Total Deposit       4.80
+FUEL SURCHARGE      5.00
+Invoice Total     273.66      = 263.86 + 4.80 + 5.00
+```
+
+Extraction captures all four figures correctly (`subtotal`,
+`deposit_total`, `fuel_surcharge`, `grand_total`). The gap exists because
+**deposits and fuel have no confirmed home in the EDI**: the `B` record
+byte map is fully accounted for (Q1, resolved), and the trailer records
+that would carry them — `CFUE` for fuel, and whatever carries container
+deposits — have a confirmed *layout* but unconfirmed *content* (Q4).
+
+### Why we are not guessing
+
+There are at least three plausible contracts and no evidence separating
+them:
+
+1. **Header = invoice total; PDI derives the rest.** The detail lines are
+   goods only and PDI never cross-foots them. Current behaviour.
+2. **Header = invoice total; the difference must appear in trailers.**
+   The batch balances only once `CFUE`/deposit trailers are emitted. This
+   would explain why every ground-truth Format-A file carries a `CFUE`
+   trailer — all 9 of them do.
+3. **Header = goods total only.** Deposits and fuel are handled entirely
+   outside the EDI, and our header is currently $9.80 too high.
+
+Every accepted ground-truth file we hold belongs to a **different
+distributor** with its own 1,206,xxx–1,208,xxx batch sequence, and none
+of them has a matching photographed invoice. So we can read what those
+files *contain* but cannot compare them to what their invoice *said* —
+which is precisely the comparison needed here. Guessing between the three
+would mean changing a header total that PDI has already accepted, on no
+evidence, and a wrong choice silently misstates the value of every
+delivery.
+
+### The exact test that resolves this
+
+One import settles it. It requires no code change.
+
+1. In PDI, **Delete All** pending/unposted rows so the batch starts empty
+   (PDI accumulates uploads — see the forensic finding on "25 rows from 7
+   records"; without this step the totals cannot be read).
+2. Confirm the 7 case mappings for Balkan 3376587 and download the file.
+   It will contain header `$273.66` and detail lines summing to `$263.86`.
+3. Import it, and **before posting**, record from the PDI screen:
+   - the **batch/invoice total PDI displays** for the import;
+   - whether PDI raises any **out-of-balance / does-not-foot** warning;
+   - the **sum of the detail lines as PDI shows them**;
+   - whether any deposit or fuel line appears **that we did not send**.
+
+**How to read the result:**
+
+| What PDI shows | Conclusion |
+|---|---|
+| Batch total `$273.66`, no warning, details `$263.86` | Contract 1 — header is the invoice total, PDI does not cross-foot. **Change nothing.** |
+| Any out-of-balance warning, or PDI refuses to post | Contract 2 — the file must balance. Next step is emitting `CFUE` for the $5.00 fuel and identifying the deposit trailer, both from Q4. |
+| Batch total `$263.86` (PDI ignored our header and re-derived it) | Contract 3 — the header is advisory or goods-only. Re-open the header mapping with that evidence. |
+
+Until one of those three rows is observed, `_pdi_amount_cents` stays as
+it is. `app/services/pdi_audit.py` measures the gap on every generated
+file and deliberately does **not** report it as a pass or a failure.
+
+---
+
 ## Summary
 
 | # | Question | Status | Blocks item/qty accuracy? | Formatter-only fix? |
 |---|---|---|---|---|
-| Q1 | Cost block/tail | Corrected to placeholder — real cause is missing product-master data | No | No — data doesn't exist in our system |
+| Q1 | Cost block/tail | RESOLVED — case cost at [43:49], units/case at [53:57] | No | Yes — done |
 | Q2 | Batch number semantics | RESOLVED | No | Yes |
 | Q3 | Return/credit sign | RESOLVED | No | Yes |
 | Q4 | CFUE/CPPT trailer content | Layout resolved; content corrected to placeholder | No | CFUE: yes, once constant confirmed. CPPT: no — needs excise classification data we don't have |
 | Q5 | CTAX trailer | New, unimplemented | No | Unknown — too few samples |
 | Q6 | Format B (AHLA) scope | Open business question | No | N/A — scope decision first |
+| Q7 | AMOUNT header vs detail balance | **Open — one PDI import resolves it** | No | Depends on the answer; do not change until observed |
 
 None of the open items block the parts of the export that most directly
 reduce manual entry today (which item, how many). Q1 and Q4's `CPPT` half
