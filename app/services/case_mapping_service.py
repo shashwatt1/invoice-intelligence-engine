@@ -18,7 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
-from app.services.export_service import normalize_item_code, suggested_units_per_case
+from app.services.export_service import normalize_item_code, suggest_units_per_case
+
+SUGGESTION_FROM_DATABASE = "database"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,7 @@ class CaseMappingStatus:
     description: str | None
     units_per_case: int | None     # confirmed value, when one exists
     suggested_units_per_case: int | None  # from the document, needs confirmation
+    suggestion_source: str | None  # where the number came from; see SUGGESTION_*
     pack_size: str | None          # raw printed pack descriptor, shown as evidence
     mapped: bool
 
@@ -60,14 +63,17 @@ def build_case_mapping_status(
     for item in sorted(invoice.items, key=lambda i: i.sort_order):
         code = normalize_item_code(item.product_sku)
         units = units_by_item_code.get(code or "") if code else None
+        suggestion, source = suggest_units_per_case(item.pack_size, item.description)
         statuses.append(
             CaseMappingStatus(
                 item_code=code,
                 description=item.description,
                 units_per_case=units,
-                suggested_units_per_case=suggested_units_per_case(
-                    item.pack_size, item.description
-                ),
+                suggested_units_per_case=suggestion,
+                # A confirmed mapping outranks any suggestion, so report the
+                # database as the source rather than whatever the document
+                # happened to say — that is the value actually used.
+                suggestion_source=SUGGESTION_FROM_DATABASE if units is not None else source,
                 pack_size=item.pack_size,
                 mapped=units is not None or code is None,
             )

@@ -436,6 +436,56 @@ def _pdi_amount_cents(invoice: Invoice) -> str:
 _PACK_IN_DESCRIPTION = re.compile(r"(?<!\d)(\d{1,4})\s*/\s*\d")
 
 
+# Forms where the leading integer does NOT settle units-per-case, because
+# the second element is itself a multi-unit pack rather than a container
+# size: "4/6/16OZ" (four six-packs = 4 or 24?), "3/8/16", "8/6PK". The
+# number is still offered, but marked so the operator knows it is a
+# reading of the package, not a fact about how the store sells it.
+_AMBIGUOUS_PACK = re.compile(
+    r"(?<!\d)\d{1,4}\s*/\s*\d+\s*(?:/\s*\d|P(?:K|ACK)\b)", re.IGNORECASE
+)
+
+SUGGESTION_FROM_PACK_SIZE = "pack_size"
+SUGGESTION_FROM_DESCRIPTION = "description"
+SUGGESTION_FROM_DESCRIPTION_AMBIGUOUS = "description_ambiguous"
+
+
+def suggest_units_per_case(
+    pack_size: str | None, description: str | None = None
+) -> tuple[int | None, str | None]:
+    """
+    A units-per-case suggestion and the source it came from.
+
+    The source matters to the operator: a value read off a dedicated pack
+    column is stronger evidence than one scraped out of a description,
+    and a description like "BUSCH 4/6/16OZ CAN" does not settle the
+    question at all. Returning the provenance lets the review UI say
+    where a number came from instead of presenting every suggestion with
+    equal authority.
+
+    NOTHING here is ever applied automatically, whatever the source.
+    """
+    match = re.match(r"\s*(\d+)", pack_size or "")
+    if match:
+        units = int(match.group(1))
+        if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE:
+            return units, SUGGESTION_FROM_PACK_SIZE
+        return None, None
+
+    found = _PACK_IN_DESCRIPTION.search(description or "")
+    if not found:
+        return None, None
+    units = int(found.group(1))
+    if not 2 <= units <= MAX_UNITS_PER_CASE:
+        return None, None
+    source = (
+        SUGGESTION_FROM_DESCRIPTION_AMBIGUOUS
+        if _AMBIGUOUS_PACK.search(description or "")
+        else SUGGESTION_FROM_DESCRIPTION
+    )
+    return units, source
+
+
 def suggested_units_per_case(
     pack_size: str | None, description: str | None = None
 ) -> int | None:
@@ -459,16 +509,7 @@ def suggested_units_per_case(
     printed, so callers must handle "unknown" rather than receive a
     fabricated default.
     """
-    match = re.match(r"\s*(\d+)", pack_size or "")
-    if match:
-        units = int(match.group(1))
-        return units if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE else None
-
-    found = _PACK_IN_DESCRIPTION.search(description or "")
-    if not found:
-        return None
-    units = int(found.group(1))
-    return units if 2 <= units <= MAX_UNITS_PER_CASE else None
+    return suggest_units_per_case(pack_size, description)[0]
 
 
 def _pdi_units_per_case(item: InvoiceItem, units_by_item_code: Mapping[str, int]) -> str:
@@ -524,7 +565,18 @@ def _pdi_cost_block(item: InvoiceItem, units_by_item_code: Mapping[str, int]) ->
     inside a normal retail margin band, none above 1.0, and every
     cigarette line at 0.93 — the razor-thin margin that category is known
     for. Random bytes do not produce that.
+
+    A line whose cost was never extracted raises rather than encoding
+    zero. Telling PDI the goods were free is worse than refusing to
+    produce a file, and unmapped_item_codes()/items_missing_cost() gate
+    on the same condition so this is unreachable in normal use.
     """
+    if item.unit_price is None:
+        raise ValueError(
+            f"No unit cost was extracted for {item.description!r}. "
+            "Correct the line before exporting; a missing cost must never "
+            "be encoded as 000000."
+        )
     cents = round(float(abs(item.unit_price)) * 100)
     return (
         "0" * 6
@@ -669,6 +721,24 @@ def unmapped_item_codes(
     return missing
 
 
+def items_missing_cost(invoice: Invoice) -> list[str]:
+    """
+    Descriptions of line items with no extracted unit cost, in document
+    order.
+
+    Empty means every line can be priced. A NULL unit_price means
+    extraction could not read the figure (see migration 0005) — it is not
+    a free item, and encoding it as a 000000 case cost would tell PDI
+    exactly that. Blocking here is the counterpart to the units-per-case
+    gate: both refuse to guess a number that silently corrupts PDI.
+    """
+    return [
+        item.description or "(no description)"
+        for item in _sorted_items(invoice)
+        if item.unit_price is None
+    ]
+
+
 def pdi_export_eligibility(
     invoice: Invoice, units_by_item_code: Mapping[str, int] | None = None
 ) -> PdiExportEligibility:
@@ -690,6 +760,21 @@ def pdi_export_eligibility(
             allowed=False,
             requires_confirmation=False,
             blocked_reason="This invoice has no extracted line items to export.",
+        )
+
+    unpriced = items_missing_cost(invoice)
+    if unpriced:
+        count = len(unpriced)
+        return PdiExportEligibility(
+            allowed=False,
+            requires_confirmation=False,
+            blocked_reason=(
+                f"{count} line item{'s' if count != 1 else ''} "
+                f"{'have' if count != 1 else 'has'} no extracted unit cost "
+                f"({', '.join(unpriced[:3])}"
+                f"{', …' if count > 3 else ''}). Correct the invoice before "
+                "exporting — a missing cost cannot be sent as zero."
+            ),
         )
 
     if units_by_item_code is not None:

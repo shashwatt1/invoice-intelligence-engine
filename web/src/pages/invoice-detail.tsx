@@ -273,10 +273,17 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                       {item.quantity.toLocaleString()}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {item.unit_price.toLocaleString("en-US", {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 4,
-                      })}
+                      {/* Null means extraction could not read the cost. Show
+                          it as unknown rather than 0.00 — the difference is
+                          what blocks the PDI export. */}
+                      {item.unit_price === null ? (
+                        <span className="text-warning font-medium">not extracted</span>
+                      ) : (
+                        item.unit_price.toLocaleString("en-US", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 4,
+                        })
+                      )}
                     </TableCell>
                     <TableCell className="text-right font-semibold tabular-nums">
                       {formatMoney(item.line_total)}

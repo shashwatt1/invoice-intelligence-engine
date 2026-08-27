@@ -91,8 +91,11 @@ export interface DocumentStatusData {
 export interface LineItem {
   description: string;
   quantity: number;
-  unit_price: number;
-  line_total: number;
+  /** Null when extraction could not read the figure — distinct from 0.00.
+   * A line with an unknown cost blocks the PDI export rather than being
+   * sent as free goods. */
+  unit_price: number | null;
+  line_total: number | null;
   tax_rate: number | null;
   sort_order: number;
 }
@@ -163,6 +166,18 @@ export interface LlmMetadata {
  * parsed from the document's pack descriptor and is a suggestion for a
  * person to confirm, never applied on its own.
  */
+/**
+ * Where a displayed units-per-case value came from. Only "database" is
+ * ever used to build an EDI; the rest are suggestions a person must
+ * confirm, and "description_ambiguous" marks a package notation whose
+ * leading number does not settle the question (e.g. "4/6/16OZ").
+ */
+export type SuggestionSource =
+  | "database"
+  | "pack_size"
+  | "description"
+  | "description_ambiguous";
+
 export interface CaseMappingRow {
   /** Normalized UPC — the mapping key. Null when the line has no usable code. */
   item_code: string | null;
@@ -170,6 +185,7 @@ export interface CaseMappingRow {
   pack_size: string | null;
   units_per_case: number | null;
   suggested_units_per_case: number | null;
+  suggestion_source: SuggestionSource | null;
   mapped: boolean;
 }
 

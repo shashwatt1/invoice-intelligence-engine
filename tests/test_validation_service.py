@@ -14,6 +14,7 @@ from decimal import Decimal
 import pytest
 
 from app.schemas.extraction import ExtractedInvoice, ExtractedLineItem, ExtractedVendor
+from app.schemas.normalized import NormalizedInvoice
 from app.services.validation import (
     CheckStatus,
     ProcessingDecision,
@@ -374,3 +375,47 @@ class TestReport:
     def test_decision_values_are_plain_strings(self):
         assert ProcessingDecision.VALIDATED == "VALIDATED"
         assert ProcessingDecision.REVIEW_REQUIRED == "REVIEW_REQUIRED"
+
+
+class TestGrandTotalDepositConventions:
+    """
+    Vendors disagree about whether the printed subtotal already contains
+    deposits, and the label does not say which. Balkan 3376587 prints
+    subtotal 263.86 + deposit 4.80 + fuel 5.00 = 273.66; Rocco J. Testani
+    228245 prints subtotal 2,053.02 with the deposits ALREADY inside, so
+    adding its 80.10 again overshoots by exactly that. Both must pass.
+    """
+
+    def _check(self, **kwargs):
+        from app.services.validation.checks import check_grand_total_math
+
+        invoice = NormalizedInvoice(
+            **{k: (Decimal(str(v)) if v is not None else None) for k, v in kwargs.items()}
+        )
+        return check_grand_total_math(invoice, Decimal("0.02"))[0]
+
+    def test_balkan_deposit_outside_the_subtotal_still_passes(self):
+        result = self._check(subtotal="263.86", deposit_total="4.80",
+                             fuel_surcharge="5.00", discount_amount="24.46",
+                             grand_total="273.66")
+        assert result.status.value == "PASSED"
+
+    def test_testani_deposit_already_inside_the_subtotal_passes(self):
+        result = self._check(subtotal="2053.02", deposit_total="80.10",
+                             fuel_surcharge="5.00", discount_amount="0",
+                             grand_total="2058.02")
+        assert result.status.value == "PASSED"
+
+    def test_a_total_that_matches_no_convention_still_fails(self):
+        # Guard against the candidate list becoming so permissive that a
+        # genuinely wrong grand total finds some equation to satisfy it.
+        result = self._check(subtotal="2053.02", deposit_total="80.10",
+                             fuel_surcharge="5.00", discount_amount="0",
+                             grand_total="9999.99")
+        assert result.status.value == "FAILED"
+
+    def test_deposit_inside_the_subtotal_with_a_discount_outside(self):
+        result = self._check(subtotal="1000.00", deposit_total="50.00",
+                             fuel_surcharge="10.00", discount_amount="25.00",
+                             grand_total="985.00")
+        assert result.status.value == "PASSED"

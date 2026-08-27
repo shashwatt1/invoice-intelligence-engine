@@ -49,11 +49,23 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
     quantity: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, doc="Quantity (supports fractional values like 1.5 kg)."
     )
-    unit_price: Mapped[Decimal] = mapped_column(
-        Numeric(14, 4), nullable=False, doc="Price per unit."
+    unit_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 4),
+        nullable=True,
+        doc=(
+            "Net cost per unit. NULL means extraction could not determine it — "
+            "semantically distinct from a legitimate 0.00, and never coerced to "
+            "zero (see migration 0005). PDI export is blocked while it is NULL, "
+            "so a missing price cannot become a 000000 case cost."
+        ),
     )
-    line_total: Mapped[Decimal] = mapped_column(
-        Numeric(14, 2), nullable=False, doc="Total for this line item (qty × unit_price)."
+    line_total: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2),
+        nullable=True,
+        doc=(
+            "Total for this line item. NULL means extraction could not determine "
+            "it; distinct from a legitimate 0.00."
+        ),
     )
     tax_rate: Mapped[Decimal | None] = mapped_column(
         Numeric(6, 4), nullable=True, doc="Tax rate as a percentage (e.g. 18.0000 for 18%)."

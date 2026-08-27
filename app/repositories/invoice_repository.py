@@ -69,8 +69,17 @@ class InvoiceRepository:
                     description=item.description or "(no description)",
                     product_sku=item.product_code,
                     quantity=item.quantity if item.quantity is not None else Decimal("0"),
-                    unit_price=item.unit_price if item.unit_price is not None else Decimal("0"),
-                    line_total=item.line_total if item.line_total is not None else Decimal("0"),
+                    # NOT coerced to zero. When extraction reports null it is
+                    # saying "I could not read this", and a stored 0.00 would
+                    # be indistinguishable from a genuine zero price while also
+                    # passing quantity x unit_price = line_total trivially — so
+                    # validation would never flag it and the EDI would carry a
+                    # 000000 case cost. Observed on Rocco J. Testani 228245,
+                    # rows 32 and 34, where the model correctly returned null
+                    # at confidence 0.5 and persistence overwrote that with an
+                    # apparently confident $0.00.
+                    unit_price=item.unit_price,
+                    line_total=item.line_total,
                     tax_rate=item.tax_rate,
                     pack_size=item.pack_size,
                     discount=item.unit_discount,

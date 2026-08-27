@@ -22,6 +22,7 @@ from app.services.export_service import (
     build_pdi_export,
     normalize_item_code,
     pdi_export_eligibility,
+    suggest_units_per_case,
     suggested_units_per_case,
     unmapped_item_codes,
 )
@@ -240,3 +241,52 @@ class TestSuggestionReachesTheReviewUi:
             units for _, units in descriptions
         ]
         assert all(row.mapped is False for row in rows)  # still needs confirming
+
+
+class TestSuggestionProvenance:
+    """
+    The operator has to weigh a prefilled number, so the UI must say
+    where it came from. Previously it always claimed the pack column,
+    which rendered as an empty pair of quotes on vendors that print none.
+    """
+
+    def test_pack_column_is_reported_as_such(self):
+        assert suggest_units_per_case("24/12OZ", "RB COCONUT") == (24, "pack_size")
+
+    def test_description_derived_suggestions_are_labelled(self):
+        assert suggest_units_per_case(None, "RB COCONUT 24/12OZ") == (24, "description")
+
+    def test_structurally_ambiguous_packaging_is_flagged(self):
+        # Four six-packs: 4 units per case, or 24 individual cans? The
+        # invoice cannot answer that — only the store can.
+        for description in ("BUSCH 4/6/160Z CAN", "ULTRA 3/8/16", "FIREBALL 100ML 8/6PK"):
+            units, source = suggest_units_per_case(None, description)
+            assert units is not None
+            assert source == "description_ambiguous", description
+
+    def test_nothing_to_suggest_reports_no_source(self):
+        assert suggest_units_per_case(None, "BEATBOX MALT MYSTIC") == (None, None)
+
+    def test_n_pack_never_becomes_units_per_case(self):
+        # "30 PACK" describes the retail package. Whether the store sells
+        # the 30-pack as one unit or breaks singles is a business fact the
+        # mapping database owns, so no suggestion is offered at all.
+        for description in ("BUD 18 PACK CANS", "BUD 30 PACK CANS",
+                            "ULTRA 18 PACK CANS", "LAB 30 PACK CANS"):
+            assert suggest_units_per_case(None, description) == (None, None), description
+
+    def test_a_confirmed_mapping_reports_the_database_as_its_source(self):
+        invoice = make_invoice(make_item(RB_COCONUT, "RB COCONUT 24/12OZ"))
+        [row] = build_case_mapping_status(invoice, {RB_COCONUT: 6})
+
+        assert row.mapped is True
+        assert row.units_per_case == 6              # the confirmed value wins
+        assert row.suggestion_source == "database"  # not "description"
+
+    def test_ambiguous_rows_are_still_only_suggestions(self):
+        invoice = make_invoice(make_item(RB_COCONUT, "BUSCH 4/6/160Z CAN"))
+        [row] = build_case_mapping_status(invoice, {})
+
+        assert row.mapped is False          # confirmation still required
+        assert row.units_per_case is None   # nothing applied automatically
+        assert row.suggested_units_per_case == 4

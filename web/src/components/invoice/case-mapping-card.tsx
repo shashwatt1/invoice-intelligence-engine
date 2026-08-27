@@ -2,7 +2,7 @@ import { Check, PackageSearch, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import type { CaseMappingConfirmation, CaseMappingRow } from "@/api/types";
+import type { CaseMappingConfirmation, CaseMappingRow, SuggestionSource } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,43 @@ import {
 import { useConfirmCaseMappings } from "@/hooks/use-api";
 
 /**
+ * Says where a prefilled number came from, so the operator can weigh it.
+ *
+ * A value scraped out of a description is weaker evidence than one from a
+ * dedicated pack column, and a form like "4/6/16OZ" is weaker still: four
+ * six-packs could be 4 units per case or 24, and only the store knows
+ * which it sells. This previously rendered the pack column unconditionally,
+ * which showed an empty pair of quotes on every vendor that prints no such
+ * column — telling the operator nothing at all.
+ */
+function SuggestionNote({ row }: { row: CaseMappingRow }) {
+  if (row.suggested_units_per_case === null) {
+    return (
+      <span className="text-[0.7rem] text-muted-foreground">
+        no pack information printed — confirm from the product
+      </span>
+    );
+  }
+  if (row.suggestion_source === "description_ambiguous") {
+    return (
+      <span className="text-warning text-[0.7rem]">
+        ambiguous packaging — verify before saving
+      </span>
+    );
+  }
+  const source: Partial<Record<SuggestionSource, string>> = {
+    database: "from the mapping database",
+    pack_size: `from pack size “${row.pack_size ?? ""}”`,
+    description: `read from the description`,
+  };
+  return (
+    <span className="text-[0.7rem] text-muted-foreground">
+      {(row.suggestion_source && source[row.suggestion_source]) ?? "suggested"}
+    </span>
+  );
+}
+
+/**
  * Case → unit mapping review.
  *
  * PDI reads units-per-case out of the EDI and multiplies it by its own
@@ -26,9 +63,10 @@ import { useConfirmCaseMappings } from "@/hooks/use-api";
  * and it is stored against the UPC so the same product is never asked
  * about again on any later invoice.
  *
- * The document's pack descriptor ("24/12OZ") is offered as a prefilled
- * suggestion and nothing more — unconfirmed, it is not used, and an
- * unknown product is never silently defaulted to 1.
+ * Everything the document offers — a pack column, or the N/M notation in
+ * a description — is a prefilled suggestion and nothing more. Nothing is
+ * ever confirmed automatically, and an unknown product is never silently
+ * defaulted to 1.
  */
 export function CaseMappingCard({
   invoiceId,
@@ -151,11 +189,7 @@ export function CaseMappingCard({
                           }))
                         }
                       />
-                      {row.suggested_units_per_case !== null && (
-                        <span className="text-[0.7rem] text-muted-foreground">
-                          suggested from “{row.pack_size}”
-                        </span>
-                      )}
+                      <SuggestionNote row={row} />
                     </div>
                   )}
                 </TableCell>

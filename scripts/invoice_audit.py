@@ -130,6 +130,7 @@ async def _record(session, invoice: Invoice, assume: bool) -> dict:
                 "pack_size": s.pack_size,
                 "units_per_case": s.units_per_case,
                 "suggested_units_per_case": s.suggested_units_per_case,
+                "suggestion_source": s.suggestion_source,
                 "mapped": s.mapped,
             }
             for s in statuses
@@ -157,11 +158,12 @@ def _print(record: dict) -> None:
               f"{str(row['item_code_normalized'] or '-'):<13}{str(row['pack_size'] or '-'):<9}"
               f"{row['quantity']:>6}{row['unit_price']:>11}{row['line_total']:>12}")
 
-    print(f"\n  {'CASE MAPPING':<24}{'item code':<13}{'confirmed':>10}{'suggested':>11}")
+    print(f"\n  {'CASE MAPPING':<24}{'item code':<13}{'confirmed':>10}{'suggested':>11}  source")
     for row in record["case_mappings"]:
         print(f"  {(row['description'] or '')[:23]:<24}{str(row['item_code'] or '-'):<13}"
               f"{str(row['units_per_case'] or '—'):>10}"
-              f"{str(row['suggested_units_per_case'] or '—'):>11}")
+              f"{str(row['suggested_units_per_case'] or '—'):>11}"
+              f"  {row['suggestion_source'] or '—'}")
 
     audit = record["edi_audit"]
     if audit is None:

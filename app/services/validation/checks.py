@@ -221,15 +221,38 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
     )
     discount = invoice.discount_amount or Decimal("0")
 
-    # Vendors compose totals two ways, and which one applies is a property
-    # of the document, not something we can assume: some print a GROSS
-    # subtotal with the discount still to come off, others print a subtotal
-    # already net of it (e.g. a "Total Content" line). Accept whichever
-    # matches the printed grand total rather than forcing one convention
-    # and raising a false review on the other.
+    # Vendors compose totals in several ways, and which one applies is a
+    # property of the document, not something we can assume. Two axes vary
+    # independently:
+    #
+    #   discount — some print a GROSS subtotal with the discount still to
+    #     come off; others print one already net of it ("Total Content").
+    #   deposit  — some print a goods-only subtotal and list the deposit
+    #     as a separate addition; others print a subtotal that already
+    #     contains it, so adding it again double-counts.
+    #
+    # Both conventions are real and observed: Balkan 3376587 prints
+    # subtotal 263.86 + deposit 4.80 + fuel 5.00 = 273.66, while Rocco J.
+    # Testani 228245 prints subtotal 2,053.02 (deposits already inside)
+    # + delivery fee 5.00 = 2,058.02 — adding its 80.10 deposit again
+    # overshoots by exactly that amount.
+    #
+    # Accept whichever candidate matches the printed grand total rather
+    # than forcing one convention and raising a false review on the rest.
+    # The deposit-inclusive candidates are tried FIRST so a document that
+    # satisfies both readings keeps its existing interpretation.
+    deposit = invoice.deposit_total or Decimal("0")
     for label, computed in (
         ("subtotal + tax + deposit + fuel − discount", base + extras - discount),
         ("subtotal + tax + deposit + fuel (discount already in subtotal)", base + extras),
+        (
+            "subtotal + tax + fuel − discount (deposit already in subtotal)",
+            base + extras - deposit - discount,
+        ),
+        (
+            "subtotal + tax + fuel (discount and deposit already in subtotal)",
+            base + extras - deposit,
+        ),
     ):
         if _within(computed, invoice.grand_total, tolerance):
             return [
@@ -247,8 +270,9 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
             status=CheckStatus.FAILED,
             field="grand_total",
             message=(
-                "subtotal + tax + deposit + fuel does not match the printed "
-                "grand total, with or without the discount applied."
+                "subtotal + tax + fuel does not match the printed grand total "
+                "under any combination of the discount and deposit being "
+                "inside or outside the subtotal."
             ),
             expected=str(base + extras - discount),
             actual=str(invoice.grand_total),

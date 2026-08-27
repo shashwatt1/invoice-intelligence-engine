@@ -104,6 +104,54 @@ def _reconcile_line_item(
             )
             return item
 
+    # Rule C — a discount AND a deposit on the same line.
+    # Rules A and B each explain one component; layouts that print both as
+    # separate columns need them together:
+    #
+    #     EXT = (PRICE - DISC + DEP) x QTY
+    #
+    # Observed on Rocco J. Testani 228245, where this identity holds on all
+    # 38 printed rows and is corroborated by four independent printed
+    # controls (Cases 86, Total Deposit 80.10, Total Sales 2,053.02,
+    # Invoice Total 2,058.02). Nineteen rows were left unresolved because
+    # neither single-component rule could explain them, even though the
+    # document had already supplied every figure needed to prove the net
+    # cost. Ordered last so a line that either rule alone explains keeps
+    # its existing, narrower interpretation.
+    if item.unit_discount is not None and item.unit_deposit is not None:
+        net = (unit_price - item.unit_discount).quantize(MONEY_EXP)
+        expected = (qty * (net + item.unit_deposit)).quantize(MONEY_EXP)
+        if _within(expected, line_total, tolerance):
+            checks.append(
+                CheckResult(
+                    name="UNIT_PRICE_RECONCILED",
+                    status=CheckStatus.PASSED,
+                    field=f"{prefix}.unit_price",
+                    message=(
+                        "Extracted unit price was the gross (pre-discount) figure; "
+                        f"replaced with the net price {net} proved by quantity x "
+                        "(unit_price - unit_discount + unit_deposit) = line_total."
+                    ),
+                    expected=str(net),
+                    actual=str(unit_price),
+                )
+            )
+            checks.append(
+                CheckResult(
+                    name="LINE_TOTAL_INCLUDES_DEPOSIT",
+                    status=CheckStatus.PASSED,
+                    field=f"{prefix}.line_total",
+                    message=(
+                        "Line total also includes the container deposit "
+                        f"({item.unit_deposit}/unit), which is not part of the "
+                        "product cost."
+                    ),
+                )
+            )
+            return item.model_copy(
+                update={"unit_price": net, "unit_price_reconciled": True}
+            )
+
     # Unresolved: leave the extracted values untouched and route to review.
     checks.append(
         CheckResult(
