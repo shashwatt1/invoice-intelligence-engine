@@ -21,6 +21,7 @@ from app.services.case_mapping_service import build_case_mapping_status
 from app.services.export_service import (
     build_pdi_export,
     normalize_item_code,
+    pack_candidates,
     pdi_export_eligibility,
     suggest_units_per_case,
     suggested_units_per_case,
@@ -290,3 +291,72 @@ class TestSuggestionProvenance:
         assert row.mapped is False          # confirmation still required
         assert row.units_per_case is None   # nothing applied automatically
         assert row.suggested_units_per_case == 4
+
+
+class TestAmbiguousPackCandidates:
+    """
+    An ambiguous description gets choices instead of a prefilled value.
+
+    "BUSCH 4/6/16OZ" is four six-packs: 4 units per case if the store
+    sells the six-pack, 24 if it breaks singles. Prefilling either makes
+    "Confirm & Save" one click from persisting a wrong value against the
+    UPC forever — which is how a real invoice reached PDI showing "Units
+    Per Case 1" on every product.
+    """
+
+    def test_both_readings_are_offered_smallest_first(self):
+        assert pack_candidates("BUSCH 4/6/160Z CAN") == [4, 24]
+        assert pack_candidates("ULTRA 3/8/16") == [3, 24]
+        assert pack_candidates("FIREBALL 100ML 8/6PK") == [8, 48]
+
+    def test_unambiguous_packaging_offers_no_choices(self):
+        # These get a plain suggestion instead; nothing to choose between.
+        for description in ("RB COCONUT 24/12OZ", "NESQ MILK 12/14 CHO",
+                            "BUD 30 PACK CANS", "BEATBOX MALT MYSTIC"):
+            assert pack_candidates(description) == [], description
+
+    def test_the_first_candidate_is_the_suggestion(self):
+        # So the two never contradict each other on screen.
+        for description in ("BUSCH 4/6/160Z CAN", "ULTRA 3/8/16", "FIREBALL 100ML 8/6PK"):
+            units, source = suggest_units_per_case(None, description)
+            assert source == "description_ambiguous"
+            assert pack_candidates(description)[0] == units
+
+    def test_an_implausible_product_is_not_offered(self):
+        assert pack_candidates("WIDGET 500/40PK") == [500]  # 20000 exceeds the max
+
+    def test_candidates_reach_the_review_row_while_unmapped(self):
+        invoice = make_invoice(make_item(RB_COCONUT, "BUSCH 4/6/160Z CAN"))
+        [row] = build_case_mapping_status(invoice, {})
+
+        assert row.mapped is False
+        assert row.suggestion_candidates == [4, 24]
+        assert row.units_per_case is None      # still nothing applied
+
+    def test_candidates_disappear_once_a_human_has_decided(self):
+        invoice = make_invoice(make_item(RB_COCONUT, "BUSCH 4/6/160Z CAN"))
+        [row] = build_case_mapping_status(invoice, {RB_COCONUT: 24})
+
+        assert row.mapped is True
+        assert row.units_per_case == 24
+        assert row.suggestion_candidates == []
+        assert row.suggestion_source == "database"
+
+
+class TestCorrectingAConfirmedMapping:
+    """
+    A saved mapping is reused on every future invoice, so a wrong one has
+    to be correctable. The repository already upserts by UPC; these pin
+    the behaviour the UI's Update action depends on.
+    """
+
+    def test_a_corrected_value_replaces_the_old_one_in_the_edi(self):
+        invoice = make_invoice(make_item(RB_COCONUT, "BEATBOX MALT MYSTIC"))
+        wrong = build_pdi_export(invoice, {RB_COCONUT: 1}).splitlines()[1]
+        fixed = build_pdi_export(invoice, {RB_COCONUT: 12}).splitlines()[1]
+
+        assert wrong[53:57] == "0001"
+        assert fixed[53:57] == "0012"
+        # Correcting units per case must not disturb the cost bytes.
+        assert wrong[43:49] == fixed[43:49]
+        assert len(fixed) == 70

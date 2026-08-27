@@ -442,12 +442,37 @@ _PACK_IN_DESCRIPTION = re.compile(r"(?<!\d)(\d{1,4})\s*/\s*\d")
 # number is still offered, but marked so the operator knows it is a
 # reading of the package, not a fact about how the store sells it.
 _AMBIGUOUS_PACK = re.compile(
-    r"(?<!\d)\d{1,4}\s*/\s*\d+\s*(?:/\s*\d|P(?:K|ACK)\b)", re.IGNORECASE
+    r"(?<!\d)(\d{1,4})\s*/\s*(\d+)\s*(?:/\s*\d|P(?:K|ACK)\b)", re.IGNORECASE
 )
 
 SUGGESTION_FROM_PACK_SIZE = "pack_size"
 SUGGESTION_FROM_DESCRIPTION = "description"
 SUGGESTION_FROM_DESCRIPTION_AMBIGUOUS = "description_ambiguous"
+
+
+def pack_candidates(description: str | None) -> list[int]:
+    """
+    The units-per-case readings a structurally ambiguous description
+    could support, smallest first. Empty when the description is not
+    ambiguous.
+
+    "BUSCH 4/6/16OZ" is four six-packs. Units per case is 4 if the store
+    sells the six-pack as one item, or 24 if it breaks singles — the
+    invoice cannot say which. Offering both, and prefilling neither,
+    turns a one-click mistake into a deliberate answer. That mistake is
+    not hypothetical: an earlier build defaulted this field to 1 whenever
+    the pack size was unreadable, and PDI duly showed "Units Per Case 1"
+    for every product on a real invoice.
+    """
+    found = _AMBIGUOUS_PACK.search(description or "")
+    if not found:
+        return []
+    outer, inner = int(found.group(1)), int(found.group(2))
+    product = outer * inner
+    candidates = [outer]
+    if outer < product <= MAX_UNITS_PER_CASE:
+        candidates.append(product)
+    return candidates
 
 
 def suggest_units_per_case(

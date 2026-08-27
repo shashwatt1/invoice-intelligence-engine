@@ -186,6 +186,11 @@ export interface CaseMappingRow {
   units_per_case: number | null;
   suggested_units_per_case: number | null;
   suggestion_source: SuggestionSource | null;
+  /** Readings a structurally ambiguous description could support, smallest
+   * first ("4/6/16OZ" -> [4, 24]). Empty when packaging is unambiguous.
+   * Offered as choices instead of prefilling, so an ambiguous product
+   * cannot be confirmed with a single click. */
+  suggestion_candidates: number[];
   mapped: boolean;
 }
 

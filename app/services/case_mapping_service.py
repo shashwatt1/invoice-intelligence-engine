@@ -18,7 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
-from app.services.export_service import normalize_item_code, suggest_units_per_case
+from app.services.export_service import (
+    normalize_item_code,
+    pack_candidates,
+    suggest_units_per_case,
+)
 
 SUGGESTION_FROM_DATABASE = "database"
 
@@ -32,6 +36,7 @@ class CaseMappingStatus:
     units_per_case: int | None     # confirmed value, when one exists
     suggested_units_per_case: int | None  # from the document, needs confirmation
     suggestion_source: str | None  # where the number came from; see SUGGESTION_*
+    suggestion_candidates: list[int]  # readings an ambiguous pack could support
     pack_size: str | None          # raw printed pack descriptor, shown as evidence
     mapped: bool
 
@@ -74,6 +79,12 @@ def build_case_mapping_status(
                 # database as the source rather than whatever the document
                 # happened to say — that is the value actually used.
                 suggestion_source=SUGGESTION_FROM_DATABASE if units is not None else source,
+                # Only populated for a structurally ambiguous description,
+                # and only while the product is still unmapped: once a
+                # human has decided, the candidates are history.
+                suggestion_candidates=(
+                    [] if units is not None else pack_candidates(item.description)
+                ),
                 pack_size=item.pack_size,
                 mapped=units is not None or code is None,
             )

@@ -131,6 +131,7 @@ async def _record(session, invoice: Invoice, assume: bool) -> dict:
                 "units_per_case": s.units_per_case,
                 "suggested_units_per_case": s.suggested_units_per_case,
                 "suggestion_source": s.suggestion_source,
+                "suggestion_candidates": s.suggestion_candidates,
                 "mapped": s.mapped,
             }
             for s in statuses

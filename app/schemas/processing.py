@@ -74,6 +74,15 @@ class CaseMappingRow(BaseModel):
             "Null when nothing could be suggested."
         ),
     )
+    suggestion_candidates: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Units-per-case readings a structurally ambiguous description could "
+            "support, smallest first (e.g. '4/6/16OZ' -> [4, 24]). Empty when the "
+            "packaging is unambiguous. The UI offers these instead of prefilling, "
+            "so an ambiguous product cannot be confirmed with a single click."
+        ),
+    )
     mapped: bool = Field(description="False when this product still needs a mapping.")
 
 

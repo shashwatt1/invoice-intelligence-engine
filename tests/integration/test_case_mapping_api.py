@@ -220,3 +220,77 @@ class TestValidation:
             json={"mappings": [{"item_code": NORMALIZED, "units_per_case": 24}]},
         )
         assert response.status_code == 404
+
+
+class TestCorrectingAMappingThroughTheApi:
+    """
+    The UI's Update action posts to the same endpoint as the initial
+    confirmation. This proves a wrong value can be corrected without
+    touching the database by hand, and that the correction propagates to
+    later invoices — the BeatBox situation, where PDI received units per
+    case 1 and the mapping had to be repaired.
+    """
+
+    async def test_a_wrong_value_can_be_corrected_and_reaches_the_edi(
+        self, api_client, app  # noqa: F811
+    ):
+        invoice_id = await _process(api_client, app, [_line()], "wrong.pdf", "wrong")
+        url = f"/api/v1/invoices/{invoice_id}/case-mappings"
+
+        # Confirmed wrong, exactly as an old build would have written it.
+        await api_client.post(url, json={"mappings": [
+            {"item_code": NORMALIZED, "units_per_case": 1}]})
+        line = (await api_client.get(
+            f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
+        )).text.splitlines()[1]
+        assert line[53:57] == "0001"
+        cost_before = line[43:49]
+
+        # The operator corrects it — one product, on its own.
+        response = await api_client.post(url, json={"mappings": [
+            {"item_code": NORMALIZED, "units_per_case": 12}]})
+        assert response.status_code == 200
+        assert response.json()["data"]["case_mappings"][0]["units_per_case"] == 12
+
+        corrected = (await api_client.get(
+            f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
+        )).text.splitlines()[1]
+        assert corrected[53:57] == "0012"
+        assert corrected[43:49] == cost_before   # cost bytes untouched
+
+    async def test_the_correction_is_what_a_later_invoice_inherits(
+        self, api_client, app  # noqa: F811
+    ):
+        first = await _process(api_client, app, [_line()], "c-first.pdf", "correction first")
+        url = f"/api/v1/invoices/{first}/case-mappings"
+        await api_client.post(url, json={"mappings": [
+            {"item_code": NORMALIZED, "units_per_case": 1}]})
+        await api_client.post(url, json={"mappings": [
+            {"item_code": NORMALIZED, "units_per_case": 12}]})
+
+        second = await _process(api_client, app, [_line()], "c-second.pdf", "correction second")
+        detail = (await api_client.get(f"/api/v1/invoices/{second}")).json()["data"]
+
+        assert detail["pdi_export_allowed"] is True     # no prompt
+        [row] = detail["case_mappings"]
+        assert row["units_per_case"] == 12              # the corrected value
+        assert row["suggestion_source"] == "database"
+        assert row["suggestion_candidates"] == []
+
+
+class TestAmbiguousProductsInTheReviewApi:
+    async def test_candidates_are_returned_for_an_ambiguous_description(
+        self, api_client, app  # noqa: F811
+    ):
+        item = ExtractedLineItem(
+            description="BUSCH 4/6/16OZ CAN", product_code=UPC, pack_size=None,
+            quantity=1.0, unit_price=50.20, line_total=50.20,
+        )
+        invoice_id = await _process(api_client, app, [item], "ambig.pdf", "ambiguous")
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+
+        [row] = detail["case_mappings"]
+        assert row["mapped"] is False
+        assert row["suggestion_source"] == "description_ambiguous"
+        assert row["suggestion_candidates"] == [4, 24]
+        assert detail["pdi_export_allowed"] is False    # still must be confirmed

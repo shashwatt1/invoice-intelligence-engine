@@ -1,4 +1,4 @@
-import { Check, PackageSearch, TriangleAlert } from "lucide-react";
+import { Check, Pencil, PackageSearch, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -27,6 +27,15 @@ import { useConfirmCaseMappings } from "@/hooks/use-api";
  * column — telling the operator nothing at all.
  */
 function SuggestionNote({ row }: { row: CaseMappingRow }) {
+  // A confirmed mapping is the value actually used, whatever the document
+  // says — so it reports the database even when nothing was printed.
+  if (row.suggestion_source === "database") {
+    return (
+      <span className="text-[0.7rem] text-muted-foreground">
+        confirmed — reused on every future invoice
+      </span>
+    );
+  }
   if (row.suggested_units_per_case === null) {
     return (
       <span className="text-[0.7rem] text-muted-foreground">
@@ -37,7 +46,14 @@ function SuggestionNote({ row }: { row: CaseMappingRow }) {
   if (row.suggestion_source === "description_ambiguous") {
     return (
       <span className="text-warning text-[0.7rem]">
-        ambiguous packaging — verify before saving
+        “{row.pack_size ?? row.description}” could be
+        {row.suggestion_candidates.map((n, i) => (
+          <span key={n}>
+            {i === 0 ? " " : " or "}
+            <span className="font-semibold">{n}</span>
+          </span>
+        ))}
+        {" "}— enter the value this store sells by
       </span>
     );
   }
@@ -83,12 +99,25 @@ export function CaseMappingCard({
 
   // Keyed by item_code so a product appearing on several lines is one entry.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // Correcting an already-confirmed mapping is a separate, one-product
+  // action: a saved value is reused on every future invoice, so it must
+  // never be changed as a side effect of the bulk confirm below.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const confirm = useConfirmCaseMappings(invoiceId);
+  const update = useConfirmCaseMappings(invoiceId);
 
   if (mappable.length === 0) return null;
 
+  // An ambiguous description is deliberately NOT prefilled. Prefilling
+  // makes "Confirm & Save" a single click that can persist a wrong value
+  // against the UPC forever — which is exactly how a real invoice ended
+  // up in PDI with "Units Per Case 1" on every product.
   const draftFor = (row: CaseMappingRow) =>
-    drafts[row.item_code!] ?? (row.suggested_units_per_case?.toString() ?? "");
+    drafts[row.item_code!] ??
+    (row.suggestion_source === "description_ambiguous"
+      ? ""
+      : (row.suggested_units_per_case?.toString() ?? ""));
 
   const parsed = (value: string) => {
     const units = Number(value);
@@ -103,6 +132,30 @@ export function CaseMappingCard({
       units_per_case: units!,
       description: row.description,
     }));
+
+  const startEditing = (row: CaseMappingRow) => {
+    setEditing(row.item_code);
+    setEditDraft(row.units_per_case?.toString() ?? "");
+  };
+
+  const saveEdit = (row: CaseMappingRow) => {
+    const units = parsed(editDraft);
+    if (units === null) return;
+    update.mutate(
+      [{ item_code: row.item_code!, units_per_case: units, description: row.description }],
+      {
+        onSuccess: () => {
+          setEditing(null);
+          toast.success(
+            `Updated to ${units} units/case. Future invoices with this UPC will use it.`,
+          );
+        },
+        onError: (error) => {
+          toast.error(error instanceof Error ? error.message : "Failed to update the mapping.");
+        },
+      },
+    );
+  };
 
   const save = () => {
     confirm.mutate(ready, {
@@ -164,11 +217,56 @@ export function CaseMappingCard({
                   {row.pack_size ?? "—"}
                 </TableCell>
                 <TableCell>
-                  {row.mapped ? (
-                    <span className="text-success flex items-center gap-1.5 text-[0.82rem] font-medium">
-                      <Check className="size-3.5" strokeWidth={3} />
-                      {row.units_per_case} units/case
-                    </span>
+                  {row.mapped && editing === row.item_code ? (
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="number"
+                        min={1}
+                        max={9999}
+                        step={1}
+                        autoFocus
+                        className="h-8 w-24 tabular-nums"
+                        aria-label={`Correct units per case for ${row.description ?? row.item_code}`}
+                        value={editDraft}
+                        disabled={update.isPending}
+                        onChange={(event) => setEditDraft(event.target.value)}
+                      />
+                      <Button
+                        size="sm"
+                        className="h-8"
+                        disabled={parsed(editDraft) === null || update.isPending}
+                        onClick={() => saveEdit(row)}
+                      >
+                        {update.isPending ? "Saving…" : "Update"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-8 px-2"
+                        disabled={update.isPending}
+                        onClick={() => setEditing(null)}
+                        aria-label="Cancel"
+                      >
+                        <X className="size-3.5" />
+                      </Button>
+                    </div>
+                  ) : row.mapped ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-success flex items-center gap-1.5 text-[0.82rem] font-medium">
+                        <Check className="size-3.5" strokeWidth={3} />
+                        {row.units_per_case} units/case
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-1.5 text-muted-foreground"
+                        onClick={() => startEditing(row)}
+                        aria-label={`Correct the mapping for ${row.description ?? row.item_code}`}
+                      >
+                        <Pencil className="size-3" />
+                      </Button>
+                      <SuggestionNote row={row} />
+                    </div>
                   ) : (
                     <div className="flex items-center gap-2">
                       <TriangleAlert className="text-warning size-3.5 shrink-0" />
