@@ -43,6 +43,14 @@ function SuggestionNote({ row }: { row: CaseMappingRow }) {
       </span>
     );
   }
+  if (row.suggestion_source === "reference") {
+    return (
+      <span className="text-[0.7rem] text-muted-foreground">
+        store cost {row.reference_avg_cost?.toFixed(4)}/unit
+        {row.reference_description ? ` · “${row.reference_description}”` : ""}
+      </span>
+    );
+  }
   if (row.suggestion_source === "description_ambiguous") {
     return (
       <span className="text-warning text-[0.7rem]">
@@ -59,6 +67,7 @@ function SuggestionNote({ row }: { row: CaseMappingRow }) {
   }
   const source: Partial<Record<SuggestionSource, string>> = {
     database: "from the mapping database",
+    reference: "from the store catalogue",
     pack_size: `from pack size “${row.pack_size ?? ""}”`,
     description: `read from the description`,
   };

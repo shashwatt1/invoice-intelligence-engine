@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.mappers import to_history_row
 from app.api.v1.upload import get_upload_service
+from app.core.config import get_settings
 from app.core.exceptions import (
     InvoiceBaseException,
     RecordNotFoundError,
@@ -59,6 +60,7 @@ from app.services.case_mapping_service import (
 from app.services.export_service import normalize_item_code, pdi_export_eligibility
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.storage_service import get_storage_service
+from app.services.store_reference_service import match_invoice_against_reference
 from app.services.upload_service import UploadService
 
 logger = get_logger(__name__)
@@ -220,10 +222,13 @@ async def get_invoice(
     payloads = {log.stage: log.payload for log in logs if log.payload}
     document = invoice.document
     units = await invoice_units_by_item_code(db, invoice)
+    reference = await match_invoice_against_reference(
+        db, invoice, get_settings().store_number
+    )
     pdi_eligibility = pdi_export_eligibility(invoice, units)
     case_mappings = [
         CaseMappingRow(**vars(status))
-        for status in build_case_mapping_status(invoice, units)
+        for status in build_case_mapping_status(invoice, units, reference)
     ]
 
     data = InvoiceDetailData(
@@ -390,13 +395,16 @@ async def confirm_case_mappings(
     await db.commit()
 
     units = await invoice_units_by_item_code(db, invoice)
+    reference = await match_invoice_against_reference(
+        db, invoice, get_settings().store_number
+    )
     eligibility = pdi_export_eligibility(invoice, units)
     return APIResponse(
         data=CaseMappingResult(
             saved=len(payload.mappings),
             case_mappings=[
                 CaseMappingRow(**vars(status))
-                for status in build_case_mapping_status(invoice, units)
+                for status in build_case_mapping_status(invoice, units, reference)
             ],
             pdi_export_allowed=eligibility.allowed,
             pdi_export_blocked_reason=eligibility.blocked_reason,

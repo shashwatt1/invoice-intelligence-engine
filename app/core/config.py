@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # OCR (used from Sprint 2 onward)
     # -------------------------------------------------------------------------
+    # The store whose product reference catalogue applies to uploaded
+    # invoices. Reference costs are store-specific, so this scopes every
+    # lookup; a second store means a second value, not a schema change.
+    store_number: str = "47708760"
     ocr_provider: Literal["google_vision", "paddleocr", "easyocr"] = "google_vision"
     google_vision_api_key: str = ""
 

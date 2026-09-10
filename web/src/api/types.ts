@@ -174,6 +174,7 @@ export interface LlmMetadata {
  */
 export type SuggestionSource =
   | "database"
+  | "reference"
   | "pack_size"
   | "description"
   | "description_ambiguous";
@@ -191,6 +192,12 @@ export interface CaseMappingRow {
    * Offered as choices instead of prefilling, so an ambiguous product
    * cannot be confirmed with a single click. */
   suggestion_candidates: number[];
+  /** Product name in the store's own catalogue, when matched by exact UPC.
+   * A hint for the operator; never used to match automatically. */
+  reference_description: string | null;
+  /** The store's per-selling-unit cost — the evidence behind a
+   * reference-derived suggestion. Never written to an EDI. */
+  reference_avg_cost: number | null;
   mapped: boolean;
 }
 

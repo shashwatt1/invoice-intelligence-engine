@@ -23,8 +23,14 @@ from app.services.export_service import (
     pack_candidates,
     suggest_units_per_case,
 )
+from app.services.store_reference_service import ReferenceMatch
 
 SUGGESTION_FROM_DATABASE = "database"
+# Derived from the store's own per-unit cost: invoice case cost divided
+# by the store's avg_cost. Stronger evidence than anything printed on the
+# document, because it reflects how this store actually sells the item —
+# but still a suggestion, and still requires a human to confirm it.
+SUGGESTION_FROM_REFERENCE = "reference"
 
 
 @dataclass(frozen=True)
@@ -39,6 +45,10 @@ class CaseMappingStatus:
     suggestion_candidates: list[int]  # readings an ambiguous pack could support
     pack_size: str | None          # raw printed pack descriptor, shown as evidence
     mapped: bool
+    # Store-catalogue evidence for this product, when it was matched by
+    # exact UPC. Shown to the operator; never applied automatically.
+    reference_description: str | None = None
+    reference_avg_cost: float | None = None
 
 
 async def invoice_units_by_item_code(
@@ -54,7 +64,9 @@ async def invoice_units_by_item_code(
 
 
 def build_case_mapping_status(
-    invoice: Invoice, units_by_item_code: dict[str, int]
+    invoice: Invoice,
+    units_by_item_code: dict[str, int],
+    reference_matches: dict[str, ReferenceMatch] | None = None,
 ) -> list[CaseMappingStatus]:
     """
     Per-line mapping state, in document order.
@@ -69,6 +81,14 @@ def build_case_mapping_status(
         code = normalize_item_code(item.product_sku)
         units = units_by_item_code.get(code or "") if code else None
         suggestion, source = suggest_units_per_case(item.pack_size, item.description)
+        # The store's own cost basis outranks anything the vendor printed:
+        # it reflects how this store sells the item, which is the question
+        # units-per-case actually asks. A confirmed mapping still outranks
+        # both — see below.
+        reference = (reference_matches or {}).get(code or "")
+        if reference is not None and reference.units_per_case_candidate is not None:
+            suggestion = reference.units_per_case_candidate
+            source = SUGGESTION_FROM_REFERENCE
         statuses.append(
             CaseMappingStatus(
                 item_code=code,
@@ -83,10 +103,18 @@ def build_case_mapping_status(
                 # and only while the product is still unmapped: once a
                 # human has decided, the candidates are history.
                 suggestion_candidates=(
-                    [] if units is not None else pack_candidates(item.description)
+                    []
+                    if units is not None or source == SUGGESTION_FROM_REFERENCE
+                    else pack_candidates(item.description)
                 ),
                 pack_size=item.pack_size,
                 mapped=units is not None or code is None,
+                reference_description=reference.reference_description if reference else None,
+                reference_avg_cost=(
+                    float(reference.avg_cost)
+                    if reference and reference.avg_cost is not None
+                    else None
+                ),
             )
         )
     return statuses

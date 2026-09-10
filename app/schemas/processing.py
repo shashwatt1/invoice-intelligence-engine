@@ -68,7 +68,7 @@ class CaseMappingRow(BaseModel):
         description=(
             "Where the displayed value came from: 'database' (confirmed "
             "mapping, the only source ever used for an EDI), 'pack_size' (a "
-            "dedicated pack column), 'description' (N/M notation in the "
+            "dedicated pack column), 'reference' (derived from the store's own per-unit cost), 'description' (N/M notation in the "
             "description), or 'description_ambiguous' (a form such as "
             "'4/6/16OZ' whose leading number does not settle units-per-case). "
             "Null when nothing could be suggested."
@@ -81,6 +81,20 @@ class CaseMappingRow(BaseModel):
             "support, smallest first (e.g. '4/6/16OZ' -> [4, 24]). Empty when the "
             "packaging is unambiguous. The UI offers these instead of prefilling, "
             "so an ambiguous product cannot be confirmed with a single click."
+        ),
+    )
+    reference_description: str | None = Field(
+        default=None,
+        description=(
+            "Product name in the store's own catalogue, when matched by exact "
+            "UPC. A hint for the operator; never used to match automatically."
+        ),
+    )
+    reference_avg_cost: float | None = Field(
+        default=None,
+        description=(
+            "The store's per-selling-unit cost, when known. Evidence behind a "
+            "reference-derived suggestion; never written to an EDI."
         ),
     )
     mapped: bool = Field(description="False when this product still needs a mapping.")
