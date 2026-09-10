@@ -98,6 +98,9 @@ export interface LineItem {
   line_total: number | null;
   tax_rate: number | null;
   sort_order: number;
+  /** Transaction fields on this line replaced by a person. Empty means
+   * every value came from extraction. */
+  corrected_fields: string[];
 }
 
 export interface Vendor {
@@ -199,6 +202,31 @@ export interface CaseMappingRow {
    * reference-derived suggestion. Never written to an EDI. */
   reference_avg_cost: number | null;
   mapped: boolean;
+}
+
+/** Body of PATCH /invoices/{id}/items/{sort_order}. Only the transaction
+ * values a person may need to supply when OCR could not associate them. */
+export interface LineItemCorrection {
+  unit_price?: string;
+  quantity?: string;
+  line_total?: string;
+}
+
+export interface LineItemCorrectionResult {
+  item: {
+    sort_order: number;
+    description: string;
+    quantity: number;
+    unit_price: number | null;
+    line_total: number | null;
+    corrected_fields: string[];
+  };
+  status: string;
+  composite_confidence: number;
+  failed_checks: number;
+  review_reasons: string[];
+  pdi_export_allowed: boolean;
+  pdi_export_blocked_reason: string | null;
 }
 
 export interface CaseMappingConfirmation {

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -127,6 +128,73 @@ class CaseMappingResult(BaseModel):
     pdi_export_blocked_reason: str | None = None
 
 
+class LineItemCorrection(BaseModel):
+    """
+    Body of PATCH /invoices/{id}/items/{sort_order}.
+
+    Only the transaction values a person may legitimately need to supply
+    when extraction could not associate them. Deliberately narrow: this
+    is a correction path for a handful of unreadable figures, not an
+    invoice editor. Units-per-case is not here — it has its own confirm
+    endpoint and its own authority table.
+
+    Every field is optional; at least one must be given. A field left out
+    keeps its extracted value.
+    """
+
+    # Range is enforced in the endpoint rather than with a Field
+    # constraint: a `ge` on a Decimal field puts a Decimal into the
+    # validation error context, which the shared exception handler cannot
+    # serialize (it raises TypeError and returns 500 instead of 422).
+    unit_price: Decimal | None = Field(
+        default=None, description="Net cost per unit, as printed. Must not be negative."
+    )
+    quantity: Decimal | None = Field(
+        default=None, description="Quantity delivered, as printed. Must not be negative."
+    )
+    line_total: Decimal | None = Field(
+        default=None,
+        description="Extended total for the line, as printed. Must not be negative.",
+    )
+
+    def updates(self) -> dict[str, Decimal]:
+        return {
+            field: value
+            for field, value in (
+                ("unit_price", self.unit_price),
+                ("quantity", self.quantity),
+                ("line_total", self.line_total),
+            )
+            if value is not None
+        }
+
+
+class CorrectedLineItem(BaseModel):
+    """One line item after correction, with its provenance."""
+
+    sort_order: int
+    description: str
+    quantity: float
+    unit_price: float | None = None
+    line_total: float | None = None
+    corrected_fields: list[str] = Field(
+        default_factory=list,
+        description="Fields on this line replaced by a person, never by extraction.",
+    )
+
+
+class LineItemCorrectionResult(BaseModel):
+    """The corrected line plus the invoice's re-judged state."""
+
+    item: CorrectedLineItem
+    status: str = Field(description="VALIDATED or REVIEW_REQUIRED after revalidation.")
+    composite_confidence: float
+    failed_checks: int
+    review_reasons: list[str] = Field(default_factory=list)
+    pdi_export_allowed: bool
+    pdi_export_blocked_reason: str | None = None
+
+
 class StageEntry(BaseModel):
     """One processing-log entry in the document timeline."""
 
@@ -170,6 +238,13 @@ class LineItemData(BaseModel):
     line_total: float | None = None
     tax_rate: float | None = None
     sort_order: int = 0
+    corrected_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Transaction fields on this line replaced by a person. Empty means "
+            "every value came from extraction."
+        ),
+    )
 
 
 class VendorData(BaseModel):

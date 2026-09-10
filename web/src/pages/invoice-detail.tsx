@@ -1,9 +1,9 @@
-import { ArrowLeft, ListOrdered, Trash2 } from "lucide-react";
+import { ArrowLeft, ListOrdered, Pencil, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
-import type { InvoiceDetail } from "@/api/types";
+import type { InvoiceDetail, LineItem } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
 import { PageHeader } from "@/components/layout/page-header";
 import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
@@ -35,7 +35,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useDeleteInvoice, useInvoice } from "@/hooks/use-api";
+import { Input } from "@/components/ui/input";
+import { useCorrectLineItem, useDeleteInvoice, useInvoice } from "@/hooks/use-api";
 import { formatDate, formatDateTime, formatMoney, formatPercent } from "@/lib/format";
 
 /**
@@ -186,6 +187,130 @@ function TotalsRow({
   );
 }
 
+/**
+ * One editable transaction value on a line item.
+ *
+ * OCR interleaves the description and price columns on some receipt
+ * layouts, so a few values per invoice arrive unassociated and the model
+ * reports them as null rather than guessing. This is how a person
+ * supplies them — no reprocessing, no model call, just the deterministic
+ * checks run again against the corrected figure.
+ *
+ * A corrected value is marked, so a typed figure never goes on reading
+ * as extracted data.
+ */
+function EditableAmount({
+  invoiceId,
+  item,
+  field,
+  render,
+}: {
+  invoiceId: string;
+  item: LineItem;
+  field: "unit_price" | "quantity" | "line_total";
+  render: (value: number) => string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const correct = useCorrectLineItem(invoiceId);
+
+  const value = item[field];
+  const corrected = item.corrected_fields.includes(field);
+
+  const save = () => {
+    const parsed = Number(draft);
+    if (draft.trim() === "" || Number.isNaN(parsed) || parsed < 0) return;
+    correct.mutate(
+      { sortOrder: item.sort_order, correction: { [field]: draft } },
+      {
+        onSuccess: (result) => {
+          setEditing(false);
+          toast.success(
+            result.pdi_export_allowed
+              ? "Corrected. PDI export is now available."
+              : `Corrected — ${result.failed_checks} validation issue${
+                  result.failed_checks === 1 ? "" : "s"
+                } remaining.`,
+          );
+        },
+        onError: (error) => {
+          toast.error(error instanceof Error ? error.message : "Correction failed.");
+        },
+      },
+    );
+  };
+
+  if (editing) {
+    return (
+      <div className="flex items-center justify-end gap-1">
+        <Input
+          type="number"
+          min={0}
+          step="0.01"
+          autoFocus
+          className="h-7 w-24 text-right tabular-nums"
+          aria-label={`Correct ${field.replace("_", " ")} for ${item.description}`}
+          value={draft}
+          disabled={correct.isPending}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") save();
+            if (event.key === "Escape") setEditing(false);
+          }}
+        />
+        <Button size="sm" className="h-7 px-2" disabled={correct.isPending} onClick={save}>
+          {correct.isPending ? "…" : "Save"}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 px-1"
+          disabled={correct.isPending}
+          onClick={() => setEditing(false)}
+          aria-label="Cancel"
+        >
+          <X className="size-3" />
+        </Button>
+      </div>
+    );
+  }
+
+  const begin = () => {
+    setDraft(value === null ? "" : String(value));
+    setEditing(true);
+  };
+
+  return (
+    <div className="group flex items-center justify-end gap-1">
+      {value === null ? (
+        <button
+          type="button"
+          onClick={begin}
+          className="text-warning font-medium underline decoration-dotted underline-offset-2"
+        >
+          not extracted
+        </button>
+      ) : (
+        <>
+          <span className={corrected ? "font-medium underline decoration-dotted underline-offset-2" : undefined}
+                title={corrected ? "Corrected by hand — not from extraction" : undefined}>
+            {render(value)}
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1 text-muted-foreground opacity-0 group-hover:opacity-100"
+            onClick={begin}
+            aria-label={`Correct ${field.replace("_", " ")} for ${item.description}`}
+          >
+            <Pencil className="size-3" />
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function DetailBody({ detail }: { detail: InvoiceDetail }) {
   const vendor = detail.vendor;
   return (
@@ -270,23 +395,33 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                       {item.description}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {item.quantity.toLocaleString()}
+                      <EditableAmount
+                        invoiceId={detail.invoice_id}
+                        item={item}
+                        field="quantity"
+                        render={(v) => v.toLocaleString()}
+                      />
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {/* Null means extraction could not read the cost. Show
-                          it as unknown rather than 0.00 — the difference is
-                          what blocks the PDI export. */}
-                      {item.unit_price === null ? (
-                        <span className="text-warning font-medium">not extracted</span>
-                      ) : (
-                        item.unit_price.toLocaleString("en-US", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 4,
-                        })
-                      )}
+                      <EditableAmount
+                        invoiceId={detail.invoice_id}
+                        item={item}
+                        field="unit_price"
+                        render={(v) =>
+                          v.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 4,
+                          })
+                        }
+                      />
                     </TableCell>
                     <TableCell className="text-right font-semibold tabular-nums">
-                      {formatMoney(item.line_total)}
+                      <EditableAmount
+                        invoiceId={detail.invoice_id}
+                        item={item}
+                        field="line_total"
+                        render={(v) => formatMoney(v)}
+                      />
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground tabular-nums">
                       {item.tax_rate !== null ? `${item.tax_rate}%` : "—"}

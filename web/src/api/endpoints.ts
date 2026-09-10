@@ -6,6 +6,8 @@
 import { apiClient } from "./client";
 import type {
   ApiEnvelope,
+  LineItemCorrection,
+  LineItemCorrectionResult,
   CaseMappingConfirmation,
   CaseMappingResult,
   DashboardData,
@@ -51,6 +53,22 @@ export async function confirmCaseMappings(
   const { data } = await apiClient.post<ApiEnvelope<CaseMappingResult>>(
     `/invoices/${invoiceId}/case-mappings`,
     { mappings },
+  );
+  return data.data!;
+}
+
+/**
+ * Supplies transaction values OCR could not associate for one line, then
+ * re-runs validation. No OCR or model call is made.
+ */
+export async function correctLineItem(
+  invoiceId: string,
+  sortOrder: number,
+  correction: LineItemCorrection,
+): Promise<LineItemCorrectionResult> {
+  const { data } = await apiClient.patch<ApiEnvelope<LineItemCorrectionResult>>(
+    `/invoices/${invoiceId}/items/${sortOrder}`,
+    correction,
   );
   return data.data!;
 }

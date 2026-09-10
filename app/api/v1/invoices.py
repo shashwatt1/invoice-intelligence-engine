@@ -45,10 +45,13 @@ from app.schemas.processing import (
     CaseMappingRequest,
     CaseMappingResult,
     CaseMappingRow,
+    CorrectedLineItem,
     DatabaseConfirmation,
     HistoryRow,
     InvoiceDeleteResult,
     InvoiceDetailData,
+    LineItemCorrection,
+    LineItemCorrectionResult,
     LineItemData,
     ProcessAccepted,
     VendorData,
@@ -59,6 +62,7 @@ from app.services.case_mapping_service import (
 )
 from app.services.export_service import normalize_item_code, pdi_export_eligibility
 from app.services.pipeline_service import InvoiceProcessingPipeline
+from app.services.revalidation_service import revalidate_invoice
 from app.services.storage_service import get_storage_service
 from app.services.store_reference_service import match_invoice_against_reference
 from app.services.upload_service import UploadService
@@ -268,6 +272,7 @@ async def get_invoice(
                 line_total=float(item.line_total) if item.line_total is not None else None,
                 tax_rate=float(item.tax_rate) if item.tax_rate is not None else None,
                 sort_order=item.sort_order,
+                corrected_fields=item.corrected_fields or [],
             )
             for item in sorted(invoice.items, key=lambda i: i.sort_order)
         ],
@@ -406,6 +411,90 @@ async def confirm_case_mappings(
                 CaseMappingRow(**vars(status))
                 for status in build_case_mapping_status(invoice, units, reference)
             ],
+            pdi_export_allowed=eligibility.allowed,
+            pdi_export_blocked_reason=eligibility.blocked_reason,
+        )
+    )
+
+
+@router.patch(
+    "/invoices/{invoice_id}/items/{sort_order}",
+    response_model=APIResponse[LineItemCorrectionResult],
+    summary="Correct a line item's transaction values",
+    description=(
+        "Replaces unit price, quantity and/or line total on one line item "
+        "with figures a person read off the document, then re-runs "
+        "validation and recomputes the PDI export gate.\n\n"
+        "For the handful of values extraction cannot associate — OCR "
+        "interleaves the description and price columns on some receipt "
+        "layouts, and the model reports what it cannot place as null "
+        "rather than guessing. No OCR or model call is made: only the "
+        "deterministic checks run again, against the same rules the "
+        "pipeline used.\n\n"
+        "Corrected fields are recorded on the line, so a typed figure "
+        "never continues to read as extracted data. Units-per-case is not "
+        "editable here — it has its own confirmation endpoint and its own "
+        "authority table."
+    ),
+    responses={
+        404: {"description": "Invoice or line item not found"},
+        422: {"description": "No fields given, or a negative value"},
+    },
+)
+async def correct_line_item(
+    invoice_id: uuid.UUID,
+    sort_order: int,
+    payload: LineItemCorrection,
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[LineItemCorrectionResult]:
+    updates = payload.updates()
+    if not updates:
+        raise ValidationError(
+            message="Provide at least one of unit_price, quantity or line_total.",
+            detail={"invoice_id": str(invoice_id), "sort_order": sort_order},
+        )
+    negative = sorted(field for field, value in updates.items() if value < 0)
+    if negative:
+        raise ValidationError(
+            message=f"{', '.join(negative)} must not be negative.",
+            detail={"invoice_id": str(invoice_id), "sort_order": sort_order,
+                    "fields": negative},
+        )
+
+    repository = InvoiceRepository(db)
+    if await repository.get(invoice_id) is None:
+        raise RecordNotFoundError(
+            message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
+        )
+
+    item = await repository.correct_item(invoice_id, sort_order, updates)
+    if item is None:
+        raise RecordNotFoundError(
+            message="Line item not found on this invoice.",
+            detail={"invoice_id": str(invoice_id), "sort_order": sort_order},
+        )
+
+    invoice = await repository.get_detail(invoice_id)
+    report = await revalidate_invoice(db, invoice)
+
+    units = await invoice_units_by_item_code(db, invoice)
+    eligibility = pdi_export_eligibility(invoice, units)
+    await db.commit()
+
+    return APIResponse(
+        data=LineItemCorrectionResult(
+            item=CorrectedLineItem(
+                sort_order=item.sort_order,
+                description=item.description,
+                quantity=float(item.quantity),
+                unit_price=float(item.unit_price) if item.unit_price is not None else None,
+                line_total=float(item.line_total) if item.line_total is not None else None,
+                corrected_fields=item.corrected_fields or [],
+            ),
+            status=report.decision.value,
+            composite_confidence=report.confidence.composite,
+            failed_checks=len(report.failed_checks),
+            review_reasons=report.review_reasons,
             pdi_export_allowed=eligibility.allowed,
             pdi_export_blocked_reason=eligibility.blocked_reason,
         )

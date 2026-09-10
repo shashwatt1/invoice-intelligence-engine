@@ -19,7 +19,7 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import ForeignKey, Index, Integer, Numeric, String, Text, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, UUIDPrimaryKeyMixin
@@ -89,6 +89,16 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
     )
 
     # Phase 3 — product matching
+    corrected_fields: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        doc=(
+            "Transaction fields a person replaced, e.g. ['unit_price']. Empty "
+            "or NULL means every value on this line came from extraction. "
+            "Per-field so correcting one value does not make its neighbours "
+            "look hand-entered."
+        ),
+    )
     product_sku: Mapped[str | None] = mapped_column(
         String(100), nullable=True, doc="Matched product SKU (populated in Phase 3)."
     )

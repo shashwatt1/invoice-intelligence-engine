@@ -90,6 +90,37 @@ class InvoiceRepository:
         await self._session.flush()
         return invoice
 
+    async def correct_item(
+        self,
+        invoice_id: uuid.UUID,
+        sort_order: int,
+        updates: dict[str, Decimal],
+    ) -> InvoiceItem | None:
+        """
+        Replace transaction values on one line item with figures a person
+        supplied, recording which fields they touched.
+
+        Only the caller-supplied fields change; everything else on the row
+        keeps its extracted value. `corrected_fields` accumulates rather
+        than overwrites, so correcting a price today and a quantity
+        tomorrow leaves both marked. Flushes, never commits.
+        """
+        result = await self._session.execute(
+            select(InvoiceItem).where(
+                InvoiceItem.invoice_id == invoice_id,
+                InvoiceItem.sort_order == sort_order,
+            )
+        )
+        item = result.scalar_one_or_none()
+        if item is None:
+            return None
+
+        for field, value in updates.items():
+            setattr(item, field, value)
+        item.corrected_fields = sorted(set(item.corrected_fields or []) | set(updates))
+        await self._session.flush()
+        return item
+
     async def get(self, invoice_id: uuid.UUID) -> Invoice | None:
         return await self._session.get(Invoice, invoice_id)
 

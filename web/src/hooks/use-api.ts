@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   confirmCaseMappings,
+  correctLineItem,
   deleteInvoice,
   getDashboardSummary,
   getDocumentStatus,
@@ -18,7 +19,11 @@ import {
   listInvoices,
   processInvoice,
 } from "@/api/endpoints";
-import type { CaseMappingConfirmation, InvoiceListParams } from "@/api/types";
+import type {
+  CaseMappingConfirmation,
+  InvoiceListParams,
+  LineItemCorrection,
+} from "@/api/types";
 
 export function useDashboard() {
   return useQuery({
@@ -87,6 +92,26 @@ export function useConfirmCaseMappings(invoiceId: string | undefined) {
   return useMutation({
     mutationFn: (mappings: CaseMappingConfirmation[]) =>
       confirmCaseMappings(invoiceId!, mappings),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+    },
+  });
+}
+
+/**
+ * Corrects one line item's transaction values.
+ *
+ * Invalidates the invoice so the re-run validation report, the corrected
+ * figures and the export gate all come back from the backend rather than
+ * being patched locally.
+ */
+export function useCorrectLineItem(invoiceId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sortOrder, correction }: {
+      sortOrder: number;
+      correction: LineItemCorrection;
+    }) => correctLineItem(invoiceId!, sortOrder, correction),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
     },
