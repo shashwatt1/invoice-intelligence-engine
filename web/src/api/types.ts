@@ -97,6 +97,10 @@ export interface LineItem {
   unit_price: number | null;
   line_total: number | null;
   tax_rate: number | null;
+  /** Per-unit container deposit. Not product cost and never in an EDI —
+   * it is what lets reconciliation explain a line whose extended total
+   * includes it. */
+  unit_deposit: number | null;
   sort_order: number;
   /** Transaction fields on this line replaced by a person. Empty means
    * every value came from extraction. */
@@ -210,6 +214,7 @@ export interface LineItemCorrection {
   unit_price?: string;
   quantity?: string;
   line_total?: string;
+  unit_deposit?: string;
 }
 
 export interface LineItemCorrectionResult {
@@ -219,6 +224,7 @@ export interface LineItemCorrectionResult {
     quantity: number;
     unit_price: number | null;
     line_total: number | null;
+    unit_deposit: number | null;
     corrected_fields: string[];
   };
   status: string;

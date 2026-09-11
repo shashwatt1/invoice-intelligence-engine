@@ -271,3 +271,86 @@ class TestRejection:
     async def test_an_unknown_invoice_is_404(self, api_client):  # noqa: F811
         response = await patch(api_client, uuid.uuid4(), 0, unit_price="1")
         assert response.status_code == 404
+
+
+class TestDepositCorrection:
+    """
+    The same OCR interleaving that drops a cost drops the deposit beside
+    it. Without the deposit, reconciliation cannot prove
+    (cost + deposit) x quantity = line total, so a line whose extended
+    total includes a deposit keeps failing LINE_ITEM_MATH even after the
+    cost is supplied. Observed on Testani 228245 rows 31, 33 and 34.
+
+    The deposit is NOT product cost and never reaches an EDI — it only
+    lets the arithmetic close.
+    """
+
+    async def test_supplying_a_deposit_clears_the_line_item_math_failure(
+        self, api_client, app  # noqa: F811
+    ):
+        # LAB 30 PACK CANS as it really arrives: cost and deposit both
+        # unreadable, extended total 24.20 = (22.70 + 1.50) x 1.
+        item = ExtractedLineItem(
+            description="LAB 30 PACK CANS", product_code=UPC, quantity=1.0,
+            unit_price=None, unit_deposit=None, line_total=None,
+        )
+        invoice_id = await process(
+            api_client, app, [item], "deposit.pdf", "deposit",
+            subtotal=24.20, grand_total=24.20,
+        )
+        await patch(api_client, invoice_id, 0, unit_price="22.70", line_total="24.20")
+
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        failing = [c for c in detail["validation_report"]["checks"]
+                   if c["name"] == "LINE_ITEM_MATH" and c["status"] == "FAILED"]
+        assert failing, "expected the line to be unreconcilable without its deposit"
+
+        data = (await patch(api_client, invoice_id, 0, unit_deposit="1.50")).json()["data"]
+
+        assert data["item"]["unit_deposit"] == 1.50
+        assert "unit_deposit" in data["item"]["corrected_fields"]
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        assert not [c for c in detail["validation_report"]["checks"]
+                    if c["name"] == "LINE_ITEM_MATH" and c["status"] == "FAILED"]
+
+    async def test_the_deposit_maps_to_its_column_and_reads_back(
+        self, api_client, app  # noqa: F811
+    ):
+        # The API field is unit_deposit; the column is `deposit`.
+        invoice_id = await process(
+            api_client, app, [line()], "col.pdf", "column",
+            subtotal=22.70, grand_total=22.70,
+        )
+        await patch(api_client, invoice_id, 0, unit_deposit="0.60")
+
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        assert detail["line_items"][0]["unit_deposit"] == 0.60
+        assert detail["line_items"][0]["corrected_fields"] == ["unit_deposit"]
+
+    async def test_the_deposit_never_reaches_the_edi(self, api_client, app):  # noqa: F811
+        # Case cost stays the product cost; the deposit is not added to it.
+        invoice_id = await process(
+            api_client, app, [line(unit_price=22.70, line_total=24.20)],
+            "edi.pdf", "edi deposit", subtotal=24.20, grand_total=24.20,
+        )
+        await patch(api_client, invoice_id, 0, unit_deposit="1.50")
+        await api_client.post(
+            f"/api/v1/invoices/{invoice_id}/case-mappings",
+            json={"mappings": [{"item_code": NORMALIZED, "units_per_case": 30}]},
+        )
+
+        export = await api_client.get(
+            f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
+        )
+        assert export.status_code == 200
+        detail_line = export.text.splitlines()[1]
+        assert detail_line[43:49] == "002270"   # cost only, not 24.20
+        assert len(detail_line) == 70
+
+    async def test_a_negative_deposit_is_rejected(self, api_client, app):  # noqa: F811
+        invoice_id = await process(
+            api_client, app, [line()], "negdep.pdf", "negative deposit",
+            subtotal=22.70, grand_total=22.70,
+        )
+        assert (await patch(api_client, invoice_id, 0,
+                            unit_deposit="-1")).status_code == 422

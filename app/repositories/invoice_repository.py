@@ -115,8 +115,10 @@ class InvoiceRepository:
         if item is None:
             return None
 
+        from app.schemas.processing import LineItemCorrection
+
         for field, value in updates.items():
-            setattr(item, field, value)
+            setattr(item, LineItemCorrection.COLUMNS.get(field, field), value)
         item.corrected_fields = sorted(set(item.corrected_fields or []) | set(updates))
         await self._session.flush()
         return item

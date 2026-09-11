@@ -1,8 +1,8 @@
-import { Check, Pencil, PackageSearch, TriangleAlert, X } from "lucide-react";
+import { Check, Database, FileText, HelpCircle, Pencil, PackageSearch, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import type { CaseMappingConfirmation, CaseMappingRow, SuggestionSource } from "@/api/types";
+import type { CaseMappingConfirmation, CaseMappingRow } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,84 +15,117 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useConfirmCaseMappings } from "@/hooks/use-api";
+import { cn } from "@/lib/utils";
 
 /**
- * Says where a prefilled number came from, so the operator can weigh it.
+ * Case → unit mapping review.
  *
- * A value scraped out of a description is weaker evidence than one from a
- * dedicated pack column, and a form like "4/6/16OZ" is weaker still: four
- * six-packs could be 4 units per case or 24, and only the store knows
- * which it sells. This previously rendered the pack column unconditionally,
- * which showed an empty pair of quotes on every vendor that prints no such
- * column — telling the operator nothing at all.
+ * PDI multiplies units-per-case by its own item retail to get Case
+ * Retail, so a wrong value silently corrupts pricing. product_case_mappings
+ * is therefore the single authority: a value only ever reaches an EDI
+ * after a person confirms it, and it is stored against the UPC so the
+ * same product is never asked about again.
+ *
+ * Unresolved products are grouped by how good the evidence is, because
+ * "24, derived from the store's own cost basis" and "24, because the
+ * description contains 24/12OZ" and "could be 4 or 24" deserve very
+ * different amounts of scrutiny — and presenting them in one
+ * undifferentiated list invites confirming the weak ones as fast as the
+ * strong ones. That is how a real invoice reached PDI with Units Per
+ * Case 1 on every product.
+ *
+ * Nothing here is ever confirmed automatically, whatever the evidence.
  */
-function SuggestionNote({ row }: { row: CaseMappingRow }) {
-  // A confirmed mapping is the value actually used, whatever the document
-  // says — so it reports the database even when nothing was printed.
+
+type Band = "reference" | "document" | "ambiguous" | "none";
+
+const BANDS: {
+  id: Band;
+  label: string;
+  blurb: string;
+  icon: typeof Database;
+  tone: string;
+  prefill: boolean;
+}[] = [
+  {
+    id: "reference",
+    label: "A · Derived from the store's own cost",
+    blurb:
+      "Invoice case cost ÷ the store's per-unit cost landed on a whole case pack. The strongest evidence available — still needs confirming.",
+    icon: Database,
+    tone: "text-success",
+    prefill: true,
+  },
+  {
+    id: "document",
+    label: "B · Read from the document",
+    blurb:
+      "Taken from a pack column or the N/M notation in the description. Usually right; check it against the product.",
+    icon: FileText,
+    tone: "text-foreground",
+    prefill: true,
+  },
+  {
+    id: "ambiguous",
+    label: "C · Ambiguous packaging",
+    blurb:
+      "The packaging supports more than one reading, and only the store knows which it sells by. Deliberately left blank.",
+    icon: TriangleAlert,
+    tone: "text-warning",
+    prefill: false,
+  },
+  {
+    id: "none",
+    label: "D · No evidence",
+    blurb:
+      "Neither the document nor the store catalogue can answer this. Enter the value from the product itself.",
+    icon: HelpCircle,
+    tone: "text-muted-foreground",
+    prefill: false,
+  },
+];
+
+function bandOf(row: CaseMappingRow): Band {
+  if (row.suggestion_source === "reference") return "reference";
+  if (row.suggestion_source === "description_ambiguous") return "ambiguous";
+  if (row.suggested_units_per_case !== null) return "document";
+  return "none";
+}
+
+/** Where a value came from, in the operator's terms. */
+function Evidence({ row }: { row: CaseMappingRow }) {
   if (row.suggestion_source === "database") {
-    return (
-      <span className="text-[0.7rem] text-muted-foreground">
-        confirmed — reused on every future invoice
-      </span>
-    );
-  }
-  if (row.suggested_units_per_case === null) {
-    return (
-      <span className="text-[0.7rem] text-muted-foreground">
-        no pack information printed — confirm from the product
-      </span>
-    );
+    return <span className="text-muted-foreground">confirmed — reused on every future invoice</span>;
   }
   if (row.suggestion_source === "reference") {
     return (
-      <span className="text-[0.7rem] text-muted-foreground">
+      <span className="text-muted-foreground">
         store cost {row.reference_avg_cost?.toFixed(4)}/unit
-        {row.reference_description ? ` · “${row.reference_description}”` : ""}
       </span>
     );
   }
   if (row.suggestion_source === "description_ambiguous") {
     return (
-      <span className="text-warning text-[0.7rem]">
-        “{row.pack_size ?? row.description}” could be
+      <span className="text-warning">
+        could be
         {row.suggestion_candidates.map((n, i) => (
           <span key={n}>
             {i === 0 ? " " : " or "}
             <span className="font-semibold">{n}</span>
           </span>
         ))}
-        {" "}— enter the value this store sells by
       </span>
     );
   }
-  const source: Partial<Record<SuggestionSource, string>> = {
-    database: "from the mapping database",
-    reference: "from the store catalogue",
-    pack_size: `from pack size “${row.pack_size ?? ""}”`,
-    description: `read from the description`,
-  };
-  return (
-    <span className="text-[0.7rem] text-muted-foreground">
-      {(row.suggestion_source && source[row.suggestion_source]) ?? "suggested"}
-    </span>
-  );
+  if (row.suggestion_source === "pack_size") {
+    return <span className="text-muted-foreground">pack size “{row.pack_size ?? ""}”</span>;
+  }
+  if (row.suggestion_source === "description") {
+    return <span className="text-muted-foreground">read from the description</span>;
+  }
+  return <span className="text-muted-foreground">nothing on the invoice or in the catalogue</span>;
 }
 
-/**
- * Case → unit mapping review.
- *
- * PDI reads units-per-case out of the EDI and multiplies it by its own
- * item retail to get Case Retail, so a wrong value silently corrupts
- * pricing in PDI. The mapping table is therefore the single source of
- * truth: a value only ever reaches the EDI after a person confirms it,
- * and it is stored against the UPC so the same product is never asked
- * about again on any later invoice.
- *
- * Everything the document offers — a pack column, or the N/M notation in
- * a description — is a prefilled suggestion and nothing more. Nothing is
- * ever confirmed automatically, and an unknown product is never silently
- * defaulted to 1.
- */
 export function CaseMappingCard({
   invoiceId,
   rows,
@@ -101,16 +134,15 @@ export function CaseMappingCard({
   rows: CaseMappingRow[];
 }) {
   // Lines with no usable product code cannot be keyed to a mapping at
-  // all (the backend's export gate skips them for the same reason), so
-  // showing them here would ask for something that cannot be saved.
+  // all (the backend's export gate skips them for the same reason).
   const mappable = useMemo(() => rows.filter((row) => row.item_code !== null), [rows]);
+  const confirmed = useMemo(() => mappable.filter((row) => row.mapped), [mappable]);
   const pending = useMemo(() => mappable.filter((row) => !row.mapped), [mappable]);
 
-  // Keyed by item_code so a product appearing on several lines is one entry.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   // Correcting an already-confirmed mapping is a separate, one-product
   // action: a saved value is reused on every future invoice, so it must
-  // never be changed as a side effect of the bulk confirm below.
+  // never change as a side effect of confirming something else.
   const [editing, setEditing] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const confirm = useConfirmCaseMappings(invoiceId);
@@ -118,29 +150,47 @@ export function CaseMappingCard({
 
   if (mappable.length === 0) return null;
 
-  // An ambiguous description is deliberately NOT prefilled. Prefilling
-  // makes "Confirm & Save" a single click that can persist a wrong value
-  // against the UPC forever — which is exactly how a real invoice ended
-  // up in PDI with "Units Per Case 1" on every product.
-  const draftFor = (row: CaseMappingRow) =>
-    drafts[row.item_code!] ??
-    (row.suggestion_source === "description_ambiguous"
-      ? ""
-      : (row.suggested_units_per_case?.toString() ?? ""));
-
   const parsed = (value: string) => {
     const units = Number(value);
     return Number.isInteger(units) && units >= 1 && units <= 9999 ? units : null;
   };
 
-  const ready: CaseMappingConfirmation[] = pending
-    .map((row) => ({ row, units: parsed(draftFor(row)) }))
-    .filter(({ units }) => units !== null)
-    .map(({ row, units }) => ({
-      item_code: row.item_code!,
-      units_per_case: units!,
-      description: row.description,
-    }));
+  // Weak evidence is never prefilled: a prefilled box turns Confirm into
+  // one click that persists a guess against the UPC forever.
+  const draftFor = (row: CaseMappingRow) => {
+    const band = BANDS.find((b) => b.id === bandOf(row));
+    return (
+      drafts[row.item_code!] ??
+      (band?.prefill ? (row.suggested_units_per_case?.toString() ?? "") : "")
+    );
+  };
+
+  const readyIn = (group: CaseMappingRow[]): CaseMappingConfirmation[] =>
+    group
+      .map((row) => ({ row, units: parsed(draftFor(row)) }))
+      .filter(({ units }) => units !== null)
+      .map(({ row, units }) => ({
+        item_code: row.item_code!,
+        units_per_case: units!,
+        description: row.description,
+      }));
+
+  const save = (group: CaseMappingRow[]) => {
+    const ready = readyIn(group);
+    if (ready.length === 0) return;
+    confirm.mutate(ready, {
+      onSuccess: (result) => {
+        setDrafts({});
+        toast.success(
+          `Confirmed ${result.saved} mapping${result.saved === 1 ? "" : "s"}.` +
+            (result.pdi_export_allowed ? " PDI export is now available." : ""),
+        );
+      },
+      onError: (error) => {
+        toast.error(error instanceof Error ? error.message : "Failed to save mappings.");
+      },
+    });
+  };
 
   const startEditing = (row: CaseMappingRow) => {
     setEditing(row.item_code);
@@ -155,31 +205,35 @@ export function CaseMappingCard({
       {
         onSuccess: () => {
           setEditing(null);
-          toast.success(
-            `Updated to ${units} units/case. Future invoices with this UPC will use it.`,
-          );
+          toast.success(`Updated to ${units} units/case.`);
         },
         onError: (error) => {
-          toast.error(error instanceof Error ? error.message : "Failed to update the mapping.");
+          toast.error(error instanceof Error ? error.message : "Failed to update.");
         },
       },
     );
   };
 
-  const save = () => {
-    confirm.mutate(ready, {
-      onSuccess: (result) => {
-        setDrafts({});
-        toast.success(
-          `Saved ${result.saved} case mapping${result.saved === 1 ? "" : "s"}.` +
-            (result.pdi_export_allowed ? " PDI export is now available." : ""),
-        );
-      },
-      onError: (error) => {
-        toast.error(error instanceof Error ? error.message : "Failed to save case mappings.");
-      },
-    });
-  };
+  const columns = (
+    <TableHeader>
+      <TableRow className="hover:bg-transparent">
+        <TableHead>Product</TableHead>
+        <TableHead>UPC</TableHead>
+        <TableHead>Store catalogue</TableHead>
+        <TableHead className="w-64">Units per case</TableHead>
+      </TableRow>
+    </TableHeader>
+  );
+
+  const productCells = (row: CaseMappingRow) => (
+    <>
+      <TableCell className="max-w-64 truncate font-medium">{row.description ?? "—"}</TableCell>
+      <TableCell className="font-mono text-[0.78rem] tabular-nums">{row.item_code}</TableCell>
+      <TableCell className="max-w-56 truncate text-[0.78rem] text-muted-foreground">
+        {row.reference_description ?? <span className="opacity-60">no match</span>}
+      </TableCell>
+    </>
+  );
 
   return (
     <Card className="gap-0 p-0" data-testid="case-mapping-card">
@@ -188,137 +242,165 @@ export function CaseMappingCard({
           <PackageSearch className="size-4" /> Case → unit mapping
           {pending.length > 0 ? (
             <span className="text-warning text-[0.75rem] font-medium">
-              {pending.length} product{pending.length === 1 ? "" : "s"} need
-              {pending.length === 1 ? "s" : ""} confirmation
+              {pending.length} of {mappable.length} still need confirmation
             </span>
           ) : (
-            <span className="text-success text-[0.75rem] font-medium">
-              All products mapped
-            </span>
+            <span className="text-success text-[0.75rem] font-medium">All products mapped</span>
           )}
         </CardTitle>
         <p className="text-[0.75rem] text-muted-foreground">
-          {pending.length > 0
-            ? "PDI multiplies units per case by its own item retail, so this is confirmed once per product and reused on every future invoice."
-            : "Confirmed previously — these values come from the mapping database, not from the document."}
+          PDI multiplies this by its own item retail, so each product is confirmed once and
+          reused on every future invoice. Nothing is ever confirmed automatically.
         </p>
       </CardHeader>
-      <CardContent className="px-2 pb-2">
-        <Table>
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <TableHead>Product</TableHead>
-              <TableHead>UPC / item code</TableHead>
-              <TableHead>On document</TableHead>
-              <TableHead className="w-52">Units per case</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {mappable.map((row) => (
-              <TableRow key={row.item_code}>
-                <TableCell className="max-w-72 truncate font-medium">
-                  {row.description ?? "—"}
-                </TableCell>
-                <TableCell className="font-mono text-[0.78rem] tabular-nums">
-                  {row.item_code}
-                </TableCell>
-                <TableCell className="text-[0.78rem] text-muted-foreground">
-                  {row.pack_size ?? "—"}
-                </TableCell>
-                <TableCell>
-                  {row.mapped && editing === row.item_code ? (
-                    <div className="flex items-center gap-1.5">
-                      <Input
-                        type="number"
-                        min={1}
-                        max={9999}
-                        step={1}
-                        autoFocus
-                        className="h-8 w-24 tabular-nums"
-                        aria-label={`Correct units per case for ${row.description ?? row.item_code}`}
-                        value={editDraft}
-                        disabled={update.isPending}
-                        onChange={(event) => setEditDraft(event.target.value)}
-                      />
-                      <Button
-                        size="sm"
-                        className="h-8"
-                        disabled={parsed(editDraft) === null || update.isPending}
-                        onClick={() => saveEdit(row)}
-                      >
-                        {update.isPending ? "Saving…" : "Update"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-8 px-2"
-                        disabled={update.isPending}
-                        onClick={() => setEditing(null)}
-                        aria-label="Cancel"
-                      >
-                        <X className="size-3.5" />
-                      </Button>
-                    </div>
-                  ) : row.mapped ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-success flex items-center gap-1.5 text-[0.82rem] font-medium">
-                        <Check className="size-3.5" strokeWidth={3} />
-                        {row.units_per_case} units/case
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-1.5 text-muted-foreground"
-                        onClick={() => startEditing(row)}
-                        aria-label={`Correct the mapping for ${row.description ?? row.item_code}`}
-                      >
-                        <Pencil className="size-3" />
-                      </Button>
-                      <SuggestionNote row={row} />
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <TriangleAlert className="text-warning size-3.5 shrink-0" />
-                      <Input
-                        type="number"
-                        min={1}
-                        max={9999}
-                        step={1}
-                        className="h-8 w-24 tabular-nums"
-                        aria-label={`Units per case for ${row.description ?? row.item_code}`}
-                        placeholder="e.g. 24"
-                        value={draftFor(row)}
-                        disabled={confirm.isPending}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [row.item_code!]: event.target.value,
-                          }))
-                        }
-                      />
-                      <SuggestionNote row={row} />
-                    </div>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
 
-        {pending.length > 0 && (
-          <div className="flex items-center justify-between gap-4 border-t px-3 py-3">
-            <p className="text-[0.75rem] text-muted-foreground">
-              Saved against the UPC — this product will never need confirming again.
-            </p>
-            <Button
-              size="sm"
-              disabled={ready.length === 0 || confirm.isPending}
-              onClick={save}
-            >
-              {confirm.isPending
-                ? "Saving…"
-                : `Confirm & Save${ready.length > 1 ? ` (${ready.length})` : ""}`}
-            </Button>
+      <CardContent className="space-y-5 px-2 pt-1 pb-3">
+        {BANDS.map((band) => {
+          const group = pending.filter((row) => bandOf(row) === band.id);
+          if (group.length === 0) return null;
+          const ready = readyIn(group);
+          const Icon = band.icon;
+
+          return (
+            <div key={band.id}>
+              <div className="px-3 pb-1">
+                <div className={cn("flex items-center gap-1.5 text-[0.82rem] font-semibold", band.tone)}>
+                  <Icon className="size-3.5" />
+                  {band.label}
+                  <span className="text-muted-foreground font-normal">({group.length})</span>
+                </div>
+                <p className="text-[0.72rem] text-muted-foreground">{band.blurb}</p>
+              </div>
+
+              <Table>
+                {columns}
+                <TableBody>
+                  {group.map((row) => (
+                    <TableRow key={row.item_code}>
+                      {productCells(row)}
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            min={1}
+                            max={9999}
+                            step={1}
+                            className="h-8 w-20 tabular-nums"
+                            aria-label={`Units per case for ${row.description ?? row.item_code}`}
+                            placeholder={band.prefill ? "" : "enter"}
+                            value={draftFor(row)}
+                            disabled={confirm.isPending}
+                            onChange={(event) =>
+                              setDrafts((current) => ({
+                                ...current,
+                                [row.item_code!]: event.target.value,
+                              }))
+                            }
+                          />
+                          <span className="text-[0.7rem]">
+                            <Evidence row={row} />
+                          </span>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+
+              <div className="flex items-center justify-between gap-4 border-t px-3 py-2">
+                <p className="text-[0.72rem] text-muted-foreground">
+                  {ready.length === 0
+                    ? "Enter a value to confirm."
+                    : `${ready.length} of ${group.length} ready.`}
+                </p>
+                <Button
+                  size="sm"
+                  variant={band.id === "reference" ? "default" : "outline"}
+                  disabled={ready.length === 0 || confirm.isPending}
+                  onClick={() => save(group)}
+                >
+                  {confirm.isPending ? "Saving…" : `Confirm ${ready.length || ""}`.trim()}
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+
+        {confirmed.length > 0 && (
+          <div>
+            <div className="px-3 pb-1">
+              <div className="text-success flex items-center gap-1.5 text-[0.82rem] font-semibold">
+                <Check className="size-3.5" strokeWidth={3} />
+                Confirmed
+                <span className="text-muted-foreground font-normal">({confirmed.length})</span>
+              </div>
+              <p className="text-[0.72rem] text-muted-foreground">
+                These values reach the EDI. Correct one if it is wrong — it is reused on every
+                future invoice.
+              </p>
+            </div>
+            <Table>
+              {columns}
+              <TableBody>
+                {confirmed.map((row) => (
+                  <TableRow key={row.item_code}>
+                    {productCells(row)}
+                    <TableCell>
+                      {editing === row.item_code ? (
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            type="number"
+                            min={1}
+                            max={9999}
+                            step={1}
+                            autoFocus
+                            className="h-8 w-20 tabular-nums"
+                            aria-label={`Correct units per case for ${row.description ?? row.item_code}`}
+                            value={editDraft}
+                            disabled={update.isPending}
+                            onChange={(event) => setEditDraft(event.target.value)}
+                          />
+                          <Button
+                            size="sm"
+                            className="h-8"
+                            disabled={parsed(editDraft) === null || update.isPending}
+                            onClick={() => saveEdit(row)}
+                          >
+                            {update.isPending ? "Saving…" : "Update"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 px-2"
+                            disabled={update.isPending}
+                            onClick={() => setEditing(null)}
+                            aria-label="Cancel"
+                          >
+                            <X className="size-3.5" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="text-success flex items-center gap-1.5 text-[0.82rem] font-medium">
+                            <Check className="size-3.5" strokeWidth={3} />
+                            {row.units_per_case} units/case
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-muted-foreground"
+                            onClick={() => startEditing(row)}
+                            aria-label={`Correct the mapping for ${row.description ?? row.item_code}`}
+                          >
+                            <Pencil className="size-3" />
+                          </Button>
+                        </div>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
         )}
       </CardContent>

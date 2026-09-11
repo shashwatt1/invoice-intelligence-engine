@@ -271,6 +271,7 @@ async def get_invoice(
                 unit_price=float(item.unit_price) if item.unit_price is not None else None,
                 line_total=float(item.line_total) if item.line_total is not None else None,
                 tax_rate=float(item.tax_rate) if item.tax_rate is not None else None,
+                unit_deposit=float(item.deposit) if item.deposit is not None else None,
                 sort_order=item.sort_order,
                 corrected_fields=item.corrected_fields or [],
             )
@@ -489,6 +490,7 @@ async def correct_line_item(
                 quantity=float(item.quantity),
                 unit_price=float(item.unit_price) if item.unit_price is not None else None,
                 line_total=float(item.line_total) if item.line_total is not None else None,
+                unit_deposit=float(item.deposit) if item.deposit is not None else None,
                 corrected_fields=item.corrected_fields or [],
             ),
             status=report.decision.value,

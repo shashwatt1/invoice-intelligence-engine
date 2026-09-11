@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -156,6 +156,26 @@ class LineItemCorrection(BaseModel):
         default=None,
         description="Extended total for the line, as printed. Must not be negative.",
     )
+    unit_deposit: Decimal | None = Field(
+        default=None,
+        description=(
+            "Per-unit container deposit, as printed. NOT part of product cost "
+            "and never written to an EDI — it is what lets reconciliation "
+            "prove (cost + deposit) x quantity = line total on layouts that "
+            "fold the deposit into the extended total."
+        ),
+    )
+
+    # API field name -> ORM column. The column predates the extraction
+    # schema's `unit_deposit` naming; the API uses the clearer name and
+    # records that name in corrected_fields, so provenance reads the way
+    # the operator saw it.
+    COLUMNS: ClassVar[dict[str, str]] = {
+        "unit_price": "unit_price",
+        "quantity": "quantity",
+        "line_total": "line_total",
+        "unit_deposit": "deposit",
+    }
 
     def updates(self) -> dict[str, Decimal]:
         return {
@@ -164,6 +184,7 @@ class LineItemCorrection(BaseModel):
                 ("unit_price", self.unit_price),
                 ("quantity", self.quantity),
                 ("line_total", self.line_total),
+                ("unit_deposit", self.unit_deposit),
             )
             if value is not None
         }
@@ -177,6 +198,7 @@ class CorrectedLineItem(BaseModel):
     quantity: float
     unit_price: float | None = None
     line_total: float | None = None
+    unit_deposit: float | None = None
     corrected_fields: list[str] = Field(
         default_factory=list,
         description="Fields on this line replaced by a person, never by extraction.",
@@ -237,6 +259,14 @@ class LineItemData(BaseModel):
     unit_price: float | None = None
     line_total: float | None = None
     tax_rate: float | None = None
+    unit_deposit: float | None = Field(
+        default=None,
+        description=(
+            "Per-unit container deposit as extracted. Null when it could not "
+            "be read — which prevents reconciliation from explaining a line "
+            "whose total includes it."
+        ),
+    )
     sort_order: int = 0
     corrected_fields: list[str] = Field(
         default_factory=list,

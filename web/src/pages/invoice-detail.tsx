@@ -207,7 +207,7 @@ function EditableAmount({
 }: {
   invoiceId: string;
   item: LineItem;
-  field: "unit_price" | "quantity" | "line_total";
+  field: "unit_price" | "quantity" | "line_total" | "unit_deposit";
   render: (value: number) => string;
 }) {
   const [editing, setEditing] = useState(false);
@@ -384,6 +384,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                   <TableHead>Product</TableHead>
                   <TableHead className="text-right">Quantity</TableHead>
                   <TableHead className="text-right">Unit price</TableHead>
+                  <TableHead className="text-right">Deposit</TableHead>
                   <TableHead className="text-right">Line total</TableHead>
                   <TableHead className="text-right">Tax %</TableHead>
                 </TableRow>
@@ -413,6 +414,14 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                             maximumFractionDigits: 4,
                           })
                         }
+                      />
+                    </TableCell>
+                    <TableCell className="text-right text-muted-foreground tabular-nums">
+                      <EditableAmount
+                        invoiceId={detail.invoice_id}
+                        item={item}
+                        field="unit_deposit"
+                        render={(v) => formatMoney(v)}
                       />
                     </TableCell>
                     <TableCell className="text-right font-semibold tabular-nums">
