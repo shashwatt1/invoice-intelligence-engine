@@ -22,12 +22,13 @@ from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.services.case_mapping_service import (
     SUGGESTION_FROM_DATABASE,
-    SUGGESTION_FROM_REFERENCE,
     build_case_mapping_status,
 )
 from app.services.store_reference_service import (
+    EVIDENCE_RATIO,
     MAX_PACK_RELATIVE_ERROR,
     ReferenceMatch,
+    UnitsEvidence,
     derive_units_per_case,
 )
 
@@ -58,10 +59,16 @@ def match(code, avg_cost, invoice_cost, description="ref name"):
         None if invoice_cost is None else Decimal(invoice_cost),
         None if avg_cost is None else Decimal(avg_cost),
     )
+    evidence = (
+        UnitsEvidence(candidate, EVIDENCE_RATIO, "Item_Sales_Summary", None, None,
+                      {"avg_cost": avg_cost, "ratio": ratio})
+        if candidate is not None else None
+    )
     return ReferenceMatch(
         item_code=code, reference_description=description,
         avg_cost=None if avg_cost is None else Decimal(avg_cost),
         avg_price=None, units_per_case_candidate=candidate, candidate_ratio=ratio,
+        best_evidence=evidence, all_evidence=(evidence,) if evidence else (),
     )
 
 
@@ -121,7 +128,7 @@ class TestSuggestionPrecedence:
             invoice, {}, {BUSCH: match(BUSCH, "4.6875", "18.75", "Busch 6pack cans")}
         )
         assert row.suggested_units_per_case == 4
-        assert row.suggestion_source == SUGGESTION_FROM_REFERENCE
+        assert row.suggestion_source == "reference_ratio"
         assert row.reference_description == "Busch 6pack cans"
         assert row.reference_avg_cost == 4.6875
 
@@ -151,7 +158,7 @@ class TestSuggestionPrecedence:
         [with_ref] = build_case_mapping_status(
             invoice, {}, {BUSCH: match(BUSCH, "4.6875", "18.75")}
         )
-        assert with_ref.suggestion_source == SUGGESTION_FROM_REFERENCE
+        assert with_ref.suggestion_source == "reference_ratio"
         assert with_ref.suggestion_candidates == []   # the ambiguity is resolved
 
     def test_a_matched_product_with_no_cost_falls_back_to_the_document(self):
@@ -179,7 +186,7 @@ class TestDescriptionIsNeverUsedToMatch:
             invoice, {}, {"99999999999": match("99999999999", "4.6875", "18.75",
                                               "BUSCH 4/6/160Z CAN")}
         )
-        assert row.suggestion_source != SUGGESTION_FROM_REFERENCE
+        assert not row.suggestion_source.startswith("reference")
         assert row.reference_description is None
 
     def test_a_line_with_no_upc_can_never_match(self):

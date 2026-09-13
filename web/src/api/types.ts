@@ -181,7 +181,9 @@ export interface LlmMetadata {
  */
 export type SuggestionSource =
   | "database"
-  | "reference"
+  | "reference_explicit"    // a typed items/case cell in the store's workbook
+  | "reference_package"     // decoded from a two-fraction package string
+  | "reference_ratio"       // a source's own case cost ÷ unit cost
   | "pack_size"
   | "description"
   | "description_ambiguous";

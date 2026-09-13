@@ -61,7 +61,7 @@ async def db_engine():
         await conn.execute(
             text(
                 "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
-                "documents, product_case_mappings, store_product_references, product_data_proposals CASCADE"
+                "documents, product_case_mappings, store_product_references, product_data_proposals, product_pricing, product_identifier, product_identity CASCADE"
             )
         )
     await engine.dispose()
@@ -76,7 +76,7 @@ async def db_session(db_engine) -> AsyncSession:
         await session.execute(
             text(
                 "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
-                "documents, product_case_mappings, store_product_references, product_data_proposals CASCADE"
+                "documents, product_case_mappings, store_product_references, product_data_proposals, product_pricing, product_identifier, product_identity CASCADE"
             )
         )
         await session.commit()

@@ -49,9 +49,9 @@ const BANDS: {
 }[] = [
   {
     id: "reference",
-    label: "A · Derived from the store's own cost",
+    label: "A · From the store's own records",
     blurb:
-      "Invoice case cost ÷ the store's per-unit cost landed on a whole case pack. The strongest evidence available — still needs confirming.",
+      "A typed items/case cell, a distributor's package structure, or the store's cost ratio. The strongest evidence available — still needs review.",
     icon: Database,
     tone: "text-success",
     prefill: true,
@@ -86,7 +86,7 @@ const BANDS: {
 ];
 
 function bandOf(row: CaseMappingRow): Band {
-  if (row.suggestion_source === "reference") return "reference";
+  if (row.suggestion_source?.startsWith("reference_")) return "reference";
   if (row.suggestion_source === "description_ambiguous") return "ambiguous";
   if (row.suggested_units_per_case !== null) return "document";
   return "none";
@@ -97,7 +97,13 @@ function Evidence({ row }: { row: CaseMappingRow }) {
   if (row.suggestion_source === "database") {
     return <span className="text-muted-foreground">confirmed — reused on every future invoice</span>;
   }
-  if (row.suggestion_source === "reference") {
+  if (row.suggestion_source === "reference_explicit") {
+    return <span className="text-muted-foreground">typed items/case in the store's workbook</span>;
+  }
+  if (row.suggestion_source === "reference_package") {
+    return <span className="text-muted-foreground">package structure in a distributor price list</span>;
+  }
+  if (row.suggestion_source === "reference_ratio") {
     return (
       <span className="text-muted-foreground">
         store cost {row.reference_avg_cost?.toFixed(4)}/unit

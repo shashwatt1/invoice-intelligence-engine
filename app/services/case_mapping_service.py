@@ -35,11 +35,20 @@ class PendingProposal(Protocol):
 
 
 SUGGESTION_FROM_DATABASE = "database"
-# Derived from the store's own per-unit cost: invoice case cost divided
-# by the store's avg_cost. Stronger evidence than anything printed on the
-# document, because it reflects how this store actually sells the item —
-# but still a suggestion, and still requires a human to confirm it.
-SUGGESTION_FROM_REFERENCE = "reference"
+# Reference-derived suggestions, strongest first. Each names how the
+# number was arrived at, because a reviewer weighs a typed items/case
+# cell, a decoded package string and a cost ratio very differently.
+# All three are still suggestions: nothing reaches an EDI without an
+# approved mapping.
+SUGGESTION_FROM_REFERENCE_EXPLICIT = "reference_explicit"
+SUGGESTION_FROM_REFERENCE_PACKAGE = "reference_package"
+SUGGESTION_FROM_REFERENCE_RATIO = "reference_ratio"
+REFERENCE_SUGGESTION_SOURCES = frozenset({
+    SUGGESTION_FROM_REFERENCE_EXPLICIT, SUGGESTION_FROM_REFERENCE_PACKAGE,
+    SUGGESTION_FROM_REFERENCE_RATIO,
+})
+# Kept for callers that only need "did the reference say something".
+SUGGESTION_FROM_REFERENCE = SUGGESTION_FROM_REFERENCE_RATIO
 
 
 @dataclass(frozen=True)
@@ -101,9 +110,9 @@ def build_case_mapping_status(
         # both — see below.
         reference = (reference_matches or {}).get(code or "")
         queued = (pending or {}).get(code or "")
-        if reference is not None and reference.units_per_case_candidate is not None:
-            suggestion = reference.units_per_case_candidate
-            source = SUGGESTION_FROM_REFERENCE
+        if reference is not None and reference.best_evidence is not None:
+            suggestion = reference.best_evidence.units_per_case
+            source = reference.best_evidence.kind      # reference_explicit / _package / _ratio
         statuses.append(
             CaseMappingStatus(
                 item_code=code,
@@ -119,7 +128,7 @@ def build_case_mapping_status(
                 # human has decided, the candidates are history.
                 suggestion_candidates=(
                     []
-                    if units is not None or source == SUGGESTION_FROM_REFERENCE
+                    if units is not None or source in REFERENCE_SUGGESTION_SOURCES
                     else pack_candidates(item.description)
                 ),
                 pack_size=item.pack_size,

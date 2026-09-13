@@ -34,6 +34,8 @@ from app.models.product_case_mapping import SOURCE_APPROVED
 from app.models.product_data_proposal import (
     ENTITY_CASE_MAPPING,
     FIELD_UNITS_PER_CASE,
+    SOURCE_BEER_INVENTORY_EXPLICIT,
+    SOURCE_BEER_INVENTORY_PACKAGE,
     SOURCE_DOCUMENT_AMBIGUOUS,
     SOURCE_DOCUMENT_DERIVED,
     SOURCE_OPERATOR_ENTERED,
@@ -45,9 +47,17 @@ from app.repositories.product_data_proposal_repository import (
     ProductDataProposalRepository,
 )
 from app.services.case_mapping_service import (
-    SUGGESTION_FROM_REFERENCE,
+    REFERENCE_SUGGESTION_SOURCES,
+    SUGGESTION_FROM_REFERENCE_EXPLICIT,
+    SUGGESTION_FROM_REFERENCE_PACKAGE,
     CaseMappingStatus,
 )
+
+# suggestion source -> proposal source
+_REFERENCE_PROPOSAL_SOURCE = {
+    SUGGESTION_FROM_REFERENCE_EXPLICIT: SOURCE_BEER_INVENTORY_EXPLICIT,
+    SUGGESTION_FROM_REFERENCE_PACKAGE: SOURCE_BEER_INVENTORY_PACKAGE,
+}
 
 
 @dataclass(frozen=True)
@@ -75,8 +85,9 @@ def _classify(status: CaseMappingStatus | None, value: int) -> tuple[str, dict[s
         "reference_description": status.reference_description,
         "reference_avg_cost": status.reference_avg_cost,
     }
-    if status.suggestion_source == SUGGESTION_FROM_REFERENCE and value == status.suggested_units_per_case:
-        return SOURCE_REFERENCE_DERIVED, evidence
+    if (status.suggestion_source in REFERENCE_SUGGESTION_SOURCES
+            and value == status.suggested_units_per_case):
+        return _REFERENCE_PROPOSAL_SOURCE.get(status.suggestion_source, SOURCE_REFERENCE_DERIVED), evidence
     if status.suggestion_source == "description_ambiguous":
         # Whatever they chose, the document only narrowed it to candidates.
         return SOURCE_DOCUMENT_AMBIGUOUS, evidence
