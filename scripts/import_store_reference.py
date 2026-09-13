@@ -41,7 +41,14 @@ def _workbooks(targets: list[str]) -> list[Path]:
     for target in targets:
         path = Path(target)
         if path.is_dir():
-            paths.extend(sorted(p for p in path.glob("*.xlsx") if not p.name.startswith("~$")))
+            # Only the catalogue exports. The same folder holds Beer
+            # Inventory.xlsx (a different shape) and period exports such as
+            # Mckinley-*.xlsx that belong in product_pricing, not here —
+            # importing a second period into this one-row-per-product table
+            # would overwrite the first.
+            paths.extend(sorted(
+                p for p in path.glob("Item_Sales*.xlsx") if not p.name.startswith("~$")
+            ))
         elif path.is_file():
             paths.append(path)
         else:

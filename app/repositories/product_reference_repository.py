@@ -103,6 +103,7 @@ class ProductReferenceRepository:
                 "store_number": store_number, "item_code": rec.item_code,
                 "distributor": rec.distributor, "pricing_basis": rec.pricing_basis,
                 "case_cost": rec.case_cost, "unit_cost": rec.unit_cost,
+                "unit_retail": rec.unit_retail,
                 "previous_case_cost": rec.previous_case_cost, "package": rec.package,
                 "items_per_case_stated": rec.items_per_case_stated,
                 "items_per_case_derived": rec.items_per_case_derived,

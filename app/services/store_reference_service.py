@@ -71,6 +71,25 @@ MAX_PACK_RELATIVE_ERROR = 0.08
 EVIDENCE_EXPLICIT = "reference_explicit"   # a typed items/case cell        -> beer_inventory_explicit
 EVIDENCE_PACKAGE = "reference_package"     # two-fraction package string    -> beer_inventory_package
 EVIDENCE_RATIO = "reference_ratio"         # a source's own case/unit cost  -> reference_derived
+EVIDENCE_RETAIL = "reference_retail"       # the store's own selling price  -> reference_derived
+
+# Retail-margin calibration. Measured on the 26 Testani products whose
+# units-per-case were already approved on stronger evidence, using the
+# store's own Avg Price from the July 2024 – July 2026 export:
+#
+#     margin = 1 - (case_cost / units) / avg_price
+#     min 14.8%   p25 21.7%   median 25.7%   p75 29.5%   max 36.8%
+#
+# The band is the observed range, not a guess. A product whose margin at
+# exactly one plausible pack lands inside it is STRONG evidence; one
+# whose only plausible pack lands just below the floor (the five 30-packs
+# sit at 11-12%, as thin as the approved 18-packs at 14.8%) is SUPPORTED
+# but flagged for the reviewer; more than one pack inside the band is
+# ambiguous and not proposed.
+RETAIL_MARGIN_LOW = 0.148
+RETAIL_MARGIN_HIGH = 0.368
+RETAIL_MARGIN_FLOOR_SLACK = 0.05      # how far below the floor "supported" may reach
+RETAIL_MARGIN_ABSURD = 0.50           # above this no honest pack reading exists
 
 
 @dataclass(frozen=True)
@@ -130,7 +149,7 @@ def derive_units_per_case(
     return nearest, ratio
 
 
-_PRIORITY = {EVIDENCE_EXPLICIT: 0, EVIDENCE_PACKAGE: 1, EVIDENCE_RATIO: 2}
+_PRIORITY = {EVIDENCE_EXPLICIT: 0, EVIDENCE_PACKAGE: 1, EVIDENCE_RATIO: 2, EVIDENCE_RETAIL: 3}
 
 
 def _evidence_from_pricing(pricing_rows, invoice_case_cost: Decimal | None) -> list[UnitsEvidence]:
@@ -161,6 +180,15 @@ def _evidence_from_pricing(pricing_rows, invoice_case_cost: Decimal | None) -> l
             found.append(UnitsEvidence(row.items_per_case_derived, kind,
                                        row.source_file, row.source_sheet, row.source_row,
                                        {**base, "derivation": row.items_per_case_derivation}))
+        elif row.unit_retail is not None:
+            # An Item Sales period row: no pack information, but the
+            # store's own selling price says what the sellable unit is.
+            units, strength, detail = derive_units_from_retail(invoice_case_cost, row.unit_retail)
+            if units is not None:
+                found.append(UnitsEvidence(units, EVIDENCE_RETAIL,
+                                           row.source_file, row.source_sheet, row.source_row,
+                                           {**base, **detail, "strength": strength,
+                                            "reference_description": None}))
     return sorted(found, key=lambda e: _PRIORITY[e.kind])
 
 
@@ -168,16 +196,78 @@ def _f(value):
     return None if value is None else float(value)
 
 
+def derive_units_from_retail(
+    invoice_case_cost: Decimal | None, unit_retail: Decimal | None
+) -> tuple[int | None, str | None, dict[str, Any]]:
+    """
+    A units-per-case reading from what the store's till says the
+    scanned unit sells for.
+
+    For each plausible pack N, the implied margin is
+    1 - (case_cost / N) / retail. Returns (units, strength, detail) with
+    strength "strong" when exactly one N sits in the calibrated band,
+    "supported" when nothing is in band but exactly one N is within the
+    floor slack and every other N is absurd, else (None, None, detail).
+    The detail carries every N considered so the reviewer sees why.
+    """
+    detail: dict[str, Any] = {"kind": "retail_margin", "unit_retail": _f(unit_retail),
+                              "invoice_case_cost": _f(invoice_case_cost)}
+    if not invoice_case_cost or not unit_retail or unit_retail <= 0 or invoice_case_cost <= 0:
+        return None, None, detail
+    cost, retail = float(invoice_case_cost), float(unit_retail)
+    margins = {n: 1 - (cost / n) / retail for n in PLAUSIBLE_CASE_PACKS}
+    detail["margin_by_units"] = {n: round(m, 4) for n, m in margins.items()}
+    in_band = [n for n, m in margins.items() if RETAIL_MARGIN_LOW <= m <= RETAIL_MARGIN_HIGH]
+    near = [n for n, m in margins.items()
+            if RETAIL_MARGIN_LOW - RETAIL_MARGIN_FLOOR_SLACK <= m < RETAIL_MARGIN_LOW]
+    plausible_at_all = [n for n, m in margins.items() if 0 <= m <= RETAIL_MARGIN_ABSURD]
+    detail.update({"in_band": in_band, "near_floor": near,
+                   "band": [RETAIL_MARGIN_LOW, RETAIL_MARGIN_HIGH]})
+    if len(in_band) == 1:
+        detail["margin"] = round(margins[in_band[0]], 4)
+        return in_band[0], "strong", detail
+    if not in_band and len(near) == 1 and plausible_at_all == near:
+        detail["margin"] = round(margins[near[0]], 4)
+        detail["note"] = ("margin below the calibrated floor but every other pack reading "
+                          "implies an absurd margin; thin, like the approved 18-packs")
+        return near[0], "supported", detail
+    if len(in_band) > 1:
+        detail["note"] = f"ambiguous: {in_band} all inside the band"
+    return None, None, detail
+
+
 def _match(
     row: StoreProductReference | None,
     invoice_case_cost: Decimal | None,
     pricing_rows,
     item_code: str,
+    document_suggestion: int | None = None,
 ) -> ReferenceMatch:
     avg_cost = row.avg_cost if row else None
     ratio_candidate, ratio = derive_units_per_case(invoice_case_cost, avg_cost)
 
     evidence = _evidence_from_pricing(pricing_rows, invoice_case_cost)
+    # Retail-margin ambiguity resolved by an independent source: if the
+    # store's price leaves two packs in band and the DOCUMENT names one of
+    # them unambiguously, the two agree and that is stronger than either
+    # alone. Recorded as retail evidence with the corroboration spelled
+    # out, so the reviewer can see both halves.
+    if document_suggestion is not None:
+        for prow in pricing_rows:
+            if prow.unit_retail is None or prow.items_per_case_stated or prow.items_per_case_derived:
+                continue
+            _, _, detail = derive_units_from_retail(invoice_case_cost, prow.unit_retail)
+            in_band = detail.get("in_band") or []
+            if len(in_band) > 1 and document_suggestion in in_band:
+                evidence.append(UnitsEvidence(
+                    document_suggestion, EVIDENCE_RETAIL,
+                    prow.source_file, prow.source_sheet, prow.source_row,
+                    {**detail, "strength": "strong",
+                     "corroborated_by_document": True,
+                     "note": f"retail alone allows {in_band}; the invoice's own pack notation "
+                             f"names {document_suggestion}, and the two agree"},
+                ))
+                break
     if ratio_candidate is not None:
         evidence.append(UnitsEvidence(
             ratio_candidate, EVIDENCE_RATIO, "Item_Sales_Summary", None, None,
@@ -218,9 +308,20 @@ async def match_invoice_against_reference(
     pricing = await ProductReferenceRepository(session).pricing_for(store_number, list(costs))
     identity = await ProductReferenceRepository(session).identity_for(store_number, list(costs))
 
+    # The document's own unambiguous pack reading, used only to break a
+    # retail tie — never as evidence on its own here.
+    from app.services.export_service import suggest_units_per_case
+    doc_hint: dict[str, int | None] = {}
+    for item in invoice.items:
+        code = normalize_item_code(item.product_sku)
+        if code and code not in doc_hint:
+            units, source = suggest_units_per_case(item.pack_size, item.description)
+            doc_hint[code] = units if source in ("pack_size", "description") else None
+
     matches: dict[str, ReferenceMatch] = {}
     for code in set(sales) | set(pricing):
-        match = _match(sales.get(code), costs.get(code), pricing.get(code, []), code)
+        match = _match(sales.get(code), costs.get(code), pricing.get(code, []), code,
+                       document_suggestion=doc_hint.get(code))
         if match.reference_description is None and code in identity:
             match = ReferenceMatch(**{**match.__dict__,
                                       "reference_description": identity[code].description})

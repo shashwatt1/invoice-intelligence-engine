@@ -225,14 +225,19 @@ async def get_invoice(
     logs = await ProcessingLogRepository(db).for_document(invoice.document_id)
     payloads = {log.stage: log.payload for log in logs if log.payload}
     document = invoice.document
+    store = get_settings().store_number
     units = await invoice_units_by_item_code(db, invoice)
-    reference = await match_invoice_against_reference(
-        db, invoice, get_settings().store_number
-    )
+    reference = await match_invoice_against_reference(db, invoice, store)
+    # Queued-but-unreviewed values, so the operator sees what is already
+    # awaiting approval rather than submitting it again.
+    codes = [
+        code for code in (normalize_item_code(i.product_sku) for i in invoice.items) if code
+    ]
+    pending = await pending_by_item_code(db, store, codes)
     pdi_eligibility = pdi_export_eligibility(invoice, units)
     case_mappings = [
         CaseMappingRow(**vars(status))
-        for status in build_case_mapping_status(invoice, units, reference)
+        for status in build_case_mapping_status(invoice, units, reference, pending)
     ]
 
     data = InvoiceDetailData(

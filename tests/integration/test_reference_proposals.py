@@ -181,3 +181,80 @@ class TestOnlyApprovalReachesTheEdi:
         assert detail_line[53:57] == "0003"
         assert detail_line[43:49] == "002760"   # the INVOICE cost, not a reference cost
         assert len(detail_line) == 70
+
+
+class TestRetailEvidence:
+    """Item Sales Avg Price -> units-per-case -> PENDING proposal."""
+
+    def _period_row(self, code, retail, row):
+        return ProductPricing(
+            store_number=STORE, item_code=code, distributor="store", pricing_basis="period_average",
+            unit_retail=Decimal(retail), unit_cost=None,
+            source_file="Mckinley-07-24_to_07-26.xlsx", source_sheet="data", source_row=row,
+            imported_at=datetime.now(UTC),
+        )
+
+    async def test_a_30_pack_that_scans_at_case_price_suggests_one(self, api_client, app, db_session):  # noqa: F811
+        db_session.add(self._period_row("01820011030", "25.7217", 553))
+        await db_session.commit()
+        invoice_id = await process(api_client, app, [line("BUD 30 PACK CANS", "018200110306", 22.70)],
+                                   "r30.pdf", "thirty", subtotal=22.70, grand_total=22.70)
+        [row] = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]["case_mappings"]
+
+        assert row["suggested_units_per_case"] == 1
+        assert row["suggestion_source"] == "reference_retail"
+        assert row["mapped"] is False
+
+    async def test_fireball_resolves_to_eight_retail_six_packs(self, api_client, app, db_session):  # noqa: F811
+        db_session.add(self._period_row("08800404091", "11.99", 1119))
+        await db_session.commit()
+        invoice_id = await process(api_client, app, [line("FIREBALL 100ML 8/6PK", "088004040918", 66.86)],
+                                   "rfb.pdf", "fireball", subtotal=66.86, grand_total=66.86)
+        [row] = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]["case_mappings"]
+
+        # 8 six-packs per case; the "6" is bottles inside the retail unit.
+        assert row["suggested_units_per_case"] == 8
+        assert row["suggestion_source"] == "reference_retail"
+        assert row["suggestion_candidates"] == []            # the ambiguity is resolved
+
+    async def test_an_ambiguous_retail_reading_gives_no_reference_suggestion(
+        self, api_client, app, db_session  # noqa: F811
+    ):
+        db_session.add(self._period_row("68474680041", "2.1943", 1215))
+        await db_session.commit()
+        invoice_id = await process(api_client, app, [line("CLUBTAILS LONG ISLAN", "684746800416", 34.50)],
+                                   "rcl.pdf", "clubtails", subtotal=34.50, grand_total=34.50)
+        [row] = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]["case_mappings"]
+
+        assert not (row["suggestion_source"] or "").startswith("reference")
+        assert row["suggested_units_per_case"] is None
+
+    async def test_a_retail_tie_is_broken_only_by_the_documents_own_pack_reading(
+        self, api_client, app, db_session  # noqa: F811
+    ):
+        # PLAT SELTZ 15/25: retail alone allows 15 or 16; the invoice
+        # prints "15/25", and the two agree.
+        db_session.add(self._period_row("01820026128", "3.29", 586))
+        await db_session.commit()
+        invoice_id = await process(api_client, app, [line("PLAT SELTZ 15/25 BLO", "018200261282", 34.20)],
+                                   "rps.pdf", "platinum", subtotal=34.20, grand_total=34.20)
+        [row] = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]["case_mappings"]
+
+        assert row["suggested_units_per_case"] == 15
+        assert row["suggestion_source"] == "reference_retail"
+
+    async def test_retail_evidence_proposes_and_never_maps(self, api_client, app, db_session):  # noqa: F811
+        db_session.add(self._period_row("01820011030", "25.7217", 553))
+        await db_session.commit()
+        invoice_id = await process(api_client, app, [line("BUD 30 PACK CANS", "018200110306", 22.70)],
+                                   "rprop.pdf", "propose", subtotal=22.70, grand_total=22.70)
+        await api_client.post(f"/api/v1/invoices/{invoice_id}/case-mappings",
+                              json={"mappings": [{"item_code": "01820011030", "units_per_case": 1}]})
+
+        [p] = await ProductDataProposalRepository(db_session).list(entity_key="01820011030")
+        assert p.status == STATUS_PENDING
+        assert p.source == "reference_derived"
+        assert p.evidence["suggestion_source"] == "reference_retail"
+        assert await ProductCaseMappingRepository(db_session).get("01820011030") is None
+        export = await api_client.get(f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"})
+        assert export.status_code == 422

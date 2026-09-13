@@ -36,6 +36,23 @@ requires_db = pytest.mark.skipif(
 )
 
 
+async def _schema_is_stale(conn, metadata) -> bool:
+    """True when any model column is missing from the live test schema."""
+    rows = await conn.execute(text(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public'"
+    ))
+    live: dict[str, set[str]] = {}
+    for table, column in rows:
+        live.setdefault(table, set()).add(column)
+    for table in metadata.sorted_tables:
+        if table.name not in live:
+            continue                      # create_all will make it
+        if {c.name for c in table.columns} - live[table.name]:
+            return True
+    return False
+
+
 @pytest_asyncio.fixture(scope="function")
 async def db_engine():
     """Engine bound to a dedicated test database (created on demand)."""
@@ -54,6 +71,13 @@ async def db_engine():
 
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+        # create_all never ALTERs an existing table, so a column added by a
+        # migration is silently missing from a test database created before
+        # it — every new migration then fails integration tests with
+        # "column does not exist" until someone drops the database by hand.
+        # Detect drift once and rebuild instead.
+        if await _schema_is_stale(conn, Base.metadata):
+            await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield engine
 

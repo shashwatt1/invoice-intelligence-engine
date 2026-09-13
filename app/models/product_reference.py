@@ -128,6 +128,13 @@ class ProductPricing(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     previous_case_cost: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 4), nullable=True, doc="The 'old/current' column on a price-change notice."
     )
+    unit_retail: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 4), nullable=True,
+        doc=(
+            "What the scanned unit sold for on average (Item Sales 'Avg Price'). "
+            "Direct evidence of the store's sellable unit; never written to an EDI."
+        ),
+    )
     package: Mapped[str | None] = mapped_column(
         String(128), nullable=True, doc="The package descriptor exactly as the source printed it."
     )

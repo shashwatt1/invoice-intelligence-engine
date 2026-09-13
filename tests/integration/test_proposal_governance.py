@@ -81,6 +81,12 @@ class TestTheFrontendCannotWriteMasterData:
         assert row["pending_proposal_id"] is not None
         assert data["pdi_export_allowed"] is False       # still blocked
 
+        # …and a plain GET of the invoice shows the queued value too — the
+        # operator must not be invited to submit it a second time.
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        assert detail["case_mappings"][0]["pending_value"] == 4
+        assert detail["case_mappings"][0]["pending_proposal_id"] == row["pending_proposal_id"]
+
         # The authoritative table is untouched.
         assert await ProductCaseMappingRepository(db_session).get(NORMALIZED) is None
         [p] = await ProductDataProposalRepository(db_session).list(entity_key=NORMALIZED)

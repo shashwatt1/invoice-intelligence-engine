@@ -56,14 +56,16 @@ from app.services.store_reference_service import (  # noqa: E402
     EVIDENCE_EXPLICIT,
     EVIDENCE_PACKAGE,
     EVIDENCE_RATIO,
+    EVIDENCE_RETAIL,
     match_invoice_against_reference,
 )
 
-STRENGTH = {EVIDENCE_EXPLICIT: 3, EVIDENCE_PACKAGE: 2, EVIDENCE_RATIO: 1}
+STRENGTH = {EVIDENCE_EXPLICIT: 4, EVIDENCE_PACKAGE: 3, EVIDENCE_RATIO: 2, EVIDENCE_RETAIL: 1}
 PROPOSAL_SOURCE = {
     EVIDENCE_EXPLICIT: SOURCE_BEER_INVENTORY_EXPLICIT,
     EVIDENCE_PACKAGE: SOURCE_BEER_INVENTORY_PACKAGE,
     EVIDENCE_RATIO: SOURCE_REFERENCE_DERIVED,
+    EVIDENCE_RETAIL: SOURCE_REFERENCE_DERIVED,
 }
 
 
@@ -71,10 +73,10 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("invoice_id")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--min-strength", choices=["explicit", "package", "ratio"], default="ratio",
-                        help="weakest evidence kind to propose from (default: ratio)")
+    parser.add_argument("--min-strength", choices=["explicit", "package", "ratio", "retail"],
+                        default="ratio", help="weakest evidence kind to propose from (default: ratio)")
     args = parser.parse_args()
-    minimum = {"explicit": 3, "package": 2, "ratio": 1}[args.min_strength]
+    minimum = {"explicit": 4, "package": 3, "ratio": 2, "retail": 1}[args.min_strength]
     store = get_settings().store_number
 
     async with get_session_factory()() as session:
@@ -127,8 +129,12 @@ async def main() -> int:
                     for e in dissent
                 ],
             }
+            strength_note = (
+                f" [{best.detail['strength']}, margin {best.detail.get('margin', 0)*100:.1f}%]"
+                if best.kind == EVIDENCE_RETAIL else ""
+            )
             reason = (
-                f"{best.kind}: {best.units_per_case} units/case from "
+                f"{best.kind}{strength_note}: {best.units_per_case} units/case from "
                 f"{best.source_sheet or best.source_file}"
                 + (f" row {best.source_row}" if best.source_row else "")
                 + (f"; {len(agree)} source(s) agree" if len(agree) > 1 else "")

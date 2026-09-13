@@ -93,6 +93,7 @@ class ReferenceRecord:
     case_cost: Decimal | None = None
     previous_case_cost: Decimal | None = None
     unit_cost: Decimal | None = None
+    unit_retail: Decimal | None = None       # Item Sales "Avg Price"; not in Beer Inventory
     items_per_case_stated: int | None = None
     items_per_case_derived: int | None = None
     items_per_case_derivation: str | None = None
