@@ -25,15 +25,18 @@ Design decisions:
 
 from __future__ import annotations
 
-from sqlalchemy import Index, Integer, String, UniqueConstraint
+import uuid
+
+from sqlalchemy import ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 # Where a units-per-case value came from.
-SOURCE_MANUAL = "MANUAL"                                 # a person typed/confirmed it
-SOURCE_VERIFIED_FROM_INVOICE = "VERIFIED_FROM_INVOICE"   # confirmed against a document's pack info
-VALID_SOURCES = frozenset({SOURCE_MANUAL, SOURCE_VERIFIED_FROM_INVOICE})
+SOURCE_MANUAL = "MANUAL"                                 # historical: a person typed it
+SOURCE_VERIFIED_FROM_INVOICE = "VERIFIED_FROM_INVOICE"   # historical: pre-approval-workflow writes
+SOURCE_APPROVED = "APPROVED"                             # promoted from an approved proposal
+VALID_SOURCES = frozenset({SOURCE_MANUAL, SOURCE_VERIFIED_FROM_INVOICE, SOURCE_APPROVED})
 
 # A case holds at least one unit; the EDI field is 4 digits.
 MIN_UNITS_PER_CASE = 1
@@ -64,7 +67,20 @@ class ProductCaseMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
-        doc="MANUAL or VERIFIED_FROM_INVOICE — how this value was established.",
+        doc=(
+            "APPROVED for rows promoted through the proposal workflow. MANUAL and "
+            "VERIFIED_FROM_INVOICE are historical values from before that workflow "
+            "existed and are kept as-is rather than rewritten."
+        ),
+    )
+    approved_proposal_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("product_data_proposals.id", ondelete="SET NULL"),
+        nullable=True,
+        doc=(
+            "The proposal whose approval established this value. Every "
+            "authoritative row carries one; legacy rows point at a grandfathered "
+            "proposal that records they predate the workflow."
+        ),
     )
 
     __table_args__ = (

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from app.schemas.extraction import ExtractedLineItem
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import approve_all_pending, requires_db
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -71,7 +71,9 @@ class TestUnmappedProduct:
 
 
 class TestConfirmingAMapping:
-    async def test_confirmation_saves_and_unblocks_the_export(self, api_client, app):  # noqa: F811
+    async def test_confirmation_proposes_and_approval_unblocks_the_export(
+        self, api_client, app, db_session  # noqa: F811
+    ):
         invoice_id = await _process(api_client, app, [_line()], "confirm.pdf", "confirm")
 
         response = await api_client.post(
@@ -83,54 +85,65 @@ class TestConfirmingAMapping:
         )
         assert response.status_code == 200
         data = response.json()["data"]
+        # Confirm submits a proposal. It does NOT unblock anything.
         assert data["saved"] == 1
-        assert data["pdi_export_allowed"] is True
-        assert data["case_mappings"][0]["mapped"] is True
-        assert data["case_mappings"][0]["units_per_case"] == 24
+        assert data["pdi_export_allowed"] is False
+        assert data["case_mappings"][0]["mapped"] is False
+        assert data["case_mappings"][0]["pending_value"] == 24
 
-    async def test_saved_mapping_is_used_by_the_edi_immediately(self, api_client, app):  # noqa: F811
+        assert await approve_all_pending(db_session) == 1
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        assert detail["pdi_export_allowed"] is True
+        assert detail["case_mappings"][0]["mapped"] is True
+        assert detail["case_mappings"][0]["units_per_case"] == 24
+
+    async def test_saved_mapping_is_used_by_the_edi_immediately(self, api_client, app, db_session):  # noqa: F811
         invoice_id = await _process(api_client, app, [_line()], "immediate.pdf", "immediate")
         await api_client.post(
             f"/api/v1/invoices/{invoice_id}/case-mappings",
             json={"mappings": [{"item_code": NORMALIZED, "units_per_case": 24}]},
         )
+        await approve_all_pending(db_session)
         response = await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
         )
         assert response.status_code == 200
         line = response.text.splitlines()[1]
-        assert line[53:57] == "0024"          # units per case, from the mapping
+        assert line[53:57] == "0024"          # units per case, from the APPROVED mapping
         assert line[43:49] == "005020"        # case cost unchanged
         assert len(line) == 70
 
-    async def test_dashed_upc_confirms_the_same_product(self, api_client, app):  # noqa: F811
+    async def test_dashed_upc_confirms_the_same_product(self, api_client, app, db_session):  # noqa: F811
         # A user pasting the printed, dashed UPC must hit the same key the
         # formatter uses, or the mapping would never be found again.
         invoice_id = await _process(api_client, app, [_line()], "dashed.pdf", "dashed")
-        response = await api_client.post(
+        await api_client.post(
             f"/api/v1/invoices/{invoice_id}/case-mappings",
             json={"mappings": [{"item_code": "6-11269-32121-0", "units_per_case": 24}]},
         )
-        assert response.json()["data"]["pdi_export_allowed"] is True
+        await approve_all_pending(db_session)
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        assert detail["pdi_export_allowed"] is True
 
     async def test_reconfirming_updates_in_place_without_duplicating(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         invoice_id = await _process(api_client, app, [_line()], "reconfirm.pdf", "reconfirm")
         url = f"/api/v1/invoices/{invoice_id}/case-mappings"
         await api_client.post(url, json={"mappings": [
             {"item_code": NORMALIZED, "units_per_case": 12}]})
+        await approve_all_pending(db_session)
         second = await api_client.post(url, json={"mappings": [
             {"item_code": NORMALIZED, "units_per_case": 24}]})
-
         assert second.status_code == 200
-        assert second.json()["data"]["case_mappings"][0]["units_per_case"] == 24
+        await approve_all_pending(db_session)
+
         line = (await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
         )).text.splitlines()[1]
-        assert line[53:57] == "0024"          # the corrected value, not a duplicate row
+        assert line[53:57] == "0024"          # the corrected value, one mapping row
 
-    async def test_multiple_products_resolved_in_one_request(self, api_client, app):  # noqa: F811
+    async def test_multiple_products_resolved_in_one_request(self, api_client, app, db_session):  # noqa: F811
         items = [
             _line(),
             ExtractedLineItem(
@@ -149,21 +162,23 @@ class TestConfirmingAMapping:
                 {"item_code": "02800077212", "units_per_case": 12},
             ]},
         )
-        data = response.json()["data"]
-        assert data["saved"] == 2
-        assert data["pdi_export_allowed"] is True
-        assert all(row["mapped"] for row in data["case_mappings"])
+        assert response.json()["data"]["saved"] == 2
+        assert await approve_all_pending(db_session) == 2
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        assert detail["pdi_export_allowed"] is True
+        assert all(row["mapped"] for row in detail["case_mappings"])
 
 
 class TestFutureInvoicesReuseTheMapping:
     async def test_same_upc_on_a_later_invoice_is_never_asked_about_again(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         first = await _process(api_client, app, [_line()], "first.pdf", "first invoice")
         await api_client.post(
             f"/api/v1/invoices/{first}/case-mappings",
             json={"mappings": [{"item_code": NORMALIZED, "units_per_case": 24}]},
         )
+        await approve_all_pending(db_session)
 
         # A completely separate invoice carrying the same product.
         second = await _process(api_client, app, [_line()], "second.pdf", "second invoice")
@@ -180,13 +195,14 @@ class TestFutureInvoicesReuseTheMapping:
         assert line[53:57] == "0024"
 
     async def test_mapping_survives_deletion_of_the_invoice_it_came_from(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         first = await _process(api_client, app, [_line()], "gone.pdf", "will be deleted")
         await api_client.post(
             f"/api/v1/invoices/{first}/case-mappings",
             json={"mappings": [{"item_code": NORMALIZED, "units_per_case": 24}]},
         )
+        await approve_all_pending(db_session)
         assert (await api_client.delete(f"/api/v1/invoices/{first}")).status_code == 200
 
         second = await _process(api_client, app, [_line()], "after.pdf", "after deletion")
@@ -232,25 +248,28 @@ class TestCorrectingAMappingThroughTheApi:
     """
 
     async def test_a_wrong_value_can_be_corrected_and_reaches_the_edi(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         invoice_id = await _process(api_client, app, [_line()], "wrong.pdf", "wrong")
         url = f"/api/v1/invoices/{invoice_id}/case-mappings"
 
-        # Confirmed wrong, exactly as an old build would have written it.
+        # Approved wrong — the situation the correction path exists for.
         await api_client.post(url, json={"mappings": [
             {"item_code": NORMALIZED, "units_per_case": 1}]})
+        await approve_all_pending(db_session)
         line = (await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
         )).text.splitlines()[1]
         assert line[53:57] == "0001"
         cost_before = line[43:49]
 
-        # The operator corrects it — one product, on its own.
+        # The operator proposes a correction; a reviewer approves it.
         response = await api_client.post(url, json={"mappings": [
             {"item_code": NORMALIZED, "units_per_case": 12}]})
         assert response.status_code == 200
-        assert response.json()["data"]["case_mappings"][0]["units_per_case"] == 12
+        assert response.json()["data"]["case_mappings"][0]["pending_value"] == 12
+        assert response.json()["data"]["case_mappings"][0]["units_per_case"] == 1  # not yet
+        await approve_all_pending(db_session)
 
         corrected = (await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
@@ -259,14 +278,16 @@ class TestCorrectingAMappingThroughTheApi:
         assert corrected[43:49] == cost_before   # cost bytes untouched
 
     async def test_the_correction_is_what_a_later_invoice_inherits(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         first = await _process(api_client, app, [_line()], "c-first.pdf", "correction first")
         url = f"/api/v1/invoices/{first}/case-mappings"
         await api_client.post(url, json={"mappings": [
             {"item_code": NORMALIZED, "units_per_case": 1}]})
+        await approve_all_pending(db_session)
         await api_client.post(url, json={"mappings": [
             {"item_code": NORMALIZED, "units_per_case": 12}]})
+        await approve_all_pending(db_session)
 
         second = await _process(api_client, app, [_line()], "c-second.pdf", "correction second")
         detail = (await api_client.get(f"/api/v1/invoices/{second}")).json()["data"]

@@ -98,6 +98,17 @@ class CaseMappingRow(BaseModel):
             "reference-derived suggestion; never written to an EDI."
         ),
     )
+    pending_proposal_id: str | None = Field(
+        default=None,
+        description=(
+            "Id of a submitted, not-yet-reviewed proposal for this product. "
+            "Present means an operator has confirmed a value and it is awaiting "
+            "data-team approval; the export stays blocked until then."
+        ),
+    )
+    pending_value: int | None = Field(
+        default=None, description="The units-per-case awaiting review, when one is queued."
+    )
     mapped: bool = Field(description="False when this product still needs a mapping.")
 
 
@@ -120,9 +131,14 @@ class CaseMappingRequest(BaseModel):
 
 
 class CaseMappingResult(BaseModel):
-    """Returned after confirming mappings: the invoice's refreshed state."""
+    """
+    Returned after an operator confirms values: the invoice's refreshed
+    state. `saved` counts PROPOSALS submitted for review, not mappings
+    written — nothing an operator does here reaches the EDI until a
+    reviewer approves it.
+    """
 
-    saved: int
+    saved: int = Field(description="Proposals submitted for review.")
     case_mappings: list[CaseMappingRow]
     pdi_export_allowed: bool
     pdi_export_blocked_reason: str | None = None

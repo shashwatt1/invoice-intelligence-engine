@@ -25,7 +25,7 @@ from app.services.store_reference_import import (
 )
 
 DATA_DIR = Path("data/reference/store_47708760")
-REAL_FILES = sorted(DATA_DIR.glob("*.xlsx")) if DATA_DIR.is_dir() else []
+REAL_FILES = sorted(DATA_DIR.glob("Item_Sales*.xlsx")) if DATA_DIR.is_dir() else []
 requires_real_files = pytest.mark.skipif(
     not REAL_FILES, reason="store reference exports not present"
 )

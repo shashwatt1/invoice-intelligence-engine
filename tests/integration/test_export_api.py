@@ -14,7 +14,7 @@ import uuid
 
 from app.schemas.extraction import ExtractedLineItem
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import approve_all_pending, requires_db
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -22,16 +22,17 @@ from tests.pdf_builder import build_pdf
 pytestmark = requires_db
 
 
-async def confirm_mapping(api_client, invoice_id, item_code="99900000001", units=12):  # noqa: F811
-    """Confirm a units-per-case mapping, as the review UI does.
-
-    format=pdi is blocked until every product on the invoice has one.
+async def confirm_mapping(api_client, db_session, invoice_id, item_code="99900000001", units=12):  # noqa: F811
+    """Propose a units-per-case value as the review UI does, then approve
+    it as a reviewer would. format=pdi is blocked until every product on
+    the invoice has an APPROVED mapping.
     """
     response = await api_client.post(
         f"/api/v1/invoices/{invoice_id}/case-mappings",
         json={"mappings": [{"item_code": item_code, "units_per_case": units}]},
     )
     assert response.status_code == 200, response.text
+    await approve_all_pending(db_session)
     return response
 
 
@@ -143,7 +144,7 @@ class TestPdiExport:
     """
 
     async def test_product_code_flows_from_extraction_to_pdi_export(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         from app.api.v1.invoices import get_pipeline
 
@@ -173,7 +174,7 @@ class TestPdiExport:
         ).json()
         assert json_export["line_items"][0]["sku_upc"] == "999000000015"
 
-        await confirm_mapping(api_client, status["invoice_id"])
+        await confirm_mapping(api_client, db_session, status["invoice_id"])
         response = await api_client.get(
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
         )
@@ -275,7 +276,7 @@ class TestPdiExport:
             assert response.headers["content-type"].startswith(content_type)
 
     async def test_return_invoice_produces_negative_pdi_records(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         # Return/credit invoices carry a negative grand_total end-to-end
         # (extraction and validation preserve the printed sign — see
@@ -301,7 +302,7 @@ class TestPdiExport:
         )
         status = (await api_client.get(accepted["status_url"])).json()["data"]
 
-        await confirm_mapping(api_client, status["invoice_id"])
+        await confirm_mapping(api_client, db_session, status["invoice_id"])
         response = await api_client.get(
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
         )

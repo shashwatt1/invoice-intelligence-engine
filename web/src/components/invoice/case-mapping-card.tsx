@@ -1,4 +1,4 @@
-import { Check, Database, FileText, HelpCircle, Pencil, PackageSearch, TriangleAlert, X } from "lucide-react";
+import { Check, Clock, Database, FileText, HelpCircle, Pencil, PackageSearch, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -167,6 +167,7 @@ export function CaseMappingCard({
 
   const readyIn = (group: CaseMappingRow[]): CaseMappingConfirmation[] =>
     group
+      .filter((row) => row.pending_value === null)   // already in the queue
       .map((row) => ({ row, units: parsed(draftFor(row)) }))
       .filter(({ units }) => units !== null)
       .map(({ row, units }) => ({
@@ -182,8 +183,8 @@ export function CaseMappingCard({
       onSuccess: (result) => {
         setDrafts({});
         toast.success(
-          `Confirmed ${result.saved} mapping${result.saved === 1 ? "" : "s"}.` +
-            (result.pdi_export_allowed ? " PDI export is now available." : ""),
+          `Submitted ${result.saved} value${result.saved === 1 ? "" : "s"} for approval. ` +
+            "The export unlocks once the data team approves.",
         );
       },
       onError: (error) => {
@@ -205,7 +206,7 @@ export function CaseMappingCard({
       {
         onSuccess: () => {
           setEditing(null);
-          toast.success(`Updated to ${units} units/case.`);
+          toast.success(`Proposed ${units} units/case — awaiting approval.`);
         },
         onError: (error) => {
           toast.error(error instanceof Error ? error.message : "Failed to update.");
@@ -249,8 +250,9 @@ export function CaseMappingCard({
           )}
         </CardTitle>
         <p className="text-[0.75rem] text-muted-foreground">
-          PDI multiplies this by its own item retail, so each product is confirmed once and
-          reused on every future invoice. Nothing is ever confirmed automatically.
+          PDI multiplies this by its own item retail, so each value is reviewed once and reused
+          on every future invoice. <span className="font-medium">Confirm submits a value for
+          data-team approval</span> — nothing reaches an EDI until it is approved.
         </p>
       </CardHeader>
 
@@ -279,28 +281,38 @@ export function CaseMappingCard({
                     <TableRow key={row.item_code}>
                       {productCells(row)}
                       <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Input
-                            type="number"
-                            min={1}
-                            max={9999}
-                            step={1}
-                            className="h-8 w-20 tabular-nums"
-                            aria-label={`Units per case for ${row.description ?? row.item_code}`}
-                            placeholder={band.prefill ? "" : "enter"}
-                            value={draftFor(row)}
-                            disabled={confirm.isPending}
-                            onChange={(event) =>
-                              setDrafts((current) => ({
-                                ...current,
-                                [row.item_code!]: event.target.value,
-                              }))
-                            }
-                          />
-                          <span className="text-[0.7rem]">
-                            <Evidence row={row} />
-                          </span>
-                        </div>
+                        {row.pending_value !== null ? (
+                          <div className="flex items-center gap-2 text-[0.82rem]">
+                            <Clock className="text-warning size-3.5 shrink-0" />
+                            <span className="font-medium">{row.pending_value} units/case</span>
+                            <span className="text-[0.7rem] text-muted-foreground">
+                              awaiting data-team approval
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min={1}
+                              max={9999}
+                              step={1}
+                              className="h-8 w-20 tabular-nums"
+                              aria-label={`Units per case for ${row.description ?? row.item_code}`}
+                              placeholder={band.prefill ? "" : "enter"}
+                              value={draftFor(row)}
+                              disabled={confirm.isPending}
+                              onChange={(event) =>
+                                setDrafts((current) => ({
+                                  ...current,
+                                  [row.item_code!]: event.target.value,
+                                }))
+                              }
+                            />
+                            <span className="text-[0.7rem]">
+                              <Evidence row={row} />
+                            </span>
+                          </div>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -309,9 +321,12 @@ export function CaseMappingCard({
 
               <div className="flex items-center justify-between gap-4 border-t px-3 py-2">
                 <p className="text-[0.72rem] text-muted-foreground">
-                  {ready.length === 0
-                    ? "Enter a value to confirm."
-                    : `${ready.length} of ${group.length} ready.`}
+                  {(() => {
+                    const queued = group.filter((r) => r.pending_value !== null).length;
+                    if (ready.length === 0 && queued === group.length) return "All submitted — awaiting approval.";
+                    if (ready.length === 0) return "Enter a value to submit.";
+                    return `${ready.length} ready to submit${queued ? `, ${queued} awaiting approval` : ""}.`;
+                  })()}
                 </p>
                 <Button
                   size="sm"
@@ -319,7 +334,7 @@ export function CaseMappingCard({
                   disabled={ready.length === 0 || confirm.isPending}
                   onClick={() => save(group)}
                 >
-                  {confirm.isPending ? "Saving…" : `Confirm ${ready.length || ""}`.trim()}
+                  {confirm.isPending ? "Submitting…" : `Submit ${ready.length || ""} for approval`.trim()}
                 </Button>
               </div>
             </div>

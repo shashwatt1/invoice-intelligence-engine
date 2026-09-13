@@ -17,7 +17,7 @@ import uuid
 
 from app.schemas.extraction import ExtractedLineItem
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import approve_all_pending, requires_db
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -210,7 +210,7 @@ class TestTheExportGate:
         assert "units-per-case" in data["pdi_export_blocked_reason"]
 
     async def test_the_export_opens_once_cost_and_mapping_are_both_resolved(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         invoice_id = await process(
             api_client, app, [line(unit_price=None, line_total=None)],
@@ -221,6 +221,7 @@ class TestTheExportGate:
             f"/api/v1/invoices/{invoice_id}/case-mappings",
             json={"mappings": [{"item_code": NORMALIZED, "units_per_case": 30}]},
         )
+        await approve_all_pending(db_session)
 
         detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
         assert detail["pdi_export_allowed"] is True
@@ -327,7 +328,7 @@ class TestDepositCorrection:
         assert detail["line_items"][0]["unit_deposit"] == 0.60
         assert detail["line_items"][0]["corrected_fields"] == ["unit_deposit"]
 
-    async def test_the_deposit_never_reaches_the_edi(self, api_client, app):  # noqa: F811
+    async def test_the_deposit_never_reaches_the_edi(self, api_client, app, db_session):  # noqa: F811
         # Case cost stays the product cost; the deposit is not added to it.
         invoice_id = await process(
             api_client, app, [line(unit_price=22.70, line_total=24.20)],
@@ -338,6 +339,7 @@ class TestDepositCorrection:
             f"/api/v1/invoices/{invoice_id}/case-mappings",
             json={"mappings": [{"item_code": NORMALIZED, "units_per_case": 30}]},
         )
+        await approve_all_pending(db_session)
 
         export = await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}

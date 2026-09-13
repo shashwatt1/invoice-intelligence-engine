@@ -205,6 +205,10 @@ export interface CaseMappingRow {
   /** The store's per-selling-unit cost — the evidence behind a
    * reference-derived suggestion. Never written to an EDI. */
   reference_avg_cost: number | null;
+  /** A submitted-but-unreviewed value. Shown so the operator knows it is
+   * in the queue; NEVER used for the EDI — only an approved mapping is. */
+  pending_proposal_id: string | null;
+  pending_value: number | null;
   mapped: boolean;
 }
 
@@ -241,7 +245,8 @@ export interface CaseMappingConfirmation {
   description?: string | null;
 }
 
-/** Response of POST /invoices/{id}/case-mappings — the refreshed state. */
+/** Response of POST /invoices/{id}/case-mappings — the refreshed state.
+ * `saved` counts PROPOSALS submitted for review, not mappings written. */
 export interface CaseMappingResult {
   saved: number;
   case_mappings: CaseMappingRow[];

@@ -35,11 +35,10 @@ from app.core.logging import get_logger
 from app.database.session import get_db, get_session_factory
 from app.models.document import DocumentStatus
 from app.models.processing_log import PipelineStage
-from app.models.product_case_mapping import SOURCE_VERIFIED_FROM_INVOICE
+from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
-from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import (
     CaseMappingRequest,
@@ -62,6 +61,7 @@ from app.services.case_mapping_service import (
 )
 from app.services.export_service import normalize_item_code, pdi_export_eligibility
 from app.services.pipeline_service import InvoiceProcessingPipeline
+from app.services.proposal_service import pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
 from app.services.storage_service import get_storage_service
 from app.services.store_reference_service import match_invoice_against_reference
@@ -371,46 +371,72 @@ async def confirm_case_mappings(
     payload: CaseMappingRequest,
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[CaseMappingResult]:
+    """
+    Submits the operator's values for review. Writes PROPOSALS only.
+
+    This endpoint has no path to product_case_mappings. It once did, and
+    values typed to unblock a download became indistinguishable from
+    verified ones; that path is closed. A reviewer promotes a proposal
+    through app.services.proposal_service.approve(), and only then does
+    the value exist for the formatter.
+    """
     invoice = await InvoiceRepository(db).get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
 
-    repo = ProductCaseMappingRepository(db)
+    store = get_settings().store_number
+    units = await invoice_units_by_item_code(db, invoice)
+    reference = await match_invoice_against_reference(db, invoice, store)
+    # The review rows tell the system how each value relates to what the
+    # invoice offered, so the proposal's source is decided here, not by
+    # the client.
+    review_by_code = {
+        status.item_code: status
+        for status in build_case_mapping_status(invoice, units, reference)
+        if status.item_code
+    }
+
+    submitted = 0
     for confirmation in payload.mappings:
-        # Normalize on the way in so a mapping saved from a dashed UPC is
-        # found again from an undashed one — same key the formatter uses.
+        # Normalize on the way in so a value proposed from a dashed UPC is
+        # keyed the same way the formatter and the mapping table key it.
         code = normalize_item_code(confirmation.item_code)
         if not code:
             raise ValidationError(
                 message="Item code contains no usable digits.",
                 detail={"item_code": confirmation.item_code},
             )
-        try:
-            await repo.upsert(
-                item_code=code,
-                units_per_case=confirmation.units_per_case,
-                description=confirmation.description,
-                source=SOURCE_VERIFIED_FROM_INVOICE,
-            )
-        except ValueError as exc:
+        if not MIN_UNITS_PER_CASE <= confirmation.units_per_case <= MAX_UNITS_PER_CASE:
             raise ValidationError(
-                message=str(exc), detail={"item_code": code}
-            ) from exc
+                message=(
+                    f"units_per_case must be between {MIN_UNITS_PER_CASE} and "
+                    f"{MAX_UNITS_PER_CASE}."
+                ),
+                detail={"item_code": code},
+            )
+        await propose_case_mapping(
+            db,
+            store_number=store,
+            invoice=invoice,
+            item_code=code,
+            units_per_case=confirmation.units_per_case,
+            review_status=review_by_code.get(code),
+            proposed_by="frontend:review-ui",
+        )
+        submitted += 1
     await db.commit()
 
-    units = await invoice_units_by_item_code(db, invoice)
-    reference = await match_invoice_against_reference(
-        db, invoice, get_settings().store_number
-    )
+    # Re-read: mappings are unchanged by design, but the queue is not.
+    pending = await pending_by_item_code(db, store, list(review_by_code))
     eligibility = pdi_export_eligibility(invoice, units)
     return APIResponse(
         data=CaseMappingResult(
-            saved=len(payload.mappings),
+            saved=submitted,
             case_mappings=[
                 CaseMappingRow(**vars(status))
-                for status in build_case_mapping_status(invoice, units, reference)
+                for status in build_case_mapping_status(invoice, units, reference, pending)
             ],
             pdi_export_allowed=eligibility.allowed,
             pdi_export_blocked_reason=eligibility.blocked_reason,

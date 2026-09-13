@@ -13,6 +13,7 @@ cannot drift between "can I download?" and "what does the UI show?".
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,14 @@ from app.services.export_service import (
     suggest_units_per_case,
 )
 from app.services.store_reference_service import ReferenceMatch
+
+
+class PendingProposal(Protocol):
+    """The two things the review row needs from a queued proposal."""
+
+    id: Any
+    proposed_value: Any
+
 
 SUGGESTION_FROM_DATABASE = "database"
 # Derived from the store's own per-unit cost: invoice case cost divided
@@ -49,6 +58,10 @@ class CaseMappingStatus:
     # exact UPC. Shown to the operator; never applied automatically.
     reference_description: str | None = None
     reference_avg_cost: float | None = None
+    # A submitted-but-unreviewed value. Shown to the operator so they know
+    # it is in the queue; NEVER used for the EDI — only a mapping is.
+    pending_proposal_id: str | None = None
+    pending_value: int | None = None
 
 
 async def invoice_units_by_item_code(
@@ -67,6 +80,7 @@ def build_case_mapping_status(
     invoice: Invoice,
     units_by_item_code: dict[str, int],
     reference_matches: dict[str, ReferenceMatch] | None = None,
+    pending: dict[str, PendingProposal] | None = None,
 ) -> list[CaseMappingStatus]:
     """
     Per-line mapping state, in document order.
@@ -86,6 +100,7 @@ def build_case_mapping_status(
         # units-per-case actually asks. A confirmed mapping still outranks
         # both — see below.
         reference = (reference_matches or {}).get(code or "")
+        queued = (pending or {}).get(code or "")
         if reference is not None and reference.units_per_case_candidate is not None:
             suggestion = reference.units_per_case_candidate
             source = SUGGESTION_FROM_REFERENCE
@@ -115,6 +130,8 @@ def build_case_mapping_status(
                     if reference and reference.avg_cost is not None
                     else None
                 ),
+                pending_proposal_id=str(queued.id) if queued else None,
+                pending_value=int(queued.proposed_value) if queued else None,
             )
         )
     return statuses

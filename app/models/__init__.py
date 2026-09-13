@@ -11,6 +11,7 @@ from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.processing_log import LogStatus, PipelineStage, ProcessingLog
 from app.models.product_case_mapping import ProductCaseMapping
+from app.models.product_data_proposal import ProductDataProposal
 from app.models.store_product_reference import StoreProductReference
 from app.models.vendor import Vendor
 
@@ -23,6 +24,7 @@ __all__ = [
     "PipelineStage",
     "ProcessingLog",
     "ProductCaseMapping",
+    "ProductDataProposal",
     "StoreProductReference",
     "Vendor",
 ]

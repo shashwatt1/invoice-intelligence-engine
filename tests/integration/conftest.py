@@ -61,7 +61,7 @@ async def db_engine():
         await conn.execute(
             text(
                 "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
-                "documents, product_case_mappings, store_product_references CASCADE"
+                "documents, product_case_mappings, store_product_references, product_data_proposals CASCADE"
             )
         )
     await engine.dispose()
@@ -76,8 +76,29 @@ async def db_session(db_engine) -> AsyncSession:
         await session.execute(
             text(
                 "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
-                "documents, product_case_mappings, store_product_references CASCADE"
+                "documents, product_case_mappings, store_product_references, product_data_proposals CASCADE"
             )
         )
         await session.commit()
         yield session
+
+
+async def approve_all_pending(session, *, reviewed_by: str = "test:reviewer") -> int:
+    """
+    Play the data reviewer: promote every PENDING proposal.
+
+    The frontend can only propose; a test that needs an authoritative
+    mapping has to approve it the way a reviewer would. Returns how many
+    were approved. Commits, so the app's own session sees the result.
+    """
+    from app.models.product_data_proposal import STATUS_PENDING
+    from app.repositories.product_data_proposal_repository import (
+        ProductDataProposalRepository,
+    )
+    from app.services import proposal_service
+
+    pending = await ProductDataProposalRepository(session).list(status=STATUS_PENDING)
+    for proposal in pending:
+        await proposal_service.approve(session, proposal, reviewed_by=reviewed_by)
+    await session.commit()
+    return len(pending)
