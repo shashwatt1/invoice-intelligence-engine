@@ -1,5 +1,6 @@
-import { Check, Clock, Database, FileText, HelpCircle, Pencil, PackageSearch, TriangleAlert, X } from "lucide-react";
+import { Check, Clock, Database, FileText, HelpCircle, History, Pencil, PackageSearch, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
 import type { CaseMappingConfirmation, CaseMappingRow } from "@/api/types";
@@ -144,6 +145,8 @@ export function CaseMappingCard({
   const mappable = useMemo(() => rows.filter((row) => row.item_code !== null), [rows]);
   const confirmed = useMemo(() => mappable.filter((row) => row.mapped), [mappable]);
   const pending = useMemo(() => mappable.filter((row) => !row.mapped), [mappable]);
+  // Submitted but not yet decided — in the Data Review queue, not master data.
+  const queuedCount = useMemo(() => pending.filter((row) => row.pending_value !== null).length, [pending]);
 
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   // Correcting an already-confirmed mapping is a separate, one-product
@@ -245,7 +248,7 @@ export function CaseMappingCard({
   return (
     <Card className="gap-0 p-0" data-testid="case-mapping-card">
       <CardHeader className="px-5 py-4">
-        <CardTitle className="flex items-center gap-2 text-[0.95rem]">
+        <CardTitle className="flex flex-wrap items-center gap-2 text-[0.95rem]">
           <PackageSearch className="size-4" /> Case → unit mapping
           {pending.length > 0 ? (
             <span className="text-warning text-[0.75rem] font-medium">
@@ -254,6 +257,16 @@ export function CaseMappingCard({
           ) : (
             <span className="text-success text-[0.75rem] font-medium">All products mapped</span>
           )}
+          {queuedCount > 0 ? (
+            <Link
+              to={`/data-review?invoice=${invoiceId}`}
+              className="bg-warning-soft text-warning ml-auto inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[0.72rem] font-semibold hover:underline"
+              title="Submitted values waiting for a reviewer. Not master data until approved."
+            >
+              <Clock className="size-3" />
+              {queuedCount} pending data review
+            </Link>
+          ) : null}
         </CardTitle>
         <p className="text-[0.75rem] text-muted-foreground">
           PDI multiplies this by its own item retail, so each value is reviewed once and reused
@@ -288,11 +301,20 @@ export function CaseMappingCard({
                       {productCells(row)}
                       <TableCell>
                         {row.pending_value !== null ? (
-                          <div className="flex items-center gap-2 text-[0.82rem]">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[0.82rem]">
                             <Clock className="text-warning size-3.5 shrink-0" />
                             <span className="font-medium">{row.pending_value} units/case</span>
-                            <span className="text-[0.7rem] text-muted-foreground">
-                              awaiting data-team approval
+                            <span className="bg-warning-soft text-warning rounded-full px-2 py-0.5 text-[0.68rem] font-semibold">
+                              Pending data review
+                            </span>
+                            <Link
+                              to={`/data-review/proposals/${row.pending_proposal_id}`}
+                              className="text-[0.7rem] text-primary hover:underline"
+                            >
+                              open proposal
+                            </Link>
+                            <span className="basis-full text-[0.68rem] text-muted-foreground">
+                              Not master data yet — the EDI stays blocked until a reviewer approves it.
                             </span>
                           </div>
                         ) : (
@@ -329,9 +351,9 @@ export function CaseMappingCard({
                 <p className="text-[0.72rem] text-muted-foreground">
                   {(() => {
                     const queued = group.filter((r) => r.pending_value !== null).length;
-                    if (ready.length === 0 && queued === group.length) return "All submitted — awaiting approval.";
+                    if (ready.length === 0 && queued === group.length) return "All submitted — pending data review.";
                     if (ready.length === 0) return "Enter a value to submit.";
-                    return `${ready.length} ready to submit${queued ? `, ${queued} awaiting approval` : ""}.`;
+                    return `${ready.length} ready to submit${queued ? `, ${queued} pending data review` : ""}.`;
                   })()}
                 </p>
                 <Button
@@ -414,6 +436,20 @@ export function CaseMappingCard({
                             aria-label={`Correct the mapping for ${row.description ?? row.item_code}`}
                           >
                             <Pencil className="size-3" />
+                          </Button>
+                          <Button
+                            asChild
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-muted-foreground"
+                          >
+                            <Link
+                              to={`/data-review/products/${row.item_code}`}
+                              aria-label={`Review history for ${row.description ?? row.item_code}`}
+                              title="Who approved this, from what evidence"
+                            >
+                              <History className="size-3" />
+                            </Link>
                           </Button>
                         </div>
                       )}

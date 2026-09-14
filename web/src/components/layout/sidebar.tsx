@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  ClipboardCheck,
   FileClock,
   LayoutDashboard,
   ReceiptText,
@@ -9,12 +10,14 @@ import {
 import { NavLink } from "react-router-dom";
 
 import { apiClient } from "@/api/client";
+import { usePendingProposalCount } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/process", label: "Process Invoice", icon: UploadCloud },
   { to: "/invoices", label: "Invoice History", icon: FileClock },
+  { to: "/data-review", label: "Data Review", icon: ClipboardCheck },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -33,6 +36,10 @@ function useApiHealth() {
 export function Sidebar() {
   const health = useApiHealth();
   const connected = health.isSuccess;
+  // Proposals waiting for a reviewer — surfaced here so PENDING work is
+  // never out of sight.
+  const pending = usePendingProposalCount();
+  const pendingCount = pending.isSuccess && pending.data > 0 ? pending.data : null;
 
   return (
     <aside className="fixed inset-y-0 left-0 z-30 flex w-60 flex-col border-r bg-sidebar max-lg:w-16">
@@ -58,7 +65,7 @@ export function Sidebar() {
             title={label}
             className={({ isActive }) =>
               cn(
-                "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[0.83rem] font-medium transition-colors max-lg:justify-center",
+                "relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[0.83rem] font-medium transition-colors max-lg:justify-center",
                 isActive
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground",
@@ -67,6 +74,14 @@ export function Sidebar() {
           >
             <Icon className="size-4 shrink-0" strokeWidth={2} />
             <span className="max-lg:hidden">{label}</span>
+            {to === "/data-review" && pendingCount !== null ? (
+              <span
+                className="bg-warning-soft text-warning ml-auto rounded-full px-1.5 py-0.5 text-[0.65rem] font-semibold tabular-nums max-lg:absolute max-lg:top-1 max-lg:right-1 max-lg:ml-0"
+                title={`${pendingCount} proposal${pendingCount === 1 ? "" : "s"} pending review`}
+              >
+                {pendingCount}
+              </span>
+            ) : null}
           </NavLink>
         ))}
       </nav>

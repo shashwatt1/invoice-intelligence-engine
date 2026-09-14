@@ -17,6 +17,12 @@ import type {
   InvoiceListParams,
   Paginated,
   ProcessAccepted,
+  ProductHistory,
+  ProposalDecision,
+  ProposalDecisionResult,
+  ProposalDetail,
+  ProposalListParams,
+  ProposalRow,
 } from "./types";
 
 export async function processInvoice(file: File): Promise<ProcessAccepted> {
@@ -106,4 +112,53 @@ export async function getInvoiceExport(invoiceId: string): Promise<Record<string
     { params: { format: "json" } },
   );
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Master-data review — an observation-and-decision layer over proposals.
+// Nothing here writes product_case_mappings; approve() on the backend is
+// the only writer, and it is the same function the review CLI calls.
+// ---------------------------------------------------------------------------
+
+export async function listProposals(params: ProposalListParams): Promise<Paginated<ProposalRow>> {
+  const { data } = await apiClient.get<Paginated<ProposalRow>>("/proposals", { params });
+  return data;
+}
+
+export async function getProposal(proposalId: string): Promise<ProposalDetail> {
+  const { data } = await apiClient.get<ApiEnvelope<ProposalDetail>>(`/proposals/${proposalId}`);
+  return data.data!;
+}
+
+/** Freezes the proposal as APPROVED and writes the authoritative mapping in
+ * one transaction. Fails (422) if it has already been decided. */
+export async function approveProposal(
+  proposalId: string,
+  decision: ProposalDecision,
+): Promise<ProposalDecisionResult> {
+  const { data } = await apiClient.post<ApiEnvelope<ProposalDecisionResult>>(
+    `/proposals/${proposalId}/approve`,
+    decision,
+  );
+  return data.data!;
+}
+
+/** Freezes the proposal as REJECTED. Master data is untouched. */
+export async function rejectProposal(
+  proposalId: string,
+  decision: ProposalDecision,
+): Promise<ProposalDecisionResult> {
+  const { data } = await apiClient.post<ApiEnvelope<ProposalDecisionResult>>(
+    `/proposals/${proposalId}/reject`,
+    decision,
+  );
+  return data.data!;
+}
+
+/** Everything that ever happened to one product's reusable data. */
+export async function getProductHistory(itemCode: string): Promise<ProductHistory> {
+  const { data } = await apiClient.get<ApiEnvelope<ProductHistory>>(
+    `/products/${encodeURIComponent(itemCode)}/history`,
+  );
+  return data.data!;
 }

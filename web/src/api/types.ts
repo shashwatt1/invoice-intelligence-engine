@@ -184,6 +184,7 @@ export type SuggestionSource =
   | "reference_explicit"    // a typed items/case cell in the store's workbook
   | "reference_package"     // decoded from a two-fraction package string
   | "reference_ratio"       // a source's own case cost ÷ unit cost
+  | "reference_retail"      // invoice case cost vs the store's own unit retail
   | "pack_size"
   | "description"
   | "description_ambiguous";
@@ -298,6 +299,98 @@ export interface InvoiceDetail {
 
   ocr_text: string | null;
   raw_extraction: Record<string, unknown> | null;
+}
+
+// ---------------------------------------------------------------------------
+// Master-data proposals / review (app/api/v1/proposals.py)
+// ---------------------------------------------------------------------------
+
+/**
+ * Three states, three meanings, never conflated in the UI:
+ *   PENDING  — submitted, in the queue; NOT used for any EDI.
+ *   APPROVED — a reviewer promoted it; it wrote the authoritative mapping.
+ *   REJECTED — a reviewer declined it; master data untouched.
+ * A reviewed proposal is immutable. A changed value is a new proposal.
+ */
+export type ProposalStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+/** How the proposed value was arrived at — decided by the backend when the
+ * proposal is created, never by the client. */
+export type ProposalSource =
+  | "reference_derived"
+  | "document_derived"
+  | "document_ambiguous"
+  | "beer_inventory_explicit"
+  | "beer_inventory_package"
+  | "operator_entered"
+  | "legacy_migrated";
+
+export interface ProposalRow {
+  id: string;
+  store_number: string;
+  entity_type: string;
+  entity_key: string;
+  field: string;
+  proposed_value: unknown;
+  current_value: unknown | null;
+  source: ProposalSource;
+  source_file: string | null;
+  source_sheet: string | null;
+  source_row: number | null;
+  invoice_id: string | null;
+  proposed_by: string;
+  status: ProposalStatus;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  created_at: string;
+}
+
+/** The authoritative row a decision produced (product_case_mappings). */
+export interface ResultingMapping {
+  item_code: string;
+  units_per_case: number;
+  source: string;
+  approved_proposal_id: string | null;
+  updated_at: string;
+}
+
+export interface ProposalDetail extends ProposalRow {
+  /** Shape varies by source; see EvidencePanel. Rendered as-is — the UI
+   * never invents a field the backend did not record. */
+  evidence: Record<string, unknown> | null;
+  reason: string | null;
+  /** Set only when the current mapping points back at THIS proposal. */
+  resulting_mapping: ResultingMapping | null;
+  /** The mapping's value right now — may differ from proposed_value when
+   * a later proposal superseded this one. */
+  current_master_value: unknown | null;
+}
+
+export interface ProposalDecision {
+  reviewed_by: string;
+  note?: string | null;
+}
+
+export interface ProposalDecisionResult {
+  proposal: ProposalDetail;
+  applied_to: string | null;
+}
+
+export interface ProductHistory {
+  item_code: string;
+  current_mapping: ResultingMapping | null;
+  /** Oldest first — the audit trail. */
+  proposals: ProposalDetail[];
+}
+
+export interface ProposalListParams {
+  status?: ProposalStatus | "ALL";
+  source?: ProposalSource;
+  item_code?: string;
+  invoice_id?: string;
+  page?: number;
+  page_size?: number;
 }
 
 // ---------------------------------------------------------------------------

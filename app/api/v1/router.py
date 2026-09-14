@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import dashboard, documents, exports, health, invoices, upload
+from app.api.v1 import dashboard, documents, exports, health, invoices, proposals, upload
 
 api_router = APIRouter()
 
@@ -29,3 +29,4 @@ api_router.include_router(invoices.router, prefix="")
 api_router.include_router(exports.router, prefix="")
 api_router.include_router(documents.router, prefix="")
 api_router.include_router(dashboard.router, prefix="")
+api_router.include_router(proposals.router, prefix="")

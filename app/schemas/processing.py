@@ -233,6 +233,83 @@ class LineItemCorrectionResult(BaseModel):
     pdi_export_blocked_reason: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Master-data proposals / review
+# ---------------------------------------------------------------------------
+
+
+class ProposalRow(BaseModel):
+    """One proposal as the review queue lists it."""
+
+    id: uuid.UUID
+    store_number: str
+    entity_type: str
+    entity_key: str
+    field: str
+    proposed_value: Any
+    current_value: Any | None = None
+    source: str
+    source_file: str | None = None
+    source_sheet: str | None = None
+    source_row: int | None = None
+    invoice_id: uuid.UUID | None = None
+    proposed_by: str
+    status: str
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    review_note: str | None = None
+    created_at: datetime
+
+
+class ResultingMapping(BaseModel):
+    item_code: str
+    units_per_case: int
+    source: str
+    approved_proposal_id: uuid.UUID | None = None
+    updated_at: datetime
+
+
+class ProposalDetail(ProposalRow):
+    """A proposal with its evidence and, when approved, the mapping it produced."""
+
+    evidence: dict[str, Any] | None = None
+    reason: str | None = None
+    # Present when this proposal is the one an authoritative mapping
+    # points at. Says what the reviewer's decision actually created.
+    resulting_mapping: ResultingMapping | None = None
+    # The mapping's value NOW — may differ from proposed_value if a later
+    # proposal superseded this one.
+    current_master_value: Any | None = None
+
+
+class ProposalDecision(BaseModel):
+    """Body of POST /proposals/{id}/approve and /reject."""
+
+    reviewed_by: str = Field(
+        min_length=1, max_length=128,
+        description=(
+            "Who is deciding. There is no login yet; the name is recorded as given, "
+            "which is the same contract the review CLI's --by uses."
+        ),
+    )
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ProposalDecisionResult(BaseModel):
+    proposal: ProposalDetail
+    applied_to: str | None = Field(
+        default=None, description="e.g. 'product_case_mappings:01820011030' on approval."
+    )
+
+
+class ProductHistory(BaseModel):
+    """Everything that ever happened to one product's reusable data."""
+
+    item_code: str
+    current_mapping: ResultingMapping | None = None
+    proposals: list[ProposalDetail]
+
+
 class StageEntry(BaseModel):
     """One processing-log entry in the document timeline."""
 

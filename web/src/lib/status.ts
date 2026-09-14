@@ -3,7 +3,13 @@
  * labels and visual tone, shared by badges, charts, and the timeline.
  */
 
-import type { CheckStatus, DocumentStatus, PipelineStage } from "@/api/types";
+import type {
+  CheckStatus,
+  DocumentStatus,
+  PipelineStage,
+  ProposalSource,
+  ProposalStatus,
+} from "@/api/types";
 
 export type Tone = "success" | "warning" | "danger" | "info" | "neutral";
 
@@ -16,6 +22,62 @@ export const STATUS_META: Record<DocumentStatus, { label: string; tone: Tone }> 
   REVIEW_REQUIRED: { label: "Review required", tone: "warning" },
   COMPLETED: { label: "Completed", tone: "success" },
   FAILED: { label: "Failed", tone: "danger" },
+};
+
+/** Proposal lifecycle. The labels say what each state MEANS for the EDI,
+ * because "pending" and "approved" look alike in a table and are not. */
+export const PROPOSAL_STATUS_META: Record<
+  ProposalStatus,
+  { label: string; tone: Tone; meaning: string }
+> = {
+  PENDING: {
+    label: "Pending review",
+    tone: "warning",
+    meaning: "In the queue. Not master data — no EDI uses this value.",
+  },
+  APPROVED: {
+    label: "Approved",
+    tone: "success",
+    meaning: "A reviewer promoted it. It wrote the authoritative mapping the EDI uses.",
+  },
+  REJECTED: {
+    label: "Rejected",
+    tone: "danger",
+    meaning: "A reviewer declined it. Master data was not touched.",
+  },
+};
+
+/** Where a proposed value came from — assigned by the backend, never the
+ * client. Ordered strongest evidence first. */
+export const PROPOSAL_SOURCE_META: Record<ProposalSource, { label: string; blurb: string }> = {
+  beer_inventory_explicit: {
+    label: "Typed items/case",
+    blurb: "A typed items-per-case cell in the store's Beer Inventory workbook.",
+  },
+  beer_inventory_package: {
+    label: "Package string",
+    blurb: "Decoded from a two-fraction package string such as 24/12OZ 2/12 CANS.",
+  },
+  reference_derived: {
+    label: "Reference-derived",
+    blurb: "Derived from the store's own cost or retail data against the invoice case cost.",
+  },
+  document_derived: {
+    label: "Document",
+    blurb: "The invoice's own pack descriptor or N/M notation, confirmed as printed.",
+  },
+  document_ambiguous: {
+    label: "Document (ambiguous)",
+    blurb: "The invoice notation supported several readings; an operator chose one.",
+  },
+  operator_entered: {
+    label: "Operator-entered",
+    blurb: "Typed by an operator with no supporting suggestion, or against the suggestion.",
+  },
+  legacy_migrated: {
+    label: "Legacy",
+    blurb: "Existed before the approval workflow; grandfathered into the history.",
+  },
 };
 
 export const CHECK_META: Record<CheckStatus, { tone: Tone; symbol: string }> = {

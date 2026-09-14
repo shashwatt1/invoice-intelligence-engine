@@ -9,6 +9,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  approveProposal,
   confirmCaseMappings,
   correctLineItem,
   deleteInvoice,
@@ -16,13 +17,19 @@ import {
   getDocumentStatus,
   getInvoice,
   getInvoiceExport,
+  getProductHistory,
+  getProposal,
   listInvoices,
+  listProposals,
   processInvoice,
+  rejectProposal,
 } from "@/api/endpoints";
 import type {
   CaseMappingConfirmation,
   InvoiceListParams,
   LineItemCorrection,
+  ProposalDecision,
+  ProposalListParams,
 } from "@/api/types";
 
 export function useDashboard() {
@@ -125,6 +132,71 @@ export function useDeleteInvoice() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Master-data review
+// ---------------------------------------------------------------------------
+
+export function useProposals(params: ProposalListParams) {
+  return useQuery({
+    queryKey: ["proposals", params],
+    queryFn: () => listProposals(params),
+    placeholderData: (previous) => previous,
+  });
+}
+
+/** The number of proposals waiting for a decision — the sidebar's badge. */
+export function usePendingProposalCount() {
+  return useQuery({
+    queryKey: ["proposals", "pending-count"],
+    queryFn: async () => (await listProposals({ status: "PENDING", page_size: 1 })).total,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useProposal(proposalId: string | undefined) {
+  return useQuery({
+    queryKey: ["proposal", proposalId],
+    queryFn: () => getProposal(proposalId!),
+    enabled: Boolean(proposalId),
+  });
+}
+
+export function useProductHistory(itemCode: string | undefined) {
+  return useQuery({
+    queryKey: ["product-history", itemCode],
+    queryFn: () => getProductHistory(itemCode!),
+    enabled: Boolean(itemCode),
+  });
+}
+
+/**
+ * Approve or reject one proposal.
+ *
+ * A decision changes the queue, this proposal, the product's history and —
+ * on approval — every invoice carrying the product (the export gate is
+ * computed from the mapping table). All of it is invalidated so the UI
+ * re-reads the backend rather than patching state locally.
+ */
+export function useDecideProposal() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ proposalId, action, decision }: {
+      proposalId: string;
+      action: "approve" | "reject";
+      decision: ProposalDecision;
+    }) =>
+      action === "approve"
+        ? approveProposal(proposalId, decision)
+        : rejectProposal(proposalId, decision),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["proposals"] });
+      void queryClient.invalidateQueries({ queryKey: ["proposal", result.proposal.id] });
+      void queryClient.invalidateQueries({ queryKey: ["product-history", result.proposal.entity_key] });
+      void queryClient.invalidateQueries({ queryKey: ["invoice"] });
     },
   });
 }

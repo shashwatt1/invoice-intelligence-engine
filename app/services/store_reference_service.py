@@ -263,6 +263,9 @@ def _match(
                     document_suggestion, EVIDENCE_RETAIL,
                     prow.source_file, prow.source_sheet, prow.source_row,
                     {**detail, "strength": "strong",
+                     "margin": detail["margin_by_units"].get(document_suggestion),
+                     "effective_from": prow.effective_from.isoformat() if prow.effective_from else None,
+                     "distributor": prow.distributor, "pricing_basis": prow.pricing_basis,
                      "corroborated_by_document": True,
                      "note": f"retail alone allows {in_band}; the invoice's own pack notation "
                              f"names {document_suggestion}, and the two agree"},
