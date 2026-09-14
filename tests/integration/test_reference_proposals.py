@@ -133,7 +133,7 @@ class TestConfirmingAReferenceSuggestionProposesWithProvenance:
         assert p.status == STATUS_PENDING
         assert p.source == SOURCE_BEER_INVENTORY_EXPLICIT
         assert p.evidence["suggestion_source"] == "reference_explicit"
-        assert await ProductCaseMappingRepository(db_session).get(ULTRA_38) is None   # not yet
+        assert await ProductCaseMappingRepository(db_session).get(STORE, ULTRA_38) is None   # not yet
 
     async def test_a_package_confirmation_is_labelled_as_such(self, api_client, app, db_session):  # noqa: F811
         db_session.add(pricing(ULTRA_212, distributor="Zink", source_sheet="Zink - Tiki",
@@ -166,7 +166,7 @@ class TestOnlyApprovalReachesTheEdi:
         await proposal_service.reject(db_session, p, reviewed_by="r", note="checking")
         await db_session.commit()
         assert (await api_client.get(url, params={"format": "pdi"})).status_code == 422
-        assert await ProductCaseMappingRepository(db_session).get(ULTRA_38) is None
+        assert await ProductCaseMappingRepository(db_session).get(STORE, ULTRA_38) is None
 
         # A fresh proposal, approved: the EDI carries it.
         await api_client.post(f"/api/v1/invoices/{invoice_id}/case-mappings",
@@ -255,6 +255,6 @@ class TestRetailEvidence:
         assert p.status == STATUS_PENDING
         assert p.source == "reference_derived"
         assert p.evidence["suggestion_source"] == "reference_retail"
-        assert await ProductCaseMappingRepository(db_session).get("01820011030") is None
+        assert await ProductCaseMappingRepository(db_session).get(STORE, "01820011030") is None
         export = await api_client.get(f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"})
         assert export.status_code == 422

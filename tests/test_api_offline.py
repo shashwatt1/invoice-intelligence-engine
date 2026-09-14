@@ -13,6 +13,7 @@ class TestProcessValidation:
         response = await client.post(
             "/api/v1/invoices/process",
             files={"file": ("notes.txt", b"x" * 2048, "text/plain")},
+            data={"store_number": "47708760"},
         )
         assert response.status_code == 415
         body = response.json()
@@ -23,12 +24,31 @@ class TestProcessValidation:
         response = await client.post(
             "/api/v1/invoices/process",
             files={"file": ("tiny.pdf", b"%PDF", "application/pdf")},
+            data={"store_number": "47708760"},
         )
         assert response.status_code == 422
         assert response.json()["error"]["error_code"] == "ERR_EMPTY_FILE"
 
     async def test_missing_file_is_422(self, client):
-        response = await client.post("/api/v1/invoices/process")
+        response = await client.post("/api/v1/invoices/process", data={"store_number": "47708760"})
+        assert response.status_code == 422
+
+    async def test_missing_store_is_422_not_a_default(self, client):
+        # There is no global store to fall back on: an invoice without a
+        # store would meet the wrong reference data and the wrong mappings.
+        response = await client.post(
+            "/api/v1/invoices/process",
+            files={"file": ("ok.pdf", b"%PDF-1.4 " + b"x" * 2048, "application/pdf")},
+        )
+        assert response.status_code == 422
+        assert any(e["loc"][-1] == "store_number" for e in response.json()["error"]["detail"])
+
+    async def test_a_non_numeric_store_is_422(self, client):
+        response = await client.post(
+            "/api/v1/invoices/process",
+            files={"file": ("ok.pdf", b"%PDF-1.4 " + b"x" * 2048, "application/pdf")},
+            data={"store_number": "store-A"},
+        )
         assert response.status_code == 422
 
 

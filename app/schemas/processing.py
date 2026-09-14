@@ -262,6 +262,7 @@ class ProposalRow(BaseModel):
 
 
 class ResultingMapping(BaseModel):
+    store_number: str
     item_code: str
     units_per_case: int
     source: str
@@ -302,9 +303,21 @@ class ProposalDecisionResult(BaseModel):
     )
 
 
-class ProductHistory(BaseModel):
-    """Everything that ever happened to one product's reusable data."""
+class StoreSummary(BaseModel):
+    """A store the system holds data for, and how much."""
 
+    store_number: str
+    invoices: int
+    pricing_rows: int
+    catalogue_rows: int
+    case_mappings: int
+    pending_proposals: int
+
+
+class ProductHistory(BaseModel):
+    """Everything that ever happened to one product's reusable data, in one store."""
+
+    store_number: str
     item_code: str
     current_mapping: ResultingMapping | None = None
     proposals: list[ProposalDetail]
@@ -398,6 +411,9 @@ class InvoiceDetailData(BaseModel):
     filename: str
     document_status: str
     source_type: str | None = None
+    store_number: str = Field(
+        description="The store this invoice was received for; scopes every reference lookup."
+    )
 
     invoice_number: str | None = None
     invoice_date: date | None = None
@@ -457,6 +473,7 @@ class HistoryRow(BaseModel):
     document_id: uuid.UUID
     invoice_id: uuid.UUID | None = None
     filename: str
+    store_number: str | None = None
     status: str = Field(description="Document lifecycle status.")
     vendor_name: str | None = None
     invoice_number: str | None = None

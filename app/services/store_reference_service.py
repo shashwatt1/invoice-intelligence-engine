@@ -293,14 +293,21 @@ def _match(
 
 
 async def match_invoice_against_reference(
-    session: AsyncSession, invoice: Invoice, store_number: str
+    session: AsyncSession, invoice: Invoice
 ) -> dict[str, ReferenceMatch]:
     """
     Reference matches for this invoice's products, keyed by normalized
     item code. Exact UPC only, across both the Item Sales catalogue and
     the Beer Inventory pricing rows. A product absent from both is
     simply absent.
+
+    The store is the invoice's own. There is no parameter for it on
+    purpose: no caller can match one store's invoice against another
+    store's catalogue.
     """
+    store_number = invoice.store_number
+    if not store_number:
+        raise ValueError("invoice has no store_number; reference matching needs one.")
     costs: dict[str, Decimal | None] = {}
     for item in invoice.items:
         code = normalize_item_code(item.product_sku)

@@ -21,6 +21,7 @@ import {
   getProposal,
   listInvoices,
   listProposals,
+  listStores,
   processInvoice,
   rejectProposal,
 } from "@/api/endpoints";
@@ -74,10 +75,15 @@ export function useInvoiceExport(invoiceId: string, enabled: boolean) {
   });
 }
 
+export function useStores() {
+  return useQuery({ queryKey: ["stores"], queryFn: listStores, staleTime: 60_000 });
+}
+
 export function useProcessInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: processInvoice,
+    mutationFn: ({ file, storeNumber }: { file: File; storeNumber: string }) =>
+      processInvoice(file, storeNumber),
     onSettled: () => {
       // Any outcome (success or duplicate rejection) can change the
       // dashboard and history projections.
@@ -165,11 +171,11 @@ export function useProposal(proposalId: string | undefined) {
   });
 }
 
-export function useProductHistory(itemCode: string | undefined) {
+export function useProductHistory(storeNumber: string | undefined, itemCode: string | undefined) {
   return useQuery({
-    queryKey: ["product-history", itemCode],
-    queryFn: () => getProductHistory(itemCode!),
-    enabled: Boolean(itemCode),
+    queryKey: ["product-history", storeNumber, itemCode],
+    queryFn: () => getProductHistory(storeNumber!, itemCode!),
+    enabled: Boolean(storeNumber && itemCode),
   });
 }
 
@@ -195,7 +201,9 @@ export function useDecideProposal() {
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["proposals"] });
       void queryClient.invalidateQueries({ queryKey: ["proposal", result.proposal.id] });
-      void queryClient.invalidateQueries({ queryKey: ["product-history", result.proposal.entity_key] });
+      void queryClient.invalidateQueries({
+        queryKey: ["product-history", result.proposal.store_number, result.proposal.entity_key],
+      });
       void queryClient.invalidateQueries({ queryKey: ["invoice"] });
     },
   });

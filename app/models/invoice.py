@@ -53,6 +53,10 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         unique=True,
         doc="Reference to the source document.",
     )
+    # The store this invoice was received for. Every reference lookup —
+    # pricing, catalogue, case mappings, proposals — is scoped by it; the
+    # system never falls back to a global store for an invoice.
+    store_number: Mapped[str] = mapped_column(String(32), nullable=False)
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("vendors.id", ondelete="SET NULL"),
@@ -137,6 +141,7 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("idx_invoices_vendor_id", "vendor_id"),
         Index("idx_invoices_status", "status"),
         Index("idx_invoices_invoice_number", "invoice_number"),
+        Index("idx_invoices_store", "store_number"),
     )
 
     def __repr__(self) -> str:

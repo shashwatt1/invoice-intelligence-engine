@@ -263,6 +263,9 @@ export interface InvoiceDetail {
   filename: string;
   document_status: DocumentStatus;
   source_type: string | null;
+  /** The store this invoice was received for. Every reference lookup,
+   * case mapping and proposal on this page is that store's own. */
+  store_number: string;
 
   invoice_number: string | null;
   invoice_date: string | null;
@@ -348,6 +351,7 @@ export interface ProposalRow {
 
 /** The authoritative row a decision produced (product_case_mappings). */
 export interface ResultingMapping {
+  store_number: string;
   item_code: string;
   units_per_case: number;
   source: string;
@@ -378,6 +382,8 @@ export interface ProposalDecisionResult {
 }
 
 export interface ProductHistory {
+  /** A UPC's history is one store's history. */
+  store_number: string;
   item_code: string;
   current_mapping: ResultingMapping | null;
   /** Oldest first — the audit trail. */
@@ -387,6 +393,7 @@ export interface ProductHistory {
 export interface ProposalListParams {
   status?: ProposalStatus | "ALL";
   source?: ProposalSource;
+  store_number?: string;
   item_code?: string;
   invoice_id?: string;
   page?: number;
@@ -401,6 +408,7 @@ export interface HistoryRow {
   document_id: string;
   invoice_id: string | null;
   filename: string;
+  store_number: string | null;
   status: DocumentStatus;
   vendor_name: string | null;
   invoice_number: string | null;
@@ -425,6 +433,16 @@ export interface DashboardData {
   total_estimated_cost_usd: number;
   status_breakdown: Partial<Record<DocumentStatus, number>>;
   recent: HistoryRow[];
+}
+
+/** A store the system holds data for (GET /stores). */
+export interface StoreSummary {
+  store_number: string;
+  invoices: number;
+  pricing_rows: number;
+  catalogue_rows: number;
+  case_mappings: number;
+  pending_proposals: number;
 }
 
 export interface InvoiceListParams {

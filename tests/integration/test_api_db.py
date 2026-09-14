@@ -60,12 +60,17 @@ async def api_client(app, db_engine, db_session, monkeypatch):
     app.dependency_overrides.clear()
 
 
+STORE = "47708760"
+
+
 async def process_file(
-    api_client, content: bytes = INVOICE_PDF, filename: str = "acme-invoice.pdf"
+    api_client, content: bytes = INVOICE_PDF, filename: str = "acme-invoice.pdf",
+    store: str = STORE,
 ) -> dict:
     response = await api_client.post(
         "/api/v1/invoices/process",
         files={"file": (filename, content, "application/pdf")},
+        data={"store_number": store},
     )
     assert response.status_code == 202, response.text
     return response.json()["data"]
@@ -99,6 +104,7 @@ class TestProcessAndStatus:
         response = await api_client.post(
             "/api/v1/invoices/process",
             files={"file": ("copy.pdf", INVOICE_PDF, "application/pdf")},
+            data={"store_number": STORE},
         )
         assert response.status_code == 409
         body = response.json()

@@ -53,7 +53,7 @@ def _row(p: ProductDataProposal) -> ProposalRow:
 
 
 async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
-    mapping = await ProductCaseMappingRepository(db).get(p.entity_key)
+    mapping = await ProductCaseMappingRepository(db).get(p.store_number, p.entity_key)
     resulting = None
     if mapping is not None and mapping.approved_proposal_id == p.id:
         resulting = ResultingMapping.model_validate(mapping, from_attributes=True)
@@ -76,6 +76,7 @@ async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
 async def list_proposals(
     status: str | None = Query(default=STATUS_PENDING),
     source: str | None = Query(default=None),
+    store_number: str | None = Query(default=None),
     item_code: str | None = Query(default=None),
     invoice_id: uuid.UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
@@ -92,6 +93,7 @@ async def list_proposals(
         source=source,
         entity_key=normalize_item_code(item_code) if item_code else None,
         invoice_id=invoice_id,
+        store_number=store_number,
     )
     rows = list(reversed(rows))                      # newest first for a queue
     start = (page - 1) * page_size
@@ -164,22 +166,28 @@ async def reject_proposal(
 @router.get(
     "/products/{item_code}/history",
     response_model=APIResponse[ProductHistory],
-    summary="What happened to this product's reusable data",
+    summary="What happened to this product's reusable data, in one store",
     description=(
         "The current authoritative mapping (if any) and every proposal ever made for "
-        "this item code, oldest first — the audit trail, built from the immutable "
-        "proposal rows rather than a separate log."
+        "this item code IN THIS STORE, oldest first — the audit trail, built from the "
+        "immutable proposal rows rather than a separate log. A UPC's history is "
+        "store-specific: another store's decisions about the same barcode are not "
+        "this store's history."
     ),
 )
 async def product_history(
-    item_code: str, db: AsyncSession = Depends(get_db)
+    item_code: str,
+    store_number: str = Query(..., min_length=1, max_length=32, pattern=r"^\d+$"),
+    db: AsyncSession = Depends(get_db),
 ) -> APIResponse[ProductHistory]:
     code = normalize_item_code(item_code)
     if not code:
         raise ValidationError(message="Item code contains no usable digits.")
-    mapping = await ProductCaseMappingRepository(db).get(code)
-    proposals = await ProductDataProposalRepository(db).list(entity_key=code)
+    mapping = await ProductCaseMappingRepository(db).get(store_number, code)
+    proposals = await ProductDataProposalRepository(db).list(
+        entity_key=code, store_number=store_number)
     return APIResponse(data=ProductHistory(
+        store_number=store_number,
         item_code=code,
         current_mapping=ResultingMapping.model_validate(mapping, from_attributes=True) if mapping else None,
         proposals=[await _detail(db, p) for p in proposals],

@@ -48,6 +48,7 @@ class PersistenceService:
         session: AsyncSession,
         *,
         document: Document,
+        store_number: str,
         structuring: InvoiceStructuringResult,
         validation: ValidationResult,
     ) -> tuple[Invoice, Vendor | None, bool]:
@@ -73,6 +74,7 @@ class PersistenceService:
 
         invoice = await invoices.create_with_items(
             document_id=document.id,
+            store_number=store_number,
             vendor_id=vendor.id if vendor else None,
             normalized=validation.invoice,
             decision=decision,
@@ -95,6 +97,7 @@ class PersistenceService:
             message=f"Invoice persisted; document {final_status}.",
             payload={
                 "invoice_id": str(invoice.id),
+                "store_number": store_number,
                 "vendor_id": str(vendor.id) if vendor else None,
                 "vendor_created": vendor_created,
                 "line_item_count": len(validation.invoice.line_items),

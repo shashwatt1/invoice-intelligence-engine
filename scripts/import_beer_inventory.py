@@ -28,7 +28,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core.config import get_settings  # noqa: E402
 from app.database.session import get_session_factory  # noqa: E402
 from app.repositories.product_reference_repository import ProductReferenceRepository  # noqa: E402
 from app.services.beer_inventory_import import parse_beer_inventory  # noqa: E402
@@ -37,14 +36,16 @@ from app.services.beer_inventory_import import parse_beer_inventory  # noqa: E40
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workbook")
-    parser.add_argument("--store", default=None)
+    parser.add_argument("--store", required=True,
+                        help="the store this workbook belongs to — it carries no store preamble, "
+                             "so nothing can check this for you")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     path = Path(args.workbook)
     if not path.is_file():
         raise SystemExit(f"Not found: {path}")
-    store = args.store or get_settings().store_number
+    store = args.store
 
     report = parse_beer_inventory(path)
     print(f"{path.name}  store {store}\n")

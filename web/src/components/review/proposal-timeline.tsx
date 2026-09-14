@@ -32,7 +32,8 @@ export function ProposalTimeline({
         {mapping ? (
           <>
             <span>
-              Master data today: <span className="font-semibold">{mapping.units_per_case} units/case</span>
+              Master data today in store <span className="font-mono">{mapping.store_number}</span>:{" "}
+              <span className="font-semibold">{mapping.units_per_case} units/case</span>
             </span>
             <span className="text-muted-foreground">
               source <span className="font-mono">{mapping.source}</span> · updated {formatDateTime(mapping.updated_at)}
@@ -50,7 +51,8 @@ export function ProposalTimeline({
           </>
         ) : (
           <span className="text-muted-foreground">
-            No master data — this product is unmapped. Nothing reaches an EDI for it.
+            No master data in store <span className="font-mono">{history.store_number}</span> — this product is
+            unmapped here. Nothing reaches an EDI for it, whatever another store decided.
           </span>
         )}
       </div>

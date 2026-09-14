@@ -151,6 +151,7 @@ export function HistoryPage() {
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <TableHead>Document</TableHead>
+                    <TableHead>Store</TableHead>
                     <TableHead>Vendor</TableHead>
                     <TableHead>Invoice #</TableHead>
                     <TableHead>Invoice date</TableHead>
@@ -169,6 +170,9 @@ export function HistoryPage() {
                     >
                       <TableCell className="max-w-48 truncate font-medium">
                         {row.filename}
+                      </TableCell>
+                      <TableCell className="font-mono text-[0.78rem] text-muted-foreground">
+                        {row.store_number ?? "—"}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {row.vendor_name ?? "—"}

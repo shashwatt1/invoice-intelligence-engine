@@ -11,26 +11,49 @@ import { UploadDropzone } from "@/components/processing/upload-dropzone";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useDocumentStatus, useProcessInvoice } from "@/hooks/use-api";
+import { Input } from "@/components/ui/input";
+import { useDocumentStatus, useProcessInvoice, useStores } from "@/hooks/use-api";
+
+const STORE_KEY = "process.store";
+
+function rememberedStore(): string {
+  try {
+    return localStorage.getItem(STORE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 export function ProcessPage() {
   const [file, setFile] = useState<File | null>(null);
+  // The store the invoice is received for. The API requires it — there
+  // is no default store — so the operator states it; the last choice is
+  // remembered per browser as a convenience only.
+  const [store, setStore] = useState(rememberedStore);
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<{ existingId: string | null } | null>(null);
 
   const processMutation = useProcessInvoice();
   const status = useDocumentStatus(documentId ?? undefined);
+  const stores = useStores();
 
   const isRunning = Boolean(documentId) && !status.data?.is_terminal;
   const terminal = status.data?.is_terminal ? status.data : null;
+  const storeNumber = store.trim();
+  const storeValid = /^\d+$/.test(storeNumber);
 
   const start = () => {
-    if (!file) return;
+    if (!file || !storeValid) return;
     setDuplicate(null);
-    processMutation.mutate(file, {
+    processMutation.mutate({ file, storeNumber }, {
       onSuccess: (accepted) => {
+        try {
+          localStorage.setItem(STORE_KEY, storeNumber);
+        } catch {
+          /* per-browser convenience only */
+        }
         setDocumentId(accepted.document_id);
-        toast.info(`Processing ${accepted.filename}`);
+        toast.info(`Processing ${accepted.filename} for store ${storeNumber}`);
       },
       onError: (error) => {
         if (error instanceof ApiError && error.errorCode === "ERR_DUPLICATE_DOCUMENT") {
@@ -61,6 +84,34 @@ export function ProcessPage() {
       <div className="grid grid-cols-2 items-start gap-5 max-lg:grid-cols-1">
         {/* Left: upload */}
         <div className="space-y-4">
+          <div className="space-y-1">
+            <label htmlFor="store-number" className="text-[0.78rem] font-medium">
+              Store <span className="text-danger">*</span>
+            </label>
+            <Input
+              id="store-number"
+              list="known-stores"
+              inputMode="numeric"
+              value={store}
+              onChange={(event) => setStore(event.target.value)}
+              placeholder="Store number, e.g. 47708760"
+              className="font-mono"
+              disabled={isRunning || processMutation.isPending}
+              aria-invalid={store.length > 0 && !storeValid}
+            />
+            <datalist id="known-stores">
+              {(stores.data ?? []).map((s) => (
+                <option key={s.store_number} value={s.store_number}>
+                  {`${s.case_mappings} mappings · ${s.pricing_rows} pricing rows`}
+                </option>
+              ))}
+            </datalist>
+            <p className="text-[0.7rem] text-muted-foreground">
+              Decides which store's reference data, case mappings and review queue this invoice
+              meets. There is no default.
+            </p>
+          </div>
+
           <UploadDropzone
             file={file}
             onFileSelected={(selected) => {
@@ -76,7 +127,7 @@ export function ProcessPage() {
             <Button
               className="flex-1"
               size="lg"
-              disabled={!file || isRunning || processMutation.isPending || Boolean(terminal)}
+              disabled={!file || !storeValid || isRunning || processMutation.isPending || Boolean(terminal)}
               onClick={start}
             >
               <Sparkles className="size-4" />

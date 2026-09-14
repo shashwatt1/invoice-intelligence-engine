@@ -24,7 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { usePendingProposalCount, useProposals } from "@/hooks/use-api";
+import { usePendingProposalCount, useProposals, useStores } from "@/hooks/use-api";
 import { formatDateTime } from "@/lib/format";
 import { PROPOSAL_SOURCE_META, PROPOSAL_STATUS_META } from "@/lib/status";
 
@@ -71,6 +71,7 @@ export function DataReviewPage() {
   const [source, setSource] = useState<ProposalSource | "ALL">(
     (search.get("source") as ProposalSource | null) ?? "ALL",
   );
+  const [store, setStore] = useState(search.get("store") ?? "ALL");
   const [upcInput, setUpcInput] = useState(search.get("upc") ?? "");
   const [invoiceInput, setInvoiceInput] = useState(search.get("invoice") ?? "");
   const [page, setPage] = useState(1);
@@ -78,31 +79,34 @@ export function DataReviewPage() {
   const upc = useDebounced(upcInput.trim());
   const invoice = useDebounced(invoiceInput.trim());
 
-  useEffect(() => setPage(1), [status, source, upc, invoice]);
+  useEffect(() => setPage(1), [status, source, store, upc, invoice]);
   useEffect(() => {
     const next = new URLSearchParams();
     if (status !== "PENDING") next.set("status", status);
     if (source !== "ALL") next.set("source", source);
+    if (store !== "ALL") next.set("store", store);
     if (upc) next.set("upc", upc);
     if (invoice) next.set("invoice", invoice);
     setSearch(next, { replace: true });
-  }, [status, source, upc, invoice, setSearch]);
+  }, [status, source, store, upc, invoice, setSearch]);
 
   const params = useMemo<ProposalListParams>(
     () => ({
       status,
       source: source === "ALL" ? undefined : source,
+      store_number: store === "ALL" ? undefined : store,
       item_code: upc || undefined,
       invoice_id: /^[0-9a-f-]{36}$/i.test(invoice) ? invoice : undefined,
       page,
       page_size: PAGE_SIZE,
     }),
-    [status, source, upc, invoice, page],
+    [status, source, store, upc, invoice, page],
   );
 
   const { data, isPending, isError, error, refetch, isPlaceholderData } = useProposals(params);
   const pendingCount = usePendingProposalCount();
-  const hasFilters = source !== "ALL" || Boolean(upc) || Boolean(invoice);
+  const stores = useStores();
+  const hasFilters = source !== "ALL" || store !== "ALL" || Boolean(upc) || Boolean(invoice);
 
   return (
     <>
@@ -128,6 +132,19 @@ export function DataReviewPage() {
             {STATUS_FILTERS.map((option) => (
               <SelectItem key={option.value} value={option.value}>
                 {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={store} onValueChange={setStore}>
+          <SelectTrigger className="w-40 font-mono">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All stores</SelectItem>
+            {(stores.data ?? []).map((s) => (
+              <SelectItem key={s.store_number} value={s.store_number} className="font-mono">
+                {s.store_number}
               </SelectItem>
             ))}
           </SelectContent>
@@ -197,6 +214,7 @@ export function DataReviewPage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
+                      <TableHead>Store</TableHead>
                       <TableHead>UPC</TableHead>
                       <TableHead>Field</TableHead>
                       <TableHead className="text-right">Current</TableHead>
@@ -217,6 +235,7 @@ export function DataReviewPage() {
                         onClick={() => navigate(`/data-review/proposals/${row.id}`)}
                         data-testid="proposal-row"
                       >
+                        <TableCell className="font-mono text-[0.78rem] text-muted-foreground">{row.store_number}</TableCell>
                         <TableCell className="font-mono text-[0.8rem] font-medium">{row.entity_key}</TableCell>
                         <TableCell className="text-[0.78rem] whitespace-nowrap text-muted-foreground">{row.field.replace(/_/g, " ")}</TableCell>
                         <TableCell className="text-right tabular-nums text-muted-foreground">

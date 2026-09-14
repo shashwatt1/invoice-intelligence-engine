@@ -34,7 +34,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.orm import selectinload  # noqa: E402
 
-from app.core.config import get_settings  # noqa: E402
 from app.database.session import get_session_factory  # noqa: E402
 from app.models.invoice import Invoice  # noqa: E402
 from app.models.product_data_proposal import (  # noqa: E402
@@ -77,7 +76,6 @@ async def main() -> int:
                         default="ratio", help="weakest evidence kind to propose from (default: ratio)")
     args = parser.parse_args()
     minimum = {"explicit": 4, "package": 3, "ratio": 2, "retail": 1}[args.min_strength]
-    store = get_settings().store_number
 
     async with get_session_factory()() as session:
         invoice = (await session.execute(
@@ -88,8 +86,11 @@ async def main() -> int:
             print("Invoice not found.")
             return 1
 
+        # The invoice's store, never a global setting: it decides which
+        # reference rows are evidence and which review queue this feeds.
+        store = invoice.store_number
         approved = await invoice_units_by_item_code(session, invoice)
-        matches = await match_invoice_against_reference(session, invoice, store)
+        matches = await match_invoice_against_reference(session, invoice)
         proposals = ProductDataProposalRepository(session)
         mappings = ProductCaseMappingRepository(session)
 
@@ -115,7 +116,7 @@ async def main() -> int:
                 skipped_weak += 1
                 continue
 
-            current = await mappings.get(code)
+            current = await mappings.get(store, code)
             agree = [e for e in match.all_evidence if e.units_per_case == best.units_per_case]
             dissent = [e for e in match.all_evidence if e.units_per_case != best.units_per_case]
             evidence = {

@@ -120,9 +120,14 @@ class InvoiceProcessingPipeline:
         file_size_bytes: int,
         file_path: str,
         file_hash: str,
+        store_number: str,
     ) -> PipelineResult:
         """
         Process one uploaded document end-to-end (intake + all stages).
+
+        `store_number` is the store the invoice is received for. It is
+        required, not defaulted: the store decides which reference data,
+        which case mappings and which review queue the invoice meets.
 
         Raises:
             DuplicateDocumentError: Same content hash already processed.
@@ -136,6 +141,7 @@ class InvoiceProcessingPipeline:
             file_size_bytes=file_size_bytes,
             file_path=file_path,
             file_hash=file_hash,
+            store_number=store_number,
         )
         return await self.run_stages(
             session,
@@ -143,6 +149,7 @@ class InvoiceProcessingPipeline:
             file_content=file_content,
             mime_type=mime_type,
             filename=filename,
+            store_number=store_number,
         )
 
     async def intake(
@@ -154,6 +161,7 @@ class InvoiceProcessingPipeline:
         file_size_bytes: int,
         file_path: str,
         file_hash: str,
+        store_number: str,
     ) -> Document:
         """
         Synchronous intake: duplicate check + Document(UPLOADED) + UPLOAD log.
@@ -194,10 +202,12 @@ class InvoiceProcessingPipeline:
                 "mime_type": mime_type,
                 "file_size_bytes": file_size_bytes,
                 "file_hash": file_hash,
+                "store_number": store_number,
             },
         )
         await session.commit()
-        logger.info("pipeline_document_created", document_id=str(document.id), filename=filename)
+        logger.info("pipeline_document_created", document_id=str(document.id), filename=filename,
+                    store_number=store_number)
         return document
 
     async def run_stages(
@@ -208,11 +218,14 @@ class InvoiceProcessingPipeline:
         file_content: bytes,
         mime_type: str,
         filename: str,
+        store_number: str,
     ) -> PipelineResult:
         """
         Run extraction → structuring → validation → persistence for an
         already-intaken document. See process() for the failure contract.
         """
+        if not store_number:
+            raise ValueError("store_number is required to process an invoice.")
         documents = DocumentRepository(session)
         logs = ProcessingLogRepository(session)
 
@@ -303,7 +316,8 @@ class InvoiceProcessingPipeline:
         # ---- Persistence (atomic) -------------------------------------------
         try:
             invoice, vendor, vendor_created = await self._persistence.persist_invoice(
-                session, document=document, structuring=structuring, validation=validation
+                session, document=document, store_number=store_number,
+                structuring=structuring, validation=validation,
             )
         except InvoiceBaseException as exc:
             await self._fail(session, document, PipelineStage.PERSISTENCE, exc)

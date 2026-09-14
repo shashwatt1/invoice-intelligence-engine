@@ -23,11 +23,14 @@ import type {
   ProposalDetail,
   ProposalListParams,
   ProposalRow,
+  StoreSummary,
 } from "./types";
 
-export async function processInvoice(file: File): Promise<ProcessAccepted> {
+/** `storeNumber` is required by the API: there is no default store. */
+export async function processInvoice(file: File, storeNumber: string): Promise<ProcessAccepted> {
   const form = new FormData();
   form.append("file", file);
+  form.append("store_number", storeNumber);
   const { data } = await apiClient.post<ApiEnvelope<ProcessAccepted>>(
     "/invoices/process",
     form,
@@ -155,10 +158,16 @@ export async function rejectProposal(
   return data.data!;
 }
 
-/** Everything that ever happened to one product's reusable data. */
-export async function getProductHistory(itemCode: string): Promise<ProductHistory> {
+/** Everything that ever happened to one product's reusable data, in one store. */
+export async function getProductHistory(storeNumber: string, itemCode: string): Promise<ProductHistory> {
   const { data } = await apiClient.get<ApiEnvelope<ProductHistory>>(
     `/products/${encodeURIComponent(itemCode)}/history`,
+    { params: { store_number: storeNumber } },
   );
+  return data.data!;
+}
+
+export async function listStores(): Promise<StoreSummary[]> {
+  const { data } = await apiClient.get<ApiEnvelope<StoreSummary[]>>("/stores");
   return data.data!;
 }

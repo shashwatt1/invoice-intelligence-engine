@@ -359,7 +359,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
       </div>
 
       {/* Case → unit mapping: the remaining gate on the PDI download */}
-      <CaseMappingCard invoiceId={detail.invoice_id} rows={detail.case_mappings} />
+      <CaseMappingCard invoiceId={detail.invoice_id} storeNumber={detail.store_number} rows={detail.case_mappings} />
 
       {/* Line items */}
       <Card className="gap-0 p-0">
@@ -488,7 +488,7 @@ export function InvoiceDetailPage() {
         <>
           <PageHeader
             title={data.invoice_number ?? "(no invoice number)"}
-            description={`${data.filename} · ${data.source_type ?? "—"} · processed ${formatDateTime(data.created_at)}`}
+            description={`store ${data.store_number} · ${data.filename} · ${data.source_type ?? "—"} · processed ${formatDateTime(data.created_at)}`}
             actions={
               <div className="flex items-center gap-2">
                 {data.composite_confidence !== null && (

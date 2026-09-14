@@ -28,26 +28,36 @@ class ProductCaseMappingRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get(self, item_code: str) -> ProductCaseMapping | None:
+    async def get(self, store_number: str, item_code: str) -> ProductCaseMapping | None:
         result = await self._session.execute(
-            select(ProductCaseMapping).where(ProductCaseMapping.item_code == item_code)
+            select(ProductCaseMapping).where(
+                ProductCaseMapping.store_number == store_number,
+                ProductCaseMapping.item_code == item_code,
+            )
         )
         return result.scalar_one_or_none()
 
-    async def units_by_item_code(self, item_codes: Iterable[str]) -> dict[str, int]:
+    async def units_by_item_code(
+        self, store_number: str, item_codes: Iterable[str]
+    ) -> dict[str, int]:
         """
-        Confirmed units-per-case for the given codes, as a plain dict.
+        Confirmed units-per-case for the given codes IN THIS STORE, as a
+        plain dict.
 
         One query for the whole invoice rather than one per line, and the
         shape the formatter consumes — it stays free of ORM objects and
-        of the session.
+        of the session. The store is not optional: a value another store
+        confirmed is not evidence here, let alone authority.
         """
+        if not store_number:
+            raise ValueError("store_number is required.")
         codes = [code for code in dict.fromkeys(item_codes) if code]
         if not codes:
             return {}
         result = await self._session.execute(
             select(ProductCaseMapping.item_code, ProductCaseMapping.units_per_case).where(
-                ProductCaseMapping.item_code.in_(codes)
+                ProductCaseMapping.store_number == store_number,
+                ProductCaseMapping.item_code.in_(codes),
             )
         )
         return {row.item_code: row.units_per_case for row in result}
@@ -55,6 +65,7 @@ class ProductCaseMappingRepository:
     async def upsert(
         self,
         *,
+        store_number: str,
         item_code: str,
         units_per_case: int,
         description: str | None = None,
@@ -65,13 +76,16 @@ class ProductCaseMappingRepository:
 
         Upserts rather than inserting so re-confirming a product corrects
         the existing row instead of colliding with the unique constraint
-        on item_code. Validates here — the database enforces uniqueness
+        on (store_number, item_code). Validates here — the database enforces uniqueness
         but not the value range, and a bad pack size silently corrupts
         Case Retail inside PDI.
 
         Raises:
             ValueError: blank item code, out-of-range units, unknown source.
         """
+        store = (store_number or "").strip()
+        if not store:
+            raise ValueError("store_number is required.")
         code = (item_code or "").strip()
         if not code:
             raise ValueError("item_code is required.")
@@ -85,7 +99,7 @@ class ProductCaseMappingRepository:
         if source not in VALID_SOURCES:
             raise ValueError(f"source must be one of {sorted(VALID_SOURCES)}; got {source!r}.")
 
-        existing = await self.get(code)
+        existing = await self.get(store, code)
         if existing is not None:
             existing.units_per_case = units_per_case
             existing.source = source
@@ -95,6 +109,7 @@ class ProductCaseMappingRepository:
             return existing
 
         mapping = ProductCaseMapping(
+            store_number=store,
             item_code=code,
             units_per_case=units_per_case,
             description=description,

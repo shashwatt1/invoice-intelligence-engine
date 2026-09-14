@@ -19,12 +19,11 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.mappers import to_history_row
 from app.api.v1.upload import get_upload_service
-from app.core.config import get_settings
 from app.core.exceptions import (
     InvoiceBaseException,
     RecordNotFoundError,
@@ -87,6 +86,7 @@ async def _run_pipeline_background(
     file_content: bytes,
     mime_type: str,
     filename: str,
+    store_number: str,
 ) -> None:
     """
     Execute the remaining pipeline stages after the 202 response.
@@ -104,7 +104,7 @@ async def _run_pipeline_background(
         try:
             await pipeline.run_stages(
                 session, document, file_content=file_content, mime_type=mime_type,
-                filename=filename,
+                filename=filename, store_number=store_number,
             )
         except InvoiceBaseException as exc:
             logger.warning(
@@ -127,11 +127,17 @@ async def _run_pipeline_background(
         "Poll the returned `status_url` to follow each stage live."
         "\n\n**Accepted formats:** PDF, PNG, JPEG · **Max size:** 25 MB"
         "\n\n**409** if the same file (SHA-256) was already processed."
+        "\n\n`store_number` is required: it decides which store's reference data, "
+        "case mappings and review queue the invoice meets. There is no default."
     ),
 )
 async def process_invoice(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Invoice file (PDF, PNG, or JPEG)."),
+    store_number: str = Form(
+        ..., min_length=1, max_length=32, pattern=r"^\d+$",
+        description="The store this invoice was received for (digits).",
+    ),
     db: AsyncSession = Depends(get_db),
     upload_service: UploadService = Depends(get_upload_service),
     pipeline: InvoiceProcessingPipeline = Depends(get_pipeline),
@@ -148,6 +154,7 @@ async def process_invoice(
         file_size_bytes=upload.file_size_bytes,
         file_path=upload.file_path,
         file_hash=upload.file_hash,
+        store_number=store_number,
     )
     background_tasks.add_task(
         _run_pipeline_background,
@@ -156,6 +163,7 @@ async def process_invoice(
         contents,
         upload.mime_type,
         upload.filename,
+        store_number,
     )
     return APIResponse(
         data=ProcessAccepted(
@@ -225,9 +233,9 @@ async def get_invoice(
     logs = await ProcessingLogRepository(db).for_document(invoice.document_id)
     payloads = {log.stage: log.payload for log in logs if log.payload}
     document = invoice.document
-    store = get_settings().store_number
+    store = invoice.store_number
     units = await invoice_units_by_item_code(db, invoice)
-    reference = await match_invoice_against_reference(db, invoice, store)
+    reference = await match_invoice_against_reference(db, invoice)
     # Queued-but-unreviewed values, so the operator sees what is already
     # awaiting approval rather than submitting it again.
     codes = [
@@ -246,6 +254,7 @@ async def get_invoice(
         filename=document.filename,
         document_status=document.status,
         source_type=document.source_type,
+        store_number=invoice.store_number,
         invoice_number=invoice.invoice_number,
         invoice_date=invoice.invoice_date,
         due_date=invoice.due_date,
@@ -391,9 +400,9 @@ async def confirm_case_mappings(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
 
-    store = get_settings().store_number
+    store = invoice.store_number
     units = await invoice_units_by_item_code(db, invoice)
-    reference = await match_invoice_against_reference(db, invoice, store)
+    reference = await match_invoice_against_reference(db, invoice)
     # The review rows tell the system how each value relates to what the
     # invoice offered, so the proposal's source is decided here, not by
     # the client.

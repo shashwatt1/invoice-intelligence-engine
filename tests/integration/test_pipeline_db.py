@@ -52,6 +52,7 @@ def upload_kwargs(seed: str = "a") -> dict:
         "file_size_bytes": 2048,
         "file_path": f"/uploads/invoice-{seed}.pdf",
         "file_hash": ("0" * 63) + seed,
+        "store_number": "47708760",
     }
 
 

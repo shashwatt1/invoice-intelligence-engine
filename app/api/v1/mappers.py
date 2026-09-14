@@ -19,6 +19,7 @@ def to_history_row(document: Document, invoice: Invoice | None) -> HistoryRow:
         document_id=document.id,
         invoice_id=invoice.id if invoice else None,
         filename=document.filename,
+        store_number=invoice.store_number if invoice else None,
         status=document.status,
         vendor_name=invoice.vendor_name if invoice else None,
         invoice_number=invoice.invoice_number if invoice else None,

@@ -135,9 +135,12 @@ function Evidence({ row }: { row: CaseMappingRow }) {
 
 export function CaseMappingCard({
   invoiceId,
+  storeNumber,
   rows,
 }: {
   invoiceId: string;
+  /** The invoice's store: every mapping and proposal here is that store's own. */
+  storeNumber: string;
   rows: CaseMappingRow[];
 }) {
   // Lines with no usable product code cannot be keyed to a mapping at
@@ -250,6 +253,9 @@ export function CaseMappingCard({
       <CardHeader className="px-5 py-4">
         <CardTitle className="flex flex-wrap items-center gap-2 text-[0.95rem]">
           <PackageSearch className="size-4" /> Case → unit mapping
+          <span className="rounded-md border px-1.5 py-0.5 font-mono text-[0.7rem] font-normal text-muted-foreground" title="Mappings are per store; this is the invoice's store">
+            store {storeNumber}
+          </span>
           {pending.length > 0 ? (
             <span className="text-warning text-[0.75rem] font-medium">
               {pending.length} of {mappable.length} still need confirmation
@@ -259,7 +265,7 @@ export function CaseMappingCard({
           )}
           {queuedCount > 0 ? (
             <Link
-              to={`/data-review?invoice=${invoiceId}`}
+              to={`/data-review?invoice=${invoiceId}&store=${storeNumber}`}
               className="bg-warning-soft text-warning ml-auto inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[0.72rem] font-semibold hover:underline"
               title="Submitted values waiting for a reviewer. Not master data until approved."
             >
@@ -444,7 +450,7 @@ export function CaseMappingCard({
                             className="h-7 px-1.5 text-muted-foreground"
                           >
                             <Link
-                              to={`/data-review/products/${row.item_code}`}
+                              to={`/data-review/products/${row.item_code}?store=${storeNumber}`}
                               aria-label={`Review history for ${row.description ?? row.item_code}`}
                               title="Who approved this, from what evidence"
                             >

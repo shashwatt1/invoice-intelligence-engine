@@ -5,13 +5,17 @@ Persistent UPC → units-per-case mapping, the source of truth for the
 units-per-case field in the PDI EDI (detail bytes [53:57]).
 
 Design decisions:
-- Keyed by the normalized item code, not by product name: the same
+- Keyed by (store, normalized item code), not by product name: the same
   product is described differently on different vendors' invoices, but
-  the UPC is stable. Normalization matches what the formatter writes to
+  the UPC is stable. The store is in the key because units-per-case is
+  what THIS store's sellable unit is — two stores can sell the same UPC
+  as a case and as a single — and because a value is authoritative only
+  on the evidence and approval it was given for. Normalization matches what the formatter writes to
   the EDI (digits only, UPC-12 check digit dropped), so a mapping saved
   from one invoice is found again from any other invoice carrying the
   same barcode, however it happens to be printed.
-- A unique constraint on `item_code` enforces one mapping per product;
+- A unique constraint on (store_number, item_code) enforces one mapping
+  per product per store;
   the repository upserts rather than inserting blindly, so a re-confirmed
   product updates in place instead of creating a duplicate.
 - `source` records where the number came from, so a value a human
@@ -48,6 +52,10 @@ class ProductCaseMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "product_case_mappings"
 
+    store_number: Mapped[str] = mapped_column(
+        String(32), nullable=False,
+        doc="The store this value is authoritative for. Never inherited by another store.",
+    )
     item_code: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -84,12 +92,13 @@ class ProductCaseMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        UniqueConstraint("item_code", name="uq_product_case_mapping_item_code"),
+        UniqueConstraint("store_number", "item_code", name="uq_product_case_mapping_store_item"),
         Index("idx_product_case_mappings_item_code", "item_code"),
+        Index("idx_product_case_mappings_store", "store_number"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<ProductCaseMapping item_code={self.item_code!r} "
+            f"<ProductCaseMapping store={self.store_number!r} item_code={self.item_code!r} "
             f"units_per_case={self.units_per_case} source={self.source!r}>"
         )

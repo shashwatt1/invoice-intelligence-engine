@@ -77,13 +77,19 @@ class CaseMappingStatus:
 async def invoice_units_by_item_code(
     session: AsyncSession, invoice: Invoice
 ) -> dict[str, int]:
-    """Confirmed units-per-case for every product on this invoice."""
+    """
+    Confirmed units-per-case for every product on this invoice, in the
+    invoice's own store. Another store's confirmation of the same UPC is
+    not consulted: the store is part of the mapping's identity.
+    """
     codes = [
         code
         for code in (normalize_item_code(item.product_sku) for item in invoice.items)
         if code
     ]
-    return await ProductCaseMappingRepository(session).units_by_item_code(codes)
+    return await ProductCaseMappingRepository(session).units_by_item_code(
+        invoice.store_number, codes
+    )
 
 
 def build_case_mapping_status(

@@ -109,7 +109,7 @@ async def propose_case_mapping(
     proposed_by: str,
 ) -> ProductDataProposal:
     """Record an operator's confirmation as a PENDING proposal."""
-    current = await ProductCaseMappingRepository(session).get(item_code)
+    current = await ProductCaseMappingRepository(session).get(store_number, item_code)
     source, evidence = _classify(review_status, units_per_case)
     return await ProductDataProposalRepository(session).create(
         store_number=store_number,
@@ -143,10 +143,13 @@ async def approve(
     await proposals.mark_approved(proposal, reviewed_by=reviewed_by, note=note)
 
     if proposal.entity_type == ENTITY_CASE_MAPPING and proposal.field == FIELD_UNITS_PER_CASE:
+        # The proposal's store is the mapping's store. A reviewer approving
+        # store A's evidence writes store A's row and no other.
         mappings = ProductCaseMappingRepository(session)
-        previous = await mappings.get(proposal.entity_key)
+        previous = await mappings.get(proposal.store_number, proposal.entity_key)
         previous_value = previous.units_per_case if previous else None
         mapping = await mappings.upsert(
+            store_number=proposal.store_number,
             item_code=proposal.entity_key,
             units_per_case=int(proposal.proposed_value),
             description=(proposal.evidence or {}).get("invoice_description"),
@@ -156,7 +159,7 @@ async def approve(
         await session.flush()
         return ApprovalResult(
             proposal=proposal,
-            applied_to=f"product_case_mappings:{proposal.entity_key}",
+            applied_to=f"product_case_mappings:{proposal.store_number}:{proposal.entity_key}",
             previous_value=previous_value,
         )
 
