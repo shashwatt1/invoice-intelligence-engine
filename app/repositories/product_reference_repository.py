@@ -9,12 +9,30 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product_reference import ProductIdentifier, ProductIdentity, ProductPricing
 from app.services.beer_inventory_import import ReferenceRecord
+
+
+def _row_signature(sheet, row, item_code, unit_cost, unit_retail, case_cost, start, end) -> tuple:
+    """The content of one pricing row, comparable across imports."""
+    def num(v):
+        return None if v is None else str(Decimal(str(v)).normalize())
+    return (sheet, row, item_code, num(unit_cost), num(unit_retail), num(case_cost),
+            None if start is None else str(start), None if end is None else str(end))
+
+
+def records_fingerprint(records: Sequence[ReferenceRecord]) -> frozenset:
+    """The same signature for parsed records, before anything is written."""
+    return frozenset(
+        _row_signature(r.sheet, r.row, r.item_code, r.unit_cost, r.unit_retail, r.case_cost,
+                       r.effective_from, r.effective_to)
+        for r in records if r.item_code
+    )
 
 
 class ProductReferenceRepository:
@@ -53,6 +71,32 @@ class ProductReferenceRepository:
         )
         return {row.item_code: row for row in result.scalars()}
 
+    async def source_files_for(self, store_number: str) -> dict[str, int]:
+        """Every source_file this store has pricing rows from, with row counts."""
+        result = await self._session.execute(
+            select(ProductPricing.source_file, func.count())
+            .where(ProductPricing.store_number == store_number)
+            .group_by(ProductPricing.source_file)
+        )
+        return dict(result.all())
+
+    async def content_fingerprints(self, store_number: str) -> dict[str, frozenset]:
+        """
+        What each of this store's source files actually said, keyed by
+        filename — so a copy of a workbook under another name ("(1)",
+        a re-download) is recognised by its content, not its name.
+        """
+        result = await self._session.execute(
+            select(ProductPricing).where(ProductPricing.store_number == store_number)
+        )
+        by_file: dict[str, set] = {}
+        for row in result.scalars():
+            by_file.setdefault(row.source_file, set()).add(_row_signature(
+                row.source_sheet, row.source_row, row.item_code, row.unit_cost,
+                row.unit_retail, row.case_cost, row.effective_from, row.effective_to,
+            ))
+        return {f: frozenset(v) for f, v in by_file.items()}
+
     async def import_records(
         self,
         records: list[ReferenceRecord],
@@ -74,10 +118,16 @@ class ProductReferenceRepository:
         counts = {"pricing_inserted": 0, "pricing_updated": 0, "identity_created": 0,
                   "identity_enriched": 0, "identifiers": 0, "skipped_no_upc": 0}
 
+        # Scoped by store as well as file: a filename is not an identity,
+        # and another store's rows from an identically named workbook are
+        # not ours to update.
         existing_pricing = {
             (p.source_file, p.source_sheet, p.source_row): p
             for p in (await self._session.execute(
-                select(ProductPricing).where(ProductPricing.source_file == source_file)
+                select(ProductPricing).where(
+                    ProductPricing.store_number == store_number,
+                    ProductPricing.source_file == source_file,
+                )
             )).scalars()
         }
         codes = {r.item_code for r in records if r.item_code}

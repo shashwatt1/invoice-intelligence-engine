@@ -32,8 +32,7 @@ from pathlib import Path
 
 from app.models.product_reference import BASIS_PERIOD_AVERAGE, KIND_RETAIL_UPC_RAW
 from app.services.beer_inventory_import import Identifier, ReferenceRecord
-from app.services.store_reference_import import parse_item_sales_summary
-from app.services.xlsx_reader import read_workbook
+from app.services.store_reference_import import _sheet_rows, parse_item_sales_summary
 
 _REPORT_RANGE = re.compile(
     r"Report Date is\s+(\d{1,2})/(\d{1,2})/(\d{4})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})", re.IGNORECASE
@@ -53,8 +52,7 @@ class ItemSalesPricingReport:
 
 
 def _report_period(path: Path) -> tuple[date | None, date | None]:
-    sheet = next(iter(read_workbook(path).values()))
-    for row in sheet.rows[:6]:
+    for row in _sheet_rows(path)[:6]:
         for cell in row:
             match = _REPORT_RANGE.search(str(cell or ""))
             if match:
@@ -68,29 +66,21 @@ def parse_item_sales_pricing(path: str | Path) -> ItemSalesPricingReport:
     Reuse the proven Item Sales parser, then express each row as a
     dated, provenance-carrying pricing record.
 
-    Row numbers are recovered by re-reading the sheet, because the
-    catalogue parser was written for a one-row-per-product target and
-    does not report them.
+    Every source row is kept, including a scan code the file lists
+    twice: the POS can hold two item records under one code (one
+    costed, one not; two spellings of the description), and this table
+    is one row per source row precisely so that both survive with their
+    own row numbers. The catalogue path still keeps the first only.
     """
     path = Path(path)
-    parsed = parse_item_sales_summary(path)
+    parsed = parse_item_sales_summary(path, keep_duplicates=True)
     start, end = _report_period(path)
-
-    sheet = next(iter(read_workbook(path).values()))
-    row_by_code: dict[str, int] = {}
-    header = next(i for i, r in enumerate(sheet.rows) if r and str(r[0]).strip() == "Scan code")
-    from app.services.export_service import normalize_item_code
-    for i, row in enumerate(sheet.rows[header + 1:], start=header + 2):
-        if row and row[0] is not None:
-            code = normalize_item_code(str(row[0]))
-            if code and code not in row_by_code:
-                row_by_code[code] = i
 
     records: list[ReferenceRecord] = []
     with_retail = with_cost = 0
     for product in parsed.rows:
         rec = ReferenceRecord(
-            sheet="data", row=row_by_code.get(product.item_code, 0), distributor="store",
+            sheet="data", row=product.source_row, distributor="store",
             raw_identifier=product.scan_code_raw, item_code=product.item_code,
             description=product.description, pricing_basis=BASIS_PERIOD_AVERAGE,
             unit_cost=product.avg_cost, effective_from=start, effective_to=end,

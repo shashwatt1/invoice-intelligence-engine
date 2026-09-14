@@ -17,7 +17,7 @@ import os
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -50,6 +50,28 @@ async def _schema_is_stale(conn, metadata) -> bool:
             continue                      # create_all will make it
         if {c.name for c in table.columns} - live[table.name]:
             return True
+    # A unique constraint whose columns changed (0011 added store_number
+    # to product_pricing's source-row key) is drift too: create_all never
+    # alters, and the old key would make a cross-store test pass or fail
+    # for the wrong reason.
+    rows = await conn.execute(text(
+        "SELECT tc.table_name, tc.constraint_name, kcu.column_name "
+        "FROM information_schema.table_constraints tc "
+        "JOIN information_schema.key_column_usage kcu "
+        "  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema "
+        "WHERE tc.table_schema = 'public' AND tc.constraint_type = 'UNIQUE'"
+    ))
+    live_unique: dict[tuple[str, str], set[str]] = {}
+    for table, name, column in rows:
+        live_unique.setdefault((table, name), set()).add(column)
+    for table in metadata.sorted_tables:
+        if table.name not in live:
+            continue
+        for constraint in table.constraints:
+            if isinstance(constraint, UniqueConstraint) and constraint.name:
+                wanted = {c.name for c in constraint.columns}
+                if live_unique.get((table.name, constraint.name), wanted) != wanted:
+                    return True
     return False
 
 

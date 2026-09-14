@@ -165,7 +165,9 @@ class ProductPricing(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("source_file", "source_sheet", "source_row",
+        # A source row belongs to a store's file: two stores may each
+        # have a "Beer Inventory.xlsx", and neither may touch the other's.
+        UniqueConstraint("store_number", "source_file", "source_sheet", "source_row",
                          name="uq_product_pricing_source_row"),
         Index("idx_product_pricing_item", "store_number", "item_code"),
         Index("idx_product_pricing_conflicted", "is_conflicted"),

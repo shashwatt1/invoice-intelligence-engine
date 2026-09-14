@@ -67,6 +67,9 @@ class ReferenceRow:
     description: str | None
     avg_cost: Decimal | None
     avg_price: Decimal | None
+    # 1-based row in the sheet, as a spreadsheet shows it. Provenance for
+    # the per-row pricing path; the catalogue path does not use it.
+    source_row: int = 0
 
 
 @dataclass(frozen=True)
@@ -159,13 +162,17 @@ def _money(value: str | None) -> Decimal | None:
     return None if amount == 0 else amount
 
 
-def parse_item_sales_summary(path: str | Path) -> ParseResult:
+def parse_item_sales_summary(path: str | Path, *, keep_duplicates: bool = False) -> ParseResult:
     """
     Parse one Item Sales Summary export.
 
-    Rows without a usable scan code are skipped rather than guessed at,
-    and a scan code repeated inside one file keeps its first occurrence
-    so the result can be persisted against a unique key.
+    Rows without a usable scan code are skipped rather than guessed at.
+    A scan code repeated inside one file keeps its first occurrence by
+    default, so the result can be persisted against the catalogue's
+    one-row-per-product key. With keep_duplicates=True every source row
+    is returned — the POS can hold two item records under one code, with
+    different descriptions and one of them costed — and it is the per-row
+    pricing table's job to keep both, each under its own row number.
     """
     path = Path(path)
     raw_rows = _sheet_rows(path)
@@ -211,7 +218,7 @@ def parse_item_sales_summary(path: str | Path) -> ParseResult:
     seen: set[str] = set()
     skipped_no_code = skipped_duplicate = zero_cost_nulled = 0
 
-    for row in raw_rows[header_index + 1:]:
+    for row_number, row in enumerate(raw_rows[header_index + 1:], start=header_index + 2):
         if not row:
             continue
         scan_raw = _clean(cell(row, COL_SCAN))
@@ -221,7 +228,7 @@ def parse_item_sales_summary(path: str | Path) -> ParseResult:
         if item_code is None:
             skipped_no_code += 1
             continue
-        if item_code in seen:
+        if item_code in seen and not keep_duplicates:
             skipped_duplicate += 1
             continue
         seen.add(item_code)
@@ -238,6 +245,7 @@ def parse_item_sales_summary(path: str | Path) -> ParseResult:
                 description=_clean(cell(row, COL_DESCRIPTION)),
                 avg_cost=avg_cost,
                 avg_price=_money(cell(row, COL_AVG_PRICE)),
+                source_row=row_number,
             )
         )
 

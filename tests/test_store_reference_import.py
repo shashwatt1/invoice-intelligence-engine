@@ -166,6 +166,25 @@ class TestNormalizationAndSkips:
         assert len(result.rows) == 1
         assert result.skipped_no_code == 1
 
+    def test_a_duplicate_scan_code_can_keep_every_row_for_the_pricing_path(self, tmp_path):
+        # The POS holds two item records under one code: one uncosted,
+        # one costed. The catalogue keeps the first; the per-row pricing
+        # table needs both, each under its own row number.
+        path = build_workbook(tmp_path / "dup.xlsx", [
+            ["Item Sales Summary"], ["Store: 86357232"], HEADERS,
+            row("02840069746", "DORITOS - SWEET and TANGY BBQ", avg_cost="0"),
+            row("02840069746", "Doritos bbq", avg_cost="0.37"),
+        ])
+        result = parse_item_sales_summary(path, keep_duplicates=True)
+        assert [(r.source_row, r.description, r.avg_cost) for r in result.rows] == [
+            (4, "DORITOS - SWEET and TANGY BBQ", None),
+            (5, "Doritos bbq", Decimal("0.37")),
+        ]
+        assert result.skipped_duplicate == 0
+        # and the default is unchanged
+        first = parse_item_sales_summary(path)
+        assert [r.source_row for r in first.rows] == [4] and first.skipped_duplicate == 1
+
     def test_a_duplicate_scan_code_keeps_the_first_occurrence(self, tmp_path):
         book = build_workbook(tmp_path / "l.xlsx", [
             ["Store: 47708760"], HEADERS,
@@ -186,7 +205,7 @@ class TestNormalizationAndSkips:
         assert not hasattr(product, "department")
         assert not hasattr(product, "primary_vendor")
         assert set(ReferenceRow.__dataclass_fields__) == {
-            "item_code", "scan_code_raw", "description", "avg_cost", "avg_price"
+            "item_code", "scan_code_raw", "description", "avg_cost", "avg_price", "source_row",
         }
 
 
