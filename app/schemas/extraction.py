@@ -52,9 +52,11 @@ class ColumnMapping(BaseModel):
     unit_cost_column: str | None = Field(
         default=None,
         description=(
-            "Header of the column you chose as the NET wholesale unit cost "
-            "(what the store actually pays per unit, after any per-line "
-            "discount). Null if the table has no headers."
+            "Header of the column you chose as the wholesale unit cost of the "
+            "GOODS: what the store pays per unit after any per-line discount, "
+            "EXCLUDING any container deposit. A column headed NET is not always "
+            "that: if NET equals PRICE + DEP on the rows, choose PRICE. Null if "
+            "the table has no headers."
         ),
     )
     unit_cost_reasoning: str | None = Field(
@@ -141,11 +143,13 @@ class ExtractedLineItem(BaseModel):
     unit_price: float | None = Field(
         default=None,
         description=(
-            "NET wholesale cost per unit — what the store actually pays after "
-            "any per-line discount. If the table shows both a gross/list price "
-            "and a discounted price, this is the DISCOUNTED one. This is never "
-            "a retail/shelf price. If not printed but quantity and line total "
-            "are both present, derive it as line_total / quantity."
+            "Wholesale cost of the GOODS per unit — what the store pays after "
+            "any per-line discount, EXCLUDING any container deposit (the deposit "
+            "goes in unit_deposit). If the table shows both a gross/list price "
+            "and a discounted price, this is the DISCOUNTED one. If a column is "
+            "PRICE + DEP, this is PRICE, not that column. This is never a "
+            "retail/shelf price. If not printed but quantity and line total are "
+            "both present, derive it as line_total / quantity."
         ),
     )
     unit_discount: float | None = Field(

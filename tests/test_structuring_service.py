@@ -112,6 +112,33 @@ class TestPromptRegistry:
         assert "ocr" in rendered
 
 
+class TestPromptV4DepositExclusion:
+    """
+    v4 exists to fix the second observed production failure: on a real
+    4-line invoice headed PRICE / DISC / DEP / NET / EXT, where NET is
+    PRICE + DEP, the model read every unit_price from NET because v3's
+    column table called NET the unit cost. PDI accepted the file with
+    deposit-inclusive case costs. Rule D in reconciliation is the
+    deterministic guard; these pin the instruction that removes the cause.
+    """
+
+    def test_net_is_taught_as_ambiguous_with_the_row_arithmetic(self):
+        system = get_prompt("v4").system_prompt
+        assert "NET                     -> AMBIGUOUS" in system
+        assert "14.50 + 0.60 = 15.10" in system                  # the worked test on the row
+        assert "unit_price` NEVER includes a container deposit" in system
+
+    def test_the_schema_says_the_same_thing(self):
+        from app.schemas.extraction import ColumnMapping, ExtractedLineItem
+
+        assert "EXCLUDING any container deposit" in ExtractedLineItem.model_fields["unit_price"].description
+        assert "if NET equals PRICE + DEP on the rows, choose PRICE" in ColumnMapping.model_fields["unit_cost_column"].description
+
+    def test_v3_no_longer_says_net_is_the_cost_in_v4(self):
+        assert "D.PRICE, NET, COST      -> NET unit cost" in get_prompt("v3").system_prompt
+        assert "D.PRICE, NET, COST      -> NET unit cost" not in get_prompt("v4").system_prompt
+
+
 class TestPromptV3ColumnDisambiguation:
     """
     v3 exists to fix one observed production failure: on a real 7-line
@@ -123,8 +150,14 @@ class TestPromptV3ColumnDisambiguation:
     prompt edit can't quietly drop them.
     """
 
-    def test_v3_is_active(self):
-        assert ACTIVE_VERSION == "v3"
+    def test_v4_is_active_and_keeps_every_v3_instruction(self):
+        assert ACTIVE_VERSION == "v4"
+        v3, v4 = get_prompt("v3").system_prompt, get_prompt("v4").system_prompt
+        for kept in ("QUANTITY IS NOT PACK SIZE", "WHOLESALE COST IS NOT RETAIL PRICE",
+                     "quantity x unit_price ~= line_total", "VENDOR vs CUSTOMER", "Prefer null",
+                     "D.PRICE", "U.PRICE", "Step 1b"):
+            assert kept in v3 and kept in v4, kept
+        assert get_prompt("v3").system_prompt == v3          # v3 itself is untouched
 
     def test_teaches_net_vs_gross_price_selection(self):
         system = get_prompt("v3").system_prompt

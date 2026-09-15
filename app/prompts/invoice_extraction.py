@@ -290,6 +290,70 @@ class PromptTemplate:
         return self.build_user_prompt(ocr_text, source_type)
 
 
+# v4 — v3 with one correction, learned from a real invoice PDI accepted
+# with the wrong costs: "NET" is not one thing. Some vendors print NET as
+# the after-discount cost; others print NET = PRICE + DEP, the goods plus
+# the container deposit. v3's column table read every NET as the cost, so
+# on the second kind of layout every case cost carried the deposit and
+# still balanced. v4 says the deposit is never part of unit_price and
+# tells the model how to tell the two NETs apart from the row arithmetic.
+# The user prompt is unchanged. Derived by substitution so the diff from
+# v3 is exactly the three passages below and nothing else.
+_V4_EDITS = (
+    (
+        "  D.PRICE, NET, COST      -> NET unit cost, AFTER discount  <- usually correct\n"
+        "  DEP, DEPOSIT            -> per-unit container deposit (not cost of goods)\n",
+        "  D.PRICE, COST           -> unit cost of the goods, AFTER discount  <- usually correct\n"
+        "  NET                     -> AMBIGUOUS. On some vendors NET is the after-discount cost;\n"
+        "                             on others NET = PRICE + DEP (goods plus the container\n"
+        "                             deposit). You MUST test it on the first row before\n"
+        "                             choosing: with PRICE 14.50, DISC 0.00, DEP 0.60, NET 15.10\n"
+        "                             the arithmetic 14.50 + 0.60 = 15.10 shows NET already\n"
+        "                             contains the deposit, so unit_price is 14.50 (PRICE) and\n"
+        "                             unit_deposit is 0.60 — NET is never the unit_price there.\n"
+        "                             Only when NET = PRICE - DISC (no deposit inside) is NET\n"
+        "                             the cost.\n"
+        "  DEP, DEPOSIT            -> per-unit container deposit (not cost of goods, never\n"
+        "                             part of unit_price)\n",
+    ),
+    (
+        "Rule: when BOTH a gross price column and a net/discounted price column exist, "
+        "`unit_price` is the NET one. State which column you chose and why in "
+        "`unit_cost_reasoning`.",
+        "Rule: when BOTH a gross price column and a discounted price column exist, "
+        "`unit_price` is the DISCOUNTED one. `unit_price` NEVER includes a container "
+        "deposit: it is the cost of the goods alone. When a column equals PRICE + DEP, "
+        "the goods price is PRICE, and the deposit goes in `unit_deposit`. Show the "
+        "row arithmetic you tested (e.g. \"14.50 + 0.60 = 15.10, so NET includes DEP; "
+        "chose PRICE\") in `unit_cost_reasoning`.",
+    ),
+    (
+        "Note: some layouts fold the deposit into the extended total, so "
+        "(unit_price + unit_deposit) x quantity = line_total. If that is what the "
+        "document shows, report the figures as printed and add a `concerns` entry "
+        "rather than altering them.",
+        "Note: some layouts fold the deposit into the extended total, so "
+        "(unit_price + unit_deposit) x quantity = line_total. If that is what the "
+        "document shows, report the figures as printed and add a `concerns` entry "
+        "rather than altering them. Some layouts also print a per-unit column that "
+        "already includes the deposit (NET = PRICE + DEP); that column is not "
+        "`unit_price` — PRICE is.",
+    ),
+)
+
+
+def _derive_v4(base: str) -> str:
+    text = base
+    for old, new in _V4_EDITS:
+        if old not in text:
+            raise RuntimeError("v4 derivation: expected v3 passage not found; v3 text changed?")
+        text = text.replace(old, new, 1)
+    return text
+
+
+_SYSTEM_PROMPT_V4 = _derive_v4(_SYSTEM_PROMPT_V3)
+
+
 _REGISTRY: dict[str, PromptTemplate] = {
     "v1": PromptTemplate(
         version="v1",
@@ -306,9 +370,14 @@ _REGISTRY: dict[str, PromptTemplate] = {
         system_prompt=_SYSTEM_PROMPT_V3,
         build_user_prompt=_build_user_prompt_v3,
     ),
+    "v4": PromptTemplate(
+        version="v4",
+        system_prompt=_SYSTEM_PROMPT_V4,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
 }
 
-ACTIVE_VERSION = "v3"
+ACTIVE_VERSION = "v4"
 
 
 def get_prompt(version: str | None = None) -> PromptTemplate:
