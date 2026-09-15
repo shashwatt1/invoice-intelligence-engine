@@ -173,7 +173,36 @@ different customer/warehouse config? Do we need to support it at all?
 
 ---
 
-## Q7 — Must the AMOUNT header balance against the detail lines?
+## Q7 — Must the AMOUNT header balance against the detail lines? — RESOLVED (observed 15 Sep 2026)
+
+**Observed on the first real import.** A.L. George / Onondaga Bev invoice
+1000540 (4 lines, deposits per line, no discount, no fuel) was exported
+with header `AMOUNT … +000017280` ($172.80, the printed Invoice Total)
+and four `B` records whose case cost × quantity sum to $164.70 (the
+printed Total Content). PDI accepted the file **without manual editing**,
+raised no out-of-balance warning, read every item as emitted, and
+displayed **Invoice Total = $164.70** — the detail-line economics, not
+the header. The $8.10 of deposits appeared nowhere.
+
+That is the third row of the table below: **PDI's merchandise Invoice
+Total follows the B-record detail economics.** The header did not drive
+the displayed total and was not rejected. Deposits (and, by the same
+logic, fuel) are outside PDI's merchandise total and outside the item
+file; they are an accounts-payable matter, not an EDI one.
+
+**Decision: `_pdi_amount_cents` stays as it is** — the header keeps
+carrying the supplier's printed Invoice Total. Changing it to the goods
+total would alter the Balkan golden (header $273.66) for no observed
+benefit, and the printed total is what a clerk reconciles against the
+physical invoice. If the manager later wants the header to equal the
+merchandise total, that is a one-line formatter change plus a new
+Balkan golden — a deliberate decision, not a correction.
+`app/services/pdi_audit.py` continues to report the header/detail gap
+as information, never as a failure. The golden for 1000540 is pinned in
+`tests/integration/test_p0_invoice_1000540.py`.
+
+The original analysis follows for the record.
+
 
 **This is the highest-value unresolved question in the contract, and it
 is not answerable from anything currently in our possession.**
@@ -267,7 +296,7 @@ file and deliberately does **not** report it as a pass or a failure.
 | Q4 | CFUE/CPPT trailer content | Layout resolved; content corrected to placeholder | No | CFUE: yes, once constant confirmed. CPPT: no — needs excise classification data we don't have |
 | Q5 | CTAX trailer | New, unimplemented | No | Unknown — too few samples |
 | Q6 | Format B (AHLA) scope | Open business question | No | N/A — scope decision first |
-| Q7 | AMOUNT header vs detail balance | **Open — one PDI import resolves it** | No | Depends on the answer; do not change until observed |
+| Q7 | AMOUNT header vs detail balance | RESOLVED 15 Sep 2026 — PDI displays Σ detail economics; header not cross-footed; deposits/fuel outside PDI | No | No — header unchanged by decision |
 
 None of the open items block the parts of the export that most directly
 reduce manual entry today (which item, how many). Q1 and Q4's `CPPT` half

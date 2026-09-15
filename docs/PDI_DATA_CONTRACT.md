@@ -305,3 +305,36 @@ through the live backend against a real invoice.
 **Not yet confirmed:** whether this alone resolves the real PDI
 rejection, or whether it was masking a second, content-level issue. The
 next real import attempt is the only way to know.
+
+## 7. First real invoice imported end to end — 15 Sep 2026 (P0)
+
+A.L. George / Onondaga Bev invoice **1000540** (photo `IMG_6473.jpg`; 4
+lines, per-line deposits, no discount) went OCR → structuring →
+store-scoped reference matching → four case-mapping proposals approved by
+`data-team:shashwat` → deterministic export → manual PDI import. The file
+(323 bytes, CRLF, SHA-256 `72b6bfe5…386fe15`, audit 31/31) was **accepted
+without manual editing** and PDI showed every item exactly as emitted:
+
+| UPC (EDI) | Qty | Units/case | Case Cost | PDI displayed |
+|---|---|---|---|---|
+| 07199048024 | 4 | 12 | 14.50 | 14.50 (previous cost 15.10) |
+| 07199047712 | 6 | 12 | 9.00 | 9.00 |
+| 08066095757 | 1 | 2 | 31.05 | 31.05 |
+| 08066095680 | 1 | 1 | 21.65 | 21.65 |
+
+Two facts settled by this import, both now under regression test:
+
+1. **PDI's Invoice Total is the detail economics.** Header `AMOUNT`
+   carried the printed Invoice Total ($172.80 = $164.70 goods + $8.10
+   deposits); PDI displayed **$164.70**, raised no balance warning, and
+   showed no deposit. Deposits and fuel are outside PDI's merchandise
+   total. The header mapping is unchanged by decision (see Q7).
+2. **A cost error PDI cannot see.** The model read `unit_price` from a
+   `NET` column that is PRICE + DEP; every line balanced, validation
+   passed, and the file would have loaded deposit-inclusive costs. Fixed
+   deterministically by reconciliation Rule D (invoice-level proof from
+   the printed subtotal and deposit total) and, as the cause, by prompt
+   v4 ("NET is ambiguous; unit_price never includes the deposit").
+
+**What this import did not settle:** G1, gross vs net case cost — the
+invoice had no discount, so gross = net. A discounted invoice is next.
