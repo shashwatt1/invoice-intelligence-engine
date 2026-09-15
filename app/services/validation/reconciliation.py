@@ -24,6 +24,17 @@ column while reading `line_total` from the net column, so
 summed to the invoice's printed "Total Sales" ($288.32) instead of its
 "Total Content" ($263.86) — a 9.3% cost overstatement exactly equal to
 the printed total discount.
+
+A second observed failure added Rule D. On a real 4-line invoice whose
+table is headed PRICE / DISC / DEP / NET / EXT — where NET is PRICE plus
+the container deposit, not a discounted price — the model read
+`unit_price` from NET on every row. Every line balanced (EXT = NET x
+qty), the line totals summed to subtotal + deposits, and the file
+passed validation and was accepted by PDI carrying deposit-inclusive
+case costs. The invoice's own totals prove the fold-in: the unit prices
+times quantities sum to subtotal + deposits, and the same prices less
+each line's deposit sum to the subtotal. Both identities together are
+the proof; either alone is only a warning.
 """
 
 from __future__ import annotations
@@ -170,6 +181,99 @@ def _reconcile_line_item(
     return item
 
 
+def _reconcile_deposit_in_unit_price(
+    invoice: NormalizedInvoice,
+    items: tuple[NormalizedLineItem, ...],
+    tolerance: Decimal,
+    checks: list[CheckResult],
+) -> tuple[NormalizedLineItem, ...]:
+    """
+    Rule D — the container deposit folded into the unit price.
+
+    Some layouts print a NET column that is PRICE + DEP. Read as the unit
+    cost, it inflates every case cost by the deposit while every line
+    still balances, so no per-line rule can see it. The invoice's own
+    totals can. With D = the printed deposit total and S = the printed
+    subtotal (goods only):
+
+        (1)  Σ unit_price x qty                  == S + D
+        (2)  Σ (unit_price - unit_deposit) x qty == S
+
+    Both holding to the cent, on an invoice with at least one deposit
+    line, is a proof: the extracted prices carry the deposit and the
+    document printed the goods price too. Every deposit line then has
+    its deposit removed, recorded as a passed check. Either identity
+    alone is not a proof — the values are left untouched and a warning
+    sends the invoice to review. Nothing here knows any vendor's layout:
+    only the printed subtotal, deposit total and per-line deposits.
+    """
+    subtotal, deposit_total = invoice.subtotal, invoice.deposit_total
+    if subtotal is None or not deposit_total:
+        return items
+    priced = [i for i in items if i.quantity and i.unit_price is not None]
+    if len(priced) != len(items) or not any(i.unit_deposit for i in priced):
+        return items
+
+    zero = Decimal("0")
+    gross = sum((i.unit_price * i.quantity for i in priced), zero).quantize(MONEY_EXP)
+    ex_deposit = sum(
+        ((i.unit_price - (i.unit_deposit or zero)) * i.quantity for i in priced), zero
+    ).quantize(MONEY_EXP)
+    with_deposits = (subtotal + deposit_total).quantize(MONEY_EXP)
+
+    identity_1 = _within(gross, with_deposits, tolerance)
+    identity_2 = _within(ex_deposit, subtotal, tolerance)
+    if _within(gross, subtotal, tolerance):
+        return items                      # prices are already goods-only; nothing to prove
+    if identity_1 and identity_2:
+        corrected = []
+        for item in items:
+            if item.unit_deposit:
+                net = (item.unit_price - item.unit_deposit).quantize(Decimal("0.0001"))
+                checks.append(
+                    CheckResult(
+                        name="UNIT_PRICE_INCLUDED_DEPOSIT",
+                        status=CheckStatus.PASSED,
+                        field=f"line_items[{item.sort_order}].unit_price",
+                        message=(
+                            f"Extracted unit price included the {item.unit_deposit}/unit "
+                            f"container deposit; replaced with the goods price {net}, proved "
+                            "by the invoice totals: Σ unit_price x qty = subtotal + deposits "
+                            "and Σ (unit_price - deposit) x qty = subtotal."
+                        ),
+                        expected=str(net),
+                        actual=str(item.unit_price),
+                    )
+                )
+                corrected.append(item.model_copy(
+                    update={"unit_price": net, "unit_price_reconciled": True}
+                ))
+            else:
+                corrected.append(item)
+        return tuple(corrected)
+    if identity_1 or identity_2:
+        checks.append(
+            CheckResult(
+                name="UNIT_PRICE_MAY_INCLUDE_DEPOSIT",
+                status=CheckStatus.FAILED,
+                field="line_items[*].unit_price",
+                message=(
+                    "The unit prices may include the container deposit, but the invoice "
+                    "totals prove it only halfway: "
+                    + ("Σ unit_price x qty equals subtotal + deposits, yet Σ (unit_price - "
+                       "deposit) x qty does not equal the subtotal."
+                       if identity_1 else
+                       "Σ (unit_price - deposit) x qty equals the subtotal, yet Σ unit_price "
+                       "x qty does not equal subtotal + deposits.")
+                    + " Values left as extracted; confirm the goods price on each deposit line."
+                ),
+                expected=str(subtotal),
+                actual=str(ex_deposit if identity_1 else gross),
+            )
+        )
+    return items
+
+
 def reconcile_invoice(
     invoice: NormalizedInvoice, tolerance: Decimal
 ) -> tuple[NormalizedInvoice, list[CheckResult]]:
@@ -184,6 +288,7 @@ def reconcile_invoice(
     items = tuple(
         _reconcile_line_item(item, tolerance, checks) for item in invoice.line_items
     )
+    items = _reconcile_deposit_in_unit_price(invoice, items, tolerance, checks)
     reconciled = invoice.model_copy(update={"line_items": items})
 
     # Invoice-level cross-check: the corrected line totals should now sum

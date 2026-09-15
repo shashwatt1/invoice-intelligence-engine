@@ -166,3 +166,97 @@ class TestSubtotalCrossCheck:
         )
         _, checks = reconcile_invoice(invoice, TOLERANCE)
         assert "SUBTOTAL_UNRECONCILED" in _names(checks)
+
+
+def _deposit_invoice(prices, *, deposits=("0.60", "0.60", "1.20", "0.90"), qtys=(4, 6, 1, 1),
+                     subtotal="164.70", deposit_total="8.10", line_totals=None):
+    """Invoice 1000540's shape: four lines, per-line deposits, EXT = NET x qty."""
+    items = []
+    for i, (p, d, q) in enumerate(zip(prices, deposits, qtys, strict=True)):
+        lt = (Decimal(p) * q).quantize(Decimal("0.01")) if line_totals is None else Decimal(line_totals[i])
+        items.append(_item(sort_order=i, quantity=Decimal(q), unit_price=Decimal(p),
+                           unit_discount=Decimal("0.00"), unit_deposit=Decimal(d), line_total=lt))
+    return NormalizedInvoice(
+        line_items=tuple(items), subtotal=Decimal(subtotal),
+        deposit_total=Decimal(deposit_total) if deposit_total is not None else None,
+    )
+
+
+class TestDepositFoldedIntoUnitPrice:
+    """Rule D — unit_price read from a NET column that is PRICE + DEP."""
+
+    def test_the_real_1000540_extraction_is_repaired_from_its_own_totals(self):
+        # As the model read it: 15.10 / 9.60 / 32.25 / 22.55 (PRICE + DEP).
+        invoice = _deposit_invoice(("15.10", "9.60", "32.25", "22.55"))
+        result, checks = reconcile_invoice(invoice, TOLERANCE)
+        assert [i.unit_price for i in result.line_items] == [Decimal("14.50"), Decimal("9.00"), Decimal("31.05"), Decimal("21.65")]
+        assert all(i.unit_price_reconciled for i in result.line_items)
+        proofs = [c for c in checks if c.name == "UNIT_PRICE_INCLUDED_DEPOSIT"]
+        assert len(proofs) == 4 and all(c.status.value == "PASSED" for c in proofs)
+        assert Decimal(proofs[0].actual) == Decimal("15.10") and Decimal(proofs[0].expected) == Decimal("14.50")
+        assert "UNIT_PRICE_MAY_INCLUDE_DEPOSIT" not in _names(checks)
+        # the line totals were never touched — they are the document's EXT
+        assert [i.line_total for i in result.line_items] == [Decimal("60.40"), Decimal("57.60"), Decimal("32.25"), Decimal("22.55")]
+        assert "SUBTOTAL_RECONCILED" in _names(checks)
+
+    def test_goods_only_prices_are_left_alone_even_with_deposits(self):
+        # Balkan's shape: unit_price ex-deposit, EXT includes the deposit,
+        # Σ unit_price x qty == subtotal. Nothing to prove, nothing touched.
+        invoice = _deposit_invoice(("14.50", "9.00", "31.05", "21.65"),
+                                   line_totals=("60.40", "57.60", "32.25", "22.55"))
+        result, checks = reconcile_invoice(invoice, TOLERANCE)
+        assert [i.unit_price for i in result.line_items] == [Decimal("14.50"), Decimal("9.00"), Decimal("31.05"), Decimal("21.65")]
+        assert not any(i.unit_price_reconciled for i in result.line_items)
+        assert not {"UNIT_PRICE_INCLUDED_DEPOSIT", "UNIT_PRICE_MAY_INCLUDE_DEPOSIT"} & _names(checks)
+        assert "LINE_TOTAL_INCLUDES_DEPOSIT" in _names(checks)           # Rule B explains EXT
+
+    def test_no_deposits_means_no_rule(self):
+        invoice = _deposit_invoice(("14.50", "9.00", "31.05", "21.65"), deposits=("0.00",) * 4,
+                                   deposit_total=None)
+        _, checks = reconcile_invoice(invoice, TOLERANCE)
+        assert not {"UNIT_PRICE_INCLUDED_DEPOSIT", "UNIT_PRICE_MAY_INCLUDE_DEPOSIT"} & _names(checks)
+
+    def test_a_half_proof_changes_nothing_and_fails_for_review(self):
+        # Σ unit_price x qty = subtotal + deposits holds, but one line's
+        # deposit is wrong, so Σ (price - deposit) x qty misses the subtotal.
+        invoice = _deposit_invoice(("15.10", "9.60", "32.25", "22.55"),
+                                   deposits=("0.60", "0.60", "1.20", "0.50"))
+        result, checks = reconcile_invoice(invoice, TOLERANCE)
+        assert [i.unit_price for i in result.line_items] == [Decimal("15.10"), Decimal("9.60"), Decimal("32.25"), Decimal("22.55")]
+        [flag] = [c for c in checks if c.name == "UNIT_PRICE_MAY_INCLUDE_DEPOSIT"]
+        assert flag.status.value == "FAILED"
+        assert "does not equal the subtotal" in flag.message
+        assert "UNIT_PRICE_INCLUDED_DEPOSIT" not in _names(checks)
+
+    def test_the_other_half_proof_also_only_flags(self):
+        # Σ (price - deposit) x qty = subtotal, but the printed deposit
+        # total disagrees with the per-line deposits.
+        invoice = _deposit_invoice(("15.10", "9.60", "32.25", "22.55"), deposit_total="9.00")
+        result, checks = reconcile_invoice(invoice, TOLERANCE)
+        assert not any(i.unit_price_reconciled for i in result.line_items)
+        [flag] = [c for c in checks if c.name == "UNIT_PRICE_MAY_INCLUDE_DEPOSIT"]
+        assert "does not equal subtotal + deposits" in flag.message
+
+    def test_a_discounted_line_reconciled_by_rule_a_is_not_double_corrected(self):
+        # Rule A repairs a gross price on one line; the invoice as a whole
+        # then sums to its goods subtotal, so Rule D has nothing to do.
+        items = (
+            _item(sort_order=0, quantity=Decimal(1), unit_price=Decimal("19.41"),
+                  unit_discount=Decimal("0.45"), unit_deposit=Decimal("0.00"), line_total=Decimal("18.96")),
+            _item(sort_order=1, quantity=Decimal(1), unit_price=Decimal("50.20"),
+                  unit_discount=Decimal("0.00"), unit_deposit=Decimal("1.20"), line_total=Decimal("51.40")),
+        )
+        invoice = NormalizedInvoice(line_items=items, subtotal=Decimal("69.16"), deposit_total=Decimal("1.20"))
+        result, checks = reconcile_invoice(invoice, TOLERANCE)
+        assert [i.unit_price for i in result.line_items] == [Decimal("18.96"), Decimal("50.20")]
+        assert "UNIT_PRICE_RECONCILED" in _names(checks)
+        assert not {"UNIT_PRICE_INCLUDED_DEPOSIT", "UNIT_PRICE_MAY_INCLUDE_DEPOSIT"} & _names(checks)
+
+    def test_a_line_without_a_price_disables_the_proof(self):
+        invoice = _deposit_invoice(("15.10", "9.60", "32.25", "22.55"))
+        items = list(invoice.line_items)
+        items[2] = items[2].model_copy(update={"unit_price": None})
+        invoice = invoice.model_copy(update={"line_items": tuple(items)})
+        result, checks = reconcile_invoice(invoice, TOLERANCE)
+        assert result.line_items[0].unit_price == Decimal("15.10")
+        assert not {"UNIT_PRICE_INCLUDED_DEPOSIT", "UNIT_PRICE_MAY_INCLUDE_DEPOSIT"} & _names(checks)
