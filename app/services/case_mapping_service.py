@@ -22,6 +22,7 @@ from app.repositories.product_case_mapping_repository import ProductCaseMappingR
 from app.services.export_service import (
     normalize_item_code,
     pack_candidates,
+    pdi_items,
     suggest_units_per_case,
 )
 from app.services.store_reference_service import ReferenceMatch
@@ -35,6 +36,13 @@ class PendingProposal(Protocol):
 
 
 SUGGESTION_FROM_DATABASE = "database"
+# The invoice prints an explicit count and the reference derives a
+# different one from a cost ratio or a retail margin. Neither is
+# prefilled: both are offered and a person decides.
+SUGGESTION_CONFLICT = "conflict"
+# Reference evidence that is *derived* (a ratio, a margin) rather than
+# stated. It may corroborate a printed count; it may never overrule one.
+DERIVED_REFERENCE_SOURCES = frozenset({"reference_ratio", "reference_retail"})
 # Reference-derived suggestions, strongest first. Each names how the
 # number was arrived at, because a reviewer weighs a typed items/case
 # cell, a decoded package string and a cost ratio very differently.
@@ -107,19 +115,35 @@ def build_case_mapping_status(
     permanently un-exportable.
     """
     statuses: list[CaseMappingStatus] = []
-    for item in sorted(invoice.items, key=lambda i: i.sort_order):
+    candidates_override: list[int] | None
+    for item in pdi_items(invoice):
         code = normalize_item_code(item.product_sku)
         units = units_by_item_code.get(code or "") if code else None
         suggestion, source = suggest_units_per_case(item.pack_size, item.description)
-        # The store's own cost basis outranks anything the vendor printed:
-        # it reflects how this store sells the item, which is the question
-        # units-per-case actually asks. A confirmed mapping still outranks
-        # both — see below.
+        candidates_override = None
+        # Evidence precedence, strongest first: a confirmed mapping (below);
+        # an explicit count printed on the invoice; explicit reference
+        # evidence (a typed items/case cell, a decoded package); and only
+        # then a number DERIVED from a cost ratio or a retail margin. A
+        # derived number may corroborate a printed count but never overrule
+        # it: on a real invoice the store's average cost turned printed
+        # "C-15" cases into 16 and "C-12" into 10 and 48. When the two
+        # disagree, nothing is prefilled and both readings are offered.
         reference = (reference_matches or {}).get(code or "")
         queued = (pending or {}).get(code or "")
         if reference is not None and reference.best_evidence is not None:
-            suggestion = reference.best_evidence.units_per_case
-            source = reference.best_evidence.kind      # reference_explicit / _package / _ratio
+            evidence = reference.best_evidence
+            printed = suggestion if source == "pack_size" or source == "description" else None
+            if (printed is not None and evidence.kind in DERIVED_REFERENCE_SOURCES
+                    and evidence.units_per_case != printed):
+                suggestion, source = None, SUGGESTION_CONFLICT
+                candidates_override = sorted({printed, evidence.units_per_case})
+            else:
+                # Explicit reference evidence, or derived evidence that agrees
+                # with the printed count: the reference label carries the
+                # stronger, corroborated claim, and the value is the same.
+                suggestion = evidence.units_per_case
+                source = evidence.kind      # reference_explicit / reference_package / _ratio / _retail
         statuses.append(
             CaseMappingStatus(
                 item_code=code,
@@ -135,7 +159,11 @@ def build_case_mapping_status(
                 # human has decided, the candidates are history.
                 suggestion_candidates=(
                     []
-                    if units is not None or source in REFERENCE_SUGGESTION_SOURCES
+                    if units is not None
+                    else candidates_override
+                    if candidates_override is not None
+                    else []
+                    if source in REFERENCE_SUGGESTION_SOURCES
                     else pack_candidates(item.description)
                 ),
                 pack_size=item.pack_size,

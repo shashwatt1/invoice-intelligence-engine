@@ -46,6 +46,24 @@ def _sorted_items(invoice: Invoice) -> list[InvoiceItem]:
     return sorted(invoice.items, key=lambda item: item.sort_order)
 
 
+def pdi_items(invoice: Invoice) -> list[InvoiceItem]:
+    """
+    The line items that become PDI product (B) records, in document order.
+
+    Everything else on the invoice is kept for audit and totals but is not
+    merchandise PDI should receive: a charge row (delivery, fuel, service
+    fee) is not a product, and a product row with quantity 0 — printed
+    because it was shorted or out of stock — delivered nothing. Selecting
+    here, once, keeps the formatter, the export gate and the audit in
+    agreement without the formatter learning any of these cases.
+    """
+    return [
+        item for item in _sorted_items(invoice)
+        if (getattr(item, "line_type", None) or "product") != "charge"
+        and not (item.quantity is not None and item.quantity <= 0)
+    ]
+
+
 def export_basename(invoice: Invoice) -> str:
     """Safe filename stem: invoice number if usable, else the invoice id."""
     stem = invoice.invoice_number or str(invoice.id)[:8]
@@ -333,7 +351,9 @@ def normalize_item_code(product_code: str | None) -> str | None:
     if not product_code:
         return None
     digits = _NON_DIGITS.sub("", product_code)
-    if not digits:
+    if not digits or not digits.strip("0"):
+        # "000000000000" is a placeholder some vendors print on charge
+        # rows; it identifies nothing and must not key a mapping.
         return None
     if len(digits) == 12:
         digits = digits[:-1]
@@ -490,11 +510,19 @@ def suggest_units_per_case(
 
     NOTHING here is ever applied automatically, whatever the source.
     """
-    match = re.match(r"\s*(\d+)", pack_size or "")
+    # "24/12OZ", "12 CT" — and the lettered forms some distributors print,
+    # "C-15 25OZ" (case of 15), "B-12 24OZ" (bottles, 12), "C-2/12 12OZ"
+    # (two 12-packs): an optional short letter code and dash, then the count.
+    match = re.match(r"\s*(?:[A-Z]{1,3}-)?\s*(\d+)", pack_size or "", re.IGNORECASE)
     if match:
         units = int(match.group(1))
         if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE:
-            return units, SUGGESTION_FROM_PACK_SIZE
+            source = (
+                SUGGESTION_FROM_DESCRIPTION_AMBIGUOUS
+                if _AMBIGUOUS_PACK.search(pack_size or "")
+                else SUGGESTION_FROM_PACK_SIZE
+            )
+            return units, source
         return None, None
 
     found = _PACK_IN_DESCRIPTION.search(description or "")
@@ -739,7 +767,7 @@ def unmapped_item_codes(
     item-code convention and there is nothing to key a mapping on.
     """
     missing: list[str] = []
-    for item in _sorted_items(invoice):
+    for item in pdi_items(invoice):
         code = normalize_item_code(item.product_sku)
         if code and code not in units_by_item_code and code not in missing:
             missing.append(code)
@@ -759,7 +787,7 @@ def items_missing_cost(invoice: Invoice) -> list[str]:
     """
     return [
         item.description or "(no description)"
-        for item in _sorted_items(invoice)
+        for item in pdi_items(invoice)
         if item.unit_price is None
     ]
 
@@ -780,11 +808,14 @@ def pdi_export_eligibility(
     optional only so callers that genuinely have no session (unit tests
     of the status rules) can skip that check.
     """
-    if not invoice.items:
+    if not pdi_items(invoice):
         return PdiExportEligibility(
             allowed=False,
             requires_confirmation=False,
-            blocked_reason="This invoice has no extracted line items to export.",
+            blocked_reason=(
+                "This invoice has no product line items to export."
+                if invoice.items else "This invoice has no extracted line items to export."
+            ),
         )
 
     unpriced = items_missing_cost(invoice)
@@ -852,7 +883,7 @@ def build_pdi_export(invoice: Invoice, units_by_item_code: Mapping[str, int]) ->
     lines = [_pdi_header_line(invoice)]
     lines.extend(
         _pdi_detail_line(item, invoice=invoice, units_by_item_code=units_by_item_code)
-        for item in _sorted_items(invoice)
+        for item in pdi_items(invoice)
     )
     lines.extend(_pdi_trailer_lines(invoice))
     text = "\r\n".join(lines) + "\r\n"

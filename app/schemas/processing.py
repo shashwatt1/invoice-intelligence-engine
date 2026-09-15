@@ -465,6 +465,10 @@ class LineItemData(BaseModel):
         ),
     )
     sort_order: int = 0
+    line_type: str = Field(
+        default="product",
+        description="'product' or 'charge' — a charge (delivery/fuel/service) is never a PDI product record.",
+    )
     corrected_fields: list[str] = Field(
         default_factory=list,
         description=(

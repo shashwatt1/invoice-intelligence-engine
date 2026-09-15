@@ -360,3 +360,67 @@ class TestCorrectingAConfirmedMapping:
         # Correcting units per case must not disturb the cost bytes.
         assert wrong[43:49] == fixed[43:49]
         assert len(fixed) == 70
+
+
+class TestPrintedCountOutranksDerivedEvidence:
+    """
+    Evidence precedence for units-per-case, strongest first: a confirmed
+    mapping; an explicit count printed on the invoice; explicit reference
+    evidence (typed items/case, a decoded package); a number DERIVED from
+    a cost ratio or retail margin. On T.J. Sheehan 101497 the store's
+    average cost turned printed "C-15" cases into 16 and "C-12" into 10
+    and 48 — a derived number may corroborate a printed count, never
+    overrule it. When they disagree, nothing is prefilled.
+    """
+
+    @staticmethod
+    def _ref(code, units, kind):
+        from app.services.store_reference_service import ReferenceMatch, UnitsEvidence
+
+        ev = UnitsEvidence(units, kind, "Item_Sales_Summary", "data", 5, {"ratio": 15.6})
+        return {code: ReferenceMatch(item_code=code, reference_description="Bud ice 25oz single",
+                                     avg_cost=Decimal("1.4933"), avg_price=None,
+                                     units_per_case_candidate=units, candidate_ratio=15.6,
+                                     best_evidence=ev, all_evidence=(ev,))}
+
+    def test_a_ratio_that_disagrees_with_the_printed_pack_prefills_nothing(self):
+        invoice = make_invoice(make_item("018200250064", "BUD ICE", pack_size="C-15 25OZ"))
+        [row] = build_case_mapping_status(invoice, {}, self._ref("01820025006", 16, "reference_ratio"))
+        assert row.suggested_units_per_case is None
+        assert row.suggestion_source == "conflict"
+        assert row.suggestion_candidates == [15, 16]
+        assert row.mapped is False
+
+    def test_a_retail_margin_that_disagrees_is_treated_the_same(self):
+        invoice = make_invoice(make_item("087692010753", "TWISTED TEA BLACK CHERRY", pack_size="C-12 24OZ"))
+        [row] = build_case_mapping_status(invoice, {}, self._ref("08769201075", 10, "reference_retail"))
+        assert (row.suggested_units_per_case, row.suggestion_source, row.suggestion_candidates) == (None, "conflict", [10, 12])
+
+    def test_a_ratio_that_agrees_is_offered_as_corroborating_reference_evidence(self):
+        invoice = make_invoice(make_item("018200250132", "NATTY DADDY", pack_size="C-15 25OZ"))
+        [row] = build_case_mapping_status(invoice, {}, self._ref("01820025013", 15, "reference_ratio"))
+        assert (row.suggested_units_per_case, row.suggestion_source) == (15, "reference_ratio")
+
+    def test_explicit_reference_evidence_still_outranks_the_document(self):
+        # A typed items/case cell says how the store sells it; that is not a derivation.
+        invoice = make_invoice(make_item("018200250064", "BUD ICE", pack_size="C-15 25OZ"))
+        [row] = build_case_mapping_status(invoice, {}, self._ref("01820025006", 1, "reference_explicit"))
+        assert (row.suggested_units_per_case, row.suggestion_source) == (1, "reference_explicit")
+
+    def test_with_no_printed_count_the_derived_number_is_offered_as_before(self):
+        invoice = make_invoice(make_item("018200250064", "BUD ICE 25OZ", pack_size=None))
+        [row] = build_case_mapping_status(invoice, {}, self._ref("01820025006", 16, "reference_ratio"))
+        assert (row.suggested_units_per_case, row.suggestion_source) == (16, "reference_ratio")
+
+    def test_a_confirmed_mapping_outranks_everything(self):
+        invoice = make_invoice(make_item("018200250064", "BUD ICE", pack_size="C-15 25OZ"))
+        [row] = build_case_mapping_status(invoice, {"01820025006": 15}, self._ref("01820025006", 16, "reference_ratio"))
+        assert (row.units_per_case, row.suggestion_source, row.mapped) == (15, "database", True)
+
+    def test_lettered_pack_forms_are_read_as_printed_counts(self):
+        from app.services.export_service import suggest_units_per_case
+
+        assert suggest_units_per_case("C-15 25OZ") == (15, "pack_size")
+        assert suggest_units_per_case("B-12 24OZ") == (12, "pack_size")
+        assert suggest_units_per_case("C-18 12OZ") == (18, "pack_size")
+        assert suggest_units_per_case("C-2/12 12OZ") == (2, "pack_size")

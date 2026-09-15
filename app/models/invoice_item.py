@@ -78,6 +78,17 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
         nullable=True,
         doc="Units per case as printed (e.g. '24/12OZ'); drives the PDI units-per-case field.",
     )
+    line_type: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="product",
+        server_default="product",
+        doc=(
+            "'product' for goods (delivered or shorted), 'charge' for a delivery / fuel / "
+            "service amount printed as a row of the item table. A charge is kept for "
+            "audit and totals; it never becomes a PDI product record."
+        ),
+    )
     deposit: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2),
         nullable=True,

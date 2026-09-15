@@ -31,6 +31,11 @@ class NormalizedLineItem(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    # "product" (goods, delivered or shorted) or "charge" (a delivery /
+    # fuel / service amount printed as a row of the item table). Charges
+    # are kept for audit and totals; they never become PDI product records
+    # and never need a case mapping.
+    line_type: str = "product"
     description: str | None = None
     product_code: str | None = None          # UPC or vendor item #, exactly as printed
     pack_size: str | None = None             # e.g. "24/12OZ" — units per case lives here

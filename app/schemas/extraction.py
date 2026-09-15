@@ -21,6 +21,8 @@ Design decisions:
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -108,9 +110,23 @@ class ExtractedVendor(BaseModel):
     email: str | None = Field(default=None, description="Vendor email address, if printed.")
 
 
+LINE_TYPE_PRODUCT = "product"
+LINE_TYPE_CHARGE = "charge"
+
+
 class ExtractedLineItem(BaseModel):
     """A single line item row as printed on the invoice."""
 
+    line_type: Literal["product", "charge"] = Field(
+        default="product",
+        description=(
+            "'product' for goods delivered (or shorted: a product row with quantity 0 "
+            "is still a product row). 'charge' for a non-product amount printed as a "
+            "row in the item table — a delivery charge, fuel/service fee, "
+            "miscellaneous charge. A charge has no UPC: if the row prints a placeholder "
+            "such as 000000000000, product_code is null."
+        ),
+    )
     description: str | None = Field(
         default=None, description="Item description exactly as printed."
     )
@@ -137,7 +153,10 @@ class ExtractedLineItem(BaseModel):
         description=(
             "Number of cases/units delivered for this line — the QTY column. "
             "This is NOT the pack size. On a line reading '1 RB COCONUT "
-            "24/12OZ', quantity is 1 and pack_size is '24/12OZ'."
+            "24/12OZ', quantity is 1 and pack_size is '24/12OZ'. A row printed "
+            "with quantity 0 (often annotated 'SHORT ON TRUCK', 'Out of Stock', "
+            "'-1') is quantity 0 with line_total 0 — keep the row, never drop it "
+            "and never read the annotation's number as the quantity."
         ),
     )
     unit_price: float | None = Field(
@@ -230,15 +249,21 @@ class ExtractedInvoice(BaseModel):
     deposit_total: float | None = Field(
         default=None,
         description=(
-            "Invoice-level container/bottle deposit total, if printed "
-            "(e.g. a 'Total Deposit' line). Positive number."
+            "Invoice-level container/bottle deposit total, if printed in the "
+            "totals block (labels such as 'Total Deposit', 'Dep$', 'Container "
+            "Deposit', 'NY CONTAINER DEPOSIT'). Positive number. NEVER a delivery, "
+            "fuel, service or miscellaneous charge — those are not deposits. Null "
+            "if no deposit total is printed."
         ),
     )
     fuel_surcharge: float | None = Field(
         default=None,
         description=(
-            "Fuel surcharge / delivery fee total, if printed as its own line. "
-            "Positive number."
+            "Fuel surcharge / delivery fee / service charge printed in the TOTALS "
+            "block as its own line (not inside the item table). Positive number. "
+            "If the same charge is printed as a row of the item table, report it "
+            "there as a line item with line_type 'charge' as well; the two are "
+            "reconciled deterministically downstream."
         ),
     )
     grand_total: float | None = Field(

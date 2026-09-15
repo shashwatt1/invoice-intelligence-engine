@@ -210,8 +210,11 @@ def _reconcile_deposit_in_unit_price(
     subtotal, deposit_total = invoice.subtotal, invoice.deposit_total
     if subtotal is None or not deposit_total:
         return items
-    priced = [i for i in items if i.quantity and i.unit_price is not None]
-    if len(priced) != len(items) or not any(i.unit_deposit for i in priced):
+    # Only delivered product rows carry goods value; charge rows and
+    # shorted (quantity 0) rows contribute nothing to either identity.
+    priced = [i for i in items if i.line_type == "product" and i.quantity]
+    if any(i.unit_price is None for i in priced) or not priced \
+            or not any(i.unit_deposit for i in priced):
         return items
 
     zero = Decimal("0")
@@ -295,7 +298,8 @@ def reconcile_invoice(
     # to the printed net subtotal. This is the check that would have
     # caught the gross/net error even if no per-line discount had been
     # extracted, so it is worth reporting either way.
-    line_totals = [i.line_total for i in items if i.line_total is not None]
+    # Charge rows sit outside the goods subtotal; only product rows sum to it.
+    line_totals = [i.line_total for i in items if i.line_total is not None and i.line_type == "product"]
     if reconciled.subtotal is not None and line_totals:
         computed = sum(line_totals, Decimal("0.00")).quantize(MONEY_EXP)
         # Layouts that fold the deposit into each extended total make the

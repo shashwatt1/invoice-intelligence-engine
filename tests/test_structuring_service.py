@@ -139,6 +139,49 @@ class TestPromptV4DepositExclusion:
         assert "D.PRICE, NET, COST      -> NET unit cost" not in get_prompt("v4").system_prompt
 
 
+class TestPromptV5RowAnchoring:
+    """
+    v5 exists because a real photographed invoice (T.J. Sheehan 101497)
+    came back from OCR with its quantity+name rows and its UPC/price rows
+    in alternating runs. Prices were read perfectly; rows were dropped or
+    paired with the wrong name and quantity, a delivery charge became a
+    product, and the deposit total was taken from that charge. These pin
+    the instructions that address each of those.
+    """
+
+    def test_line_items_are_anchored_on_the_upc_rows_and_counted(self):
+        system = get_prompt("v5").system_prompt
+        assert "## Step 1c" in system
+        assert "EVERY row that carries an item code / UPC and prices is ONE line item" in system
+        assert "Count these rows first; call it N" in system
+        assert "pair the k-th name row with the k-th UPC row" in system
+        assert "d) the number of line items equals the number of UPC/price rows" in system
+
+    def test_shorted_rows_keep_quantity_zero(self):
+        system = get_prompt("v5").system_prompt
+        assert "A row printed with 0 is quantity 0: keep it" in system
+        assert "SHORT ON TRUCK" in system
+
+    def test_charges_are_not_products_and_not_deposits(self):
+        from app.schemas.extraction import ExtractedInvoice, ExtractedLineItem
+
+        system = get_prompt("v5").system_prompt
+        assert "line_type 'charge' with product_code null" in system
+        assert "A delivery, fuel or service charge is never a deposit" in system
+        assert ExtractedLineItem.model_fields["line_type"].default == "product"
+        assert "NEVER a delivery" in ExtractedInvoice.model_fields["deposit_total"].description
+
+    def test_v5_is_v4_plus_exactly_the_three_passages(self):
+        from app.prompts.invoice_extraction import _V5_EDITS
+
+        v4, v5 = get_prompt("v4").system_prompt, get_prompt("v5").system_prompt
+        rebuilt = v4
+        for old, new in _V5_EDITS:
+            assert old in rebuilt
+            rebuilt = rebuilt.replace(old, new, 1)
+        assert rebuilt == v5
+
+
 class TestPromptV3ColumnDisambiguation:
     """
     v3 exists to fix one observed production failure: on a real 7-line
@@ -150,14 +193,16 @@ class TestPromptV3ColumnDisambiguation:
     prompt edit can't quietly drop them.
     """
 
-    def test_v4_is_active_and_keeps_every_v3_instruction(self):
-        assert ACTIVE_VERSION == "v4"
-        v3, v4 = get_prompt("v3").system_prompt, get_prompt("v4").system_prompt
+    def test_v5_is_active_and_keeps_every_earlier_instruction(self):
+        assert ACTIVE_VERSION == "v5"
+        v3, v4, v5 = (get_prompt(v).system_prompt for v in ("v3", "v4", "v5"))
         for kept in ("QUANTITY IS NOT PACK SIZE", "WHOLESALE COST IS NOT RETAIL PRICE",
                      "quantity x unit_price ~= line_total", "VENDOR vs CUSTOMER", "Prefer null",
                      "D.PRICE", "U.PRICE", "Step 1b"):
-            assert kept in v3 and kept in v4, kept
-        assert get_prompt("v3").system_prompt == v3          # v3 itself is untouched
+            assert kept in v3 and kept in v4 and kept in v5, kept
+        assert "NET                     -> AMBIGUOUS" in v5      # v4's correction survives
+        assert get_prompt("v3").system_prompt == v3          # earlier versions are untouched
+        assert get_prompt("v4").system_prompt == v4
 
     def test_teaches_net_vs_gross_price_selection(self):
         system = get_prompt("v3").system_prompt

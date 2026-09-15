@@ -84,6 +84,7 @@ class InvoiceRepository:
                     line_total=item.line_total,
                     tax_rate=item.tax_rate,
                     pack_size=item.pack_size,
+                    line_type=item.line_type,
                     discount=item.unit_discount,
                     deposit=item.unit_deposit,
                     sort_order=item.sort_order,

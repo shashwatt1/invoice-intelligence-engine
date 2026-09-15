@@ -41,8 +41,8 @@ from app.services.export_service import (
     PDI_AMOUNT_WIDTH,
     PDI_BATCH_WIDTH,
     PDI_DATE_FORMAT,
-    _sorted_items,
     normalize_item_code,
+    pdi_items,
 )
 
 # Absolute byte offsets of the 70-char B record. CONFIRMED — see the byte
@@ -329,7 +329,7 @@ def _audit_against_invoice(
     invoice: Invoice,
 ) -> None:
     """Cross-check the decoded file against the invoice it was built from."""
-    items = _sorted_items(invoice)
+    items = pdi_items(invoice)
     details = [r for r in records if r.record_type == "B"]
 
     _check(checks, "b_record_count_matches_line_items", len(details) == len(items),

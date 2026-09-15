@@ -354,6 +354,87 @@ def _derive_v4(base: str) -> str:
 _SYSTEM_PROMPT_V4 = _derive_v4(_SYSTEM_PROMPT_V3)
 
 
+# v5 — v4 plus what a second real photographed invoice showed. Its OCR
+# came back column-interleaved in ALTERNATING runs (a few quantity+name
+# rows, then their code/UPC/price rows, then more names, then more
+# numbers), rows had two physical lines (name, then package), shorted
+# rows carried a quantity of 0 with an annotation, and a delivery charge
+# sat in the item table with a placeholder UPC. Every price column was
+# read correctly; rows were dropped or paired with the wrong name and
+# quantity, the charge became a product, and the deposit total was taken
+# from the charge. v5 anchors line items on the UPC rows, makes the row
+# count a hard check, and names the two non-product cases. Derived by
+# substitution so the diff from v4 is exactly the passages below.
+_STEP_1C = """\
+## Step 1c — Rows anchored on the UPC/price rows (alternating columnar OCR)
+
+OCR may also interleave in RUNS: two or three quantity+name rows, then their \
+code/UPC/price rows, then more names, then more numbers — and each item can \
+occupy two physical lines (the name line, then a package line such as \
+'C-15 25OZ' or 'B-2/12 12OZ'). Treat this the same way, with one anchor:
+
+  1. EVERY row that carries an item code / UPC and prices is ONE line item. \
+Count these rows first; call it N. That is the number of line items you must \
+return — not one fewer.
+  2. The quantity+name rows appear in the SAME ORDER as the UPC rows, even \
+when the runs alternate. Walk both sequences in document order and pair the \
+k-th name row with the k-th UPC row. The package line belongs to the name \
+line just above it; put it in pack_size.
+  3. The quantity is the integer at the START of the name row ('2 BUD LIGHT' \
+-> 2). A row printed with 0 is quantity 0: keep it, line_total 0, and do not \
+read a following annotation such as '-2 SHORT ON TRUCK' or '-1 Out of Stock' \
+as the quantity.
+  4. A row whose name is a charge — 'MISCELLANEOUS DELIVERY CHARGE', 'FUEL \
+SURCHARGE', 'SERVICE FEE' — is line_type 'charge' with product_code null, even \
+if the row prints a placeholder like 000000000000. It is still one of the N \
+rows; do not drop it and do not turn it into a product.
+  5. Verify the pairing with arithmetic on EVERY row: line_total must equal \
+quantity x unit_price, or quantity x (unit_price + unit_deposit) on layouts \
+that fold the deposit in. If a row fails, the quantity or the name is paired \
+wrong — re-pair before answering. If it still fails, keep the row and add a \
+`concerns` entry with reason `ambiguous_column` for that row rather than \
+dropping it or inventing a value.
+
+Never drop a row because you cannot find its name: a UPC row without a \
+confident name is still a line item — give it the best-matching name and a \
+`concerns` entry.
+
+## Step 2 — Extract each line
+"""
+
+_V5_EDITS = (
+    ("## Step 2 — Extract each line\n", _STEP_1C),
+    (
+        '  c) sum of all line totals ~= the printed subtotal / "total content" figure\n',
+        '  c) sum of all line totals ~= the printed subtotal / "total content" figure\n'
+        "  d) the number of line items equals the number of UPC/price rows in the OCR "
+        "text — count them; a mismatch means a row was dropped or merged\n"
+        "  e) sum of quantity x unit_deposit over the rows ~= the printed deposit "
+        "total (Dep$, Total Deposit) when one is printed\n",
+    ),
+    (
+        "    Invoice Total   273.66     = Content + Deposit + Fuel\n",
+        "    Invoice Total   273.66     = Content + Deposit + Fuel\n"
+        "\n"
+        "deposit_total is the deposit line of that block (Total Deposit, Dep$, "
+        "Container Deposit). A delivery, fuel or service charge is never a deposit: "
+        "it goes in fuel_surcharge (totals block) and/or a line_type 'charge' row.\n",
+    ),
+)
+
+
+def _derive_v5(base: str) -> str:
+    text = base
+    for old, new in _V5_EDITS:
+        if old not in text:
+            raise RuntimeError("v5 derivation: expected v4 passage not found; v4 text changed?")
+        text = text.replace(old, new, 1)
+    return text
+
+
+_SYSTEM_PROMPT_V5 = _derive_v5(_SYSTEM_PROMPT_V4)
+
+
 _REGISTRY: dict[str, PromptTemplate] = {
     "v1": PromptTemplate(
         version="v1",
@@ -375,9 +456,14 @@ _REGISTRY: dict[str, PromptTemplate] = {
         system_prompt=_SYSTEM_PROMPT_V4,
         build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
     ),
+    "v5": PromptTemplate(
+        version="v5",
+        system_prompt=_SYSTEM_PROMPT_V5,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
 }
 
-ACTIVE_VERSION = "v4"
+ACTIVE_VERSION = "v5"
 
 
 def get_prompt(version: str | None = None) -> PromptTemplate:

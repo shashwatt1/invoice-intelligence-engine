@@ -323,6 +323,7 @@ async def get_invoice(
                 line_total=float(item.line_total) if item.line_total is not None else None,
                 tax_rate=float(item.tax_rate) if item.tax_rate is not None else None,
                 unit_deposit=float(item.deposit) if item.deposit is not None else None,
+                line_type=item.line_type,
                 sort_order=item.sort_order,
                 corrected_fields=item.corrected_fields or [],
             )

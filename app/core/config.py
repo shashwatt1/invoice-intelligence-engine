@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     llm_provider: Literal["openai"] = "openai"
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-4o"
     openai_max_retries: int = 3
     openai_timeout_seconds: int = 30
     openai_max_tokens_per_document: int = 6000

@@ -153,7 +153,8 @@ def check_line_item_math(invoice: NormalizedInvoice, tolerance: Decimal) -> list
 
 def check_subtotal(invoice: NormalizedInvoice, tolerance: Decimal) -> list[CheckResult]:
     """Subtotal ≈ Σ line totals (skipped when either side is unavailable)."""
-    line_totals = [i.line_total for i in invoice.line_items if i.line_total is not None]
+    line_totals = [i.line_total for i in invoice.line_items
+                   if i.line_total is not None and i.line_type == "product"]
     if invoice.subtotal is None or not line_totals:
         return [
             CheckResult(
@@ -183,6 +184,23 @@ def check_subtotal(invoice: NormalizedInvoice, tolerance: Decimal) -> list[Check
             actual=str(invoice.subtotal),
         )
     ]
+
+
+def charges_not_in_fuel(invoice: NormalizedInvoice, tolerance: Decimal) -> Decimal:
+    """
+    Charge rows (delivery, fuel, service) printed inside the item table,
+    less what the header's fuel_surcharge already carries. A vendor may
+    print the same delivery charge as a row AND in the totals block; the
+    model reports both, and the amount must count once. When the two
+    agree to the cent the row adds nothing; otherwise the rows are added
+    in full and a genuine discrepancy shows up in the grand-total check.
+    """
+    charges = sum((i.line_total for i in invoice.line_items
+                   if i.line_type == "charge" and i.line_total is not None), Decimal("0"))
+    fuel = invoice.fuel_surcharge or Decimal("0")
+    if charges and _within(charges, fuel, tolerance):
+        return Decimal("0")
+    return charges
 
 
 def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> list[CheckResult]:
@@ -218,6 +236,7 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
         (invoice.tax_amount or Decimal("0"))
         + (invoice.deposit_total or Decimal("0"))
         + (invoice.fuel_surcharge or Decimal("0"))
+        + charges_not_in_fuel(invoice, tolerance)
     )
     discount = invoice.discount_amount or Decimal("0")
 
