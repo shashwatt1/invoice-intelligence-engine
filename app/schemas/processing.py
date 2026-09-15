@@ -342,6 +342,13 @@ class DocumentStatusData(BaseModel):
     status: str
     is_terminal: bool
     source_type: str | None = None
+    store_number: str | None = Field(
+        default=None,
+        description=(
+            "The store the upload was received for — from the invoice once persisted, "
+            "else from the UPLOAD stage record. Null only for uploads that predate stores."
+        ),
+    )
     invoice_id: uuid.UUID | None = None
     error: dict[str, Any] | None = Field(
         default=None, description="Failure log payload when status is FAILED."

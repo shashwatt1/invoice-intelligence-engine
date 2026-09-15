@@ -17,6 +17,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import re
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
@@ -116,6 +117,28 @@ async def _run_pipeline_background(
             logger.exception("background_pipeline_crashed", document_id=str(document_id))
 
 
+STORE_NUMBER_PATTERN = re.compile(r"^\d{1,32}$")
+
+
+def require_store_number(value: str | None) -> str:
+    """The store an invoice is received for, or a clear refusal."""
+    store = (value or "").strip()
+    if not store:
+        raise ValidationError(
+            message=(
+                "store_number is required: it decides which store's reference data, "
+                "case mappings and review queue this invoice meets. There is no default store."
+            ),
+            detail={"field": "store_number", "reason": "missing"},
+        )
+    if not STORE_NUMBER_PATTERN.match(store):
+        raise ValidationError(
+            message=f"store_number {value!r} is not a store number (digits only, up to 32).",
+            detail={"field": "store_number", "reason": "invalid", "value": value},
+        )
+    return store
+
+
 @router.post(
     "/invoices/process",
     response_model=APIResponse[ProcessAccepted],
@@ -134,14 +157,18 @@ async def _run_pipeline_background(
 async def process_invoice(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Invoice file (PDF, PNG, or JPEG)."),
-    store_number: str = Form(
-        ..., min_length=1, max_length=32, pattern=r"^\d+$",
-        description="The store this invoice was received for (digits).",
+    store_number: str | None = Form(
+        default=None, description="The store this invoice was received for (digits). Required.",
     ),
     db: AsyncSession = Depends(get_db),
     upload_service: UploadService = Depends(get_upload_service),
     pipeline: InvoiceProcessingPipeline = Depends(get_pipeline),
 ) -> APIResponse[ProcessAccepted]:
+    # The store is checked before the file is touched: an invoice with no
+    # store meets the wrong reference data and the wrong mappings, so it
+    # is refused outright — nothing is stored, no document row is made,
+    # and there is deliberately no configured store to fall back on.
+    store_number = require_store_number(store_number)
     upload = await upload_service.handle_upload(file)
 
     await file.seek(0)

@@ -44,3 +44,6 @@ uploads/
 
 # Store reference exports — real store catalogue data, not source code
 data/reference/
+
+# Real invoice photos dropped in for processing — never committed.
+/Invoices HO/

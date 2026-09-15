@@ -41,7 +41,52 @@ class TestProcessValidation:
             files={"file": ("ok.pdf", b"%PDF-1.4 " + b"x" * 2048, "application/pdf")},
         )
         assert response.status_code == 422
-        assert any(e["loc"][-1] == "store_number" for e in response.json()["error"]["detail"])
+        body = response.json()["error"]
+        assert body["error_code"] == "ERR_VALIDATION_FAILED"
+        assert "store_number is required" in body["message"]
+        assert "no default store" in body["message"].lower()
+        assert body["detail"] == {"field": "store_number", "reason": "missing"}
+
+    async def test_a_blank_store_is_missing_not_a_store(self, client):
+        response = await client.post(
+            "/api/v1/invoices/process",
+            files={"file": ("ok.pdf", b"%PDF-1.4 " + b"x" * 2048, "application/pdf")},
+            data={"store_number": "   "},
+        )
+        assert response.status_code == 422
+        assert response.json()["error"]["detail"]["reason"] == "missing"
+
+    async def test_an_invalid_store_is_422_with_the_value_named(self, client):
+        for bad in ("store-A", "4770 8760", "47708760x", "9" * 33):
+            response = await client.post(
+                "/api/v1/invoices/process",
+                files={"file": ("ok.pdf", b"%PDF-1.4 " + b"x" * 2048, "application/pdf")},
+                data={"store_number": bad},
+            )
+            assert response.status_code == 422, bad
+            body = response.json()["error"]
+            assert body["detail"] == {"field": "store_number", "reason": "invalid", "value": bad}
+            assert "not a store number" in body["message"]
+
+    async def test_the_store_is_checked_before_the_file_is_touched(self, client, monkeypatch):
+        # A refused store must leave nothing behind: the upload service is
+        # never reached, so no file is written and no document is created.
+        from app.api.v1 import invoices as invoices_module
+
+        called = []
+        original = invoices_module.UploadService.handle_upload
+
+        async def spy(self, file):
+            called.append(file.filename)
+            return await original(self, file)
+
+        monkeypatch.setattr(invoices_module.UploadService, "handle_upload", spy)
+        response = await client.post(
+            "/api/v1/invoices/process",
+            files={"file": ("ok.pdf", b"%PDF-1.4 " + b"x" * 2048, "application/pdf")},
+        )
+        assert response.status_code == 422
+        assert called == []
 
     async def test_a_non_numeric_store_is_422(self, client):
         response = await client.post(

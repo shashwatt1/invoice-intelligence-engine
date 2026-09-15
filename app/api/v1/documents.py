@@ -20,7 +20,7 @@ from app.api.v1.mappers import to_stage_entry
 from app.core.exceptions import RecordNotFoundError
 from app.database.session import get_db
 from app.models.document import DocumentStatus
-from app.models.processing_log import LogStatus
+from app.models.processing_log import LogStatus, PipelineStage
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
@@ -62,6 +62,12 @@ async def get_document_status(
     logs = await ProcessingLogRepository(db).for_document(document_id)
     invoice = await InvoiceRepository(db).get_by_document(document_id)
     failure = next((log for log in logs if log.status == LogStatus.FAILURE), None)
+    upload = next((log for log in logs if log.stage == PipelineStage.UPLOAD), None)
+    store_number = (
+        invoice.store_number if invoice
+        else (upload.payload or {}).get("store_number") if upload
+        else None
+    )
 
     data = DocumentStatusData(
         document_id=document.id,
@@ -69,6 +75,7 @@ async def get_document_status(
         status=document.status,
         is_terminal=document.status in TERMINAL_STATUSES,
         source_type=document.source_type,
+        store_number=store_number,
         invoice_id=invoice.id if invoice else None,
         error=(
             {"stage": failure.stage, "message": failure.message, **(failure.payload or {})}

@@ -77,6 +77,8 @@ export interface DocumentStatusData {
   status: DocumentStatus;
   is_terminal: boolean;
   source_type: string | null;
+  /** The store the upload was received for, known from the moment of upload. */
+  store_number: string | null;
   invoice_id: string | null;
   error: { stage?: PipelineStage; message?: string; error_code?: string } | null;
   stages: StageEntry[];

@@ -40,7 +40,7 @@ export function DocumentStatusPage() {
         <>
           <PageHeader
             title={data.filename}
-            description={`Document ${data.document_id.slice(0, 8)} · created ${formatDateTime(data.created_at)}`}
+            description={`store ${data.store_number ?? "?"} · document ${data.document_id.slice(0, 8)} · created ${formatDateTime(data.created_at)}`}
             actions={<StatusBadge status={data.status} />}
           />
 
