@@ -23,14 +23,16 @@ import type {
   ProposalDetail,
   ProposalListParams,
   ProposalRow,
-  StoreSummary,
+  StoreDirectoryEntry,
+  StoreIdentityUpdate,
 } from "./types";
 
-/** `storeNumber` is required by the API: there is no default store. */
-export async function processInvoice(file: File, storeNumber: string): Promise<ProcessAccepted> {
+/** `storeId` is the store the operator chose up front, if any. Without it
+ * the run pauses after text extraction for a person to confirm the store. */
+export async function processInvoice(file: File, storeId: string | null): Promise<ProcessAccepted> {
   const form = new FormData();
   form.append("file", file);
-  form.append("store_number", storeNumber);
+  if (storeId) form.append("store_id", storeId);
   const { data } = await apiClient.post<ApiEnvelope<ProcessAccepted>>(
     "/invoices/process",
     form,
@@ -159,15 +161,37 @@ export async function rejectProposal(
 }
 
 /** Everything that ever happened to one product's reusable data, in one store. */
-export async function getProductHistory(storeNumber: string, itemCode: string): Promise<ProductHistory> {
+export async function getProductHistory(storeId: string, itemCode: string): Promise<ProductHistory> {
   const { data } = await apiClient.get<ApiEnvelope<ProductHistory>>(
     `/products/${encodeURIComponent(itemCode)}/history`,
-    { params: { store_number: storeNumber } },
+    { params: { store_id: storeId } },
   );
   return data.data!;
 }
 
-export async function listStores(): Promise<StoreSummary[]> {
-  const { data } = await apiClient.get<ApiEnvelope<StoreSummary[]>>("/stores");
+export async function listStores(): Promise<StoreDirectoryEntry[]> {
+  const { data } = await apiClient.get<ApiEnvelope<StoreDirectoryEntry[]>>("/stores");
+  return data.data!;
+}
+
+/** A person confirms or corrects a store's human identity. */
+export async function updateStoreIdentity(
+  storeId: string,
+  update: StoreIdentityUpdate,
+): Promise<StoreDirectoryEntry> {
+  const { data } = await apiClient.patch<ApiEnvelope<StoreDirectoryEntry>>(`/stores/${storeId}`, update);
+  return data.data!;
+}
+
+/** Names the store a paused upload is for; processing resumes from the extracted text. */
+export async function confirmDocumentStore(
+  documentId: string,
+  storeId: string,
+  confirmedBy: string | null,
+): Promise<DocumentStatusData> {
+  const { data } = await apiClient.post<ApiEnvelope<DocumentStatusData>>(
+    `/documents/${documentId}/confirm-store`,
+    { store_id: storeId, confirmed_by: confirmedBy },
+  );
   return data.data!;
 }

@@ -24,6 +24,7 @@ APPROVED proposal id in hand. That is the point of the module.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -101,7 +102,7 @@ def _classify(status: CaseMappingStatus | None, value: int) -> tuple[str, dict[s
 async def propose_case_mapping(
     session: AsyncSession,
     *,
-    store_number: str,
+    store_id: uuid.UUID,
     invoice: Invoice,
     item_code: str,
     units_per_case: int,
@@ -109,10 +110,10 @@ async def propose_case_mapping(
     proposed_by: str,
 ) -> ProductDataProposal:
     """Record an operator's confirmation as a PENDING proposal."""
-    current = await ProductCaseMappingRepository(session).get(store_number, item_code)
+    current = await ProductCaseMappingRepository(session).get(store_id, item_code)
     source, evidence = _classify(review_status, units_per_case)
     return await ProductDataProposalRepository(session).create(
-        store_number=store_number,
+        store_id=store_id,
         entity_type=ENTITY_CASE_MAPPING,
         entity_key=item_code,
         field=FIELD_UNITS_PER_CASE,
@@ -146,10 +147,10 @@ async def approve(
         # The proposal's store is the mapping's store. A reviewer approving
         # store A's evidence writes store A's row and no other.
         mappings = ProductCaseMappingRepository(session)
-        previous = await mappings.get(proposal.store_number, proposal.entity_key)
+        previous = await mappings.get(proposal.store_id, proposal.entity_key)
         previous_value = previous.units_per_case if previous else None
         mapping = await mappings.upsert(
-            store_number=proposal.store_number,
+            store_id=proposal.store_id,
             item_code=proposal.entity_key,
             units_per_case=int(proposal.proposed_value),
             description=(proposal.evidence or {}).get("invoice_description"),
@@ -159,7 +160,7 @@ async def approve(
         await session.flush()
         return ApprovalResult(
             proposal=proposal,
-            applied_to=f"product_case_mappings:{proposal.store_number}:{proposal.entity_key}",
+            applied_to=f"product_case_mappings:{proposal.store_id}:{proposal.entity_key}",
             previous_value=previous_value,
         )
 
@@ -183,8 +184,8 @@ async def reject(
 
 
 async def pending_by_item_code(
-    session: AsyncSession, store_number: str, item_codes: list[str]
+    session: AsyncSession, store_id: uuid.UUID, item_codes: list[str]
 ) -> dict[str, ProductDataProposal]:
     return await ProductDataProposalRepository(session).pending_for_keys(
-        store_number, ENTITY_CASE_MAPPING, FIELD_UNITS_PER_CASE, item_codes
+        store_id, ENTITY_CASE_MAPPING, FIELD_UNITS_PER_CASE, item_codes
     )

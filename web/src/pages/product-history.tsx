@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { ProposalTimeline } from "@/components/review/proposal-timeline";
+import { StoreChip } from "@/components/shared/store-chip";
 import { ErrorState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,7 +27,12 @@ export function ProductHistoryPage() {
         </Button>
       </div>
       <PageHeader
-        title={`Product ${data?.item_code ?? itemCode ?? ""} · store ${store ?? "?"}`}
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            Product {data?.item_code ?? itemCode ?? ""}
+            {data ? <StoreChip store={data.store} withAddress /> : null}
+          </span>
+        }
         description="What happened to this product's reusable data in this store — every proposal, every decision, and the one authoritative value in force today. Another store's decisions about the same barcode are not part of it."
         actions={
           <Button asChild variant="outline" size="sm">

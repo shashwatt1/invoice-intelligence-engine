@@ -86,7 +86,7 @@ async def cmd_show(args) -> int:
         print("Not found.")
         return 1
     fields = [
-        ("id", p.id), ("status", p.status), ("store", p.store_number),
+        ("id", p.id), ("status", p.status), ("store", p.store_id),
         ("entity", f"{p.entity_type}:{p.entity_key}"), ("field", p.field),
         ("proposed value", p.proposed_value), ("current value", p.current_value),
         ("source", p.source), ("source file", p.source_file),

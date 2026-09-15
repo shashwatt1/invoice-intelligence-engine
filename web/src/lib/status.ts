@@ -20,6 +20,7 @@ export const STATUS_META: Record<DocumentStatus, { label: string; tone: Tone }> 
   AI_PROCESSING: { label: "AI structuring", tone: "info" },
   VALIDATED: { label: "Validated", tone: "success" },
   REVIEW_REQUIRED: { label: "Review required", tone: "warning" },
+  STORE_CONFIRMATION_REQUIRED: { label: "Confirm store", tone: "warning" },
   COMPLETED: { label: "Completed", tone: "success" },
   FAILED: { label: "Failed", tone: "danger" },
 };
@@ -90,6 +91,7 @@ export const CHECK_META: Record<CheckStatus, { tone: Tone; symbol: string }> = {
 export const PIPELINE_STEPS: { stage: PipelineStage; title: string; description: string }[] = [
   { stage: "UPLOAD", title: "Upload", description: "File validated, hashed & stored" },
   { stage: "TEXT_EXTRACTION", title: "Text extraction", description: "Digital PDF parsing or OCR" },
+  { stage: "STORE_IDENTIFICATION", title: "Store identification", description: "Which store the document names; a person confirms" },
   { stage: "AI_STRUCTURING", title: "AI structuring", description: "Structured extraction via OpenAI" },
   { stage: "VALIDATION", title: "Validation", description: "Math checks & confidence scoring" },
   { stage: "PERSISTENCE", title: "Persistence", description: "Vendor, invoice & items saved" },
@@ -99,7 +101,8 @@ export const PIPELINE_STEPS: { stage: PipelineStage; title: string; description:
 export const ACTIVE_STEP_BY_STATUS: Partial<Record<DocumentStatus, PipelineStage>> = {
   UPLOADED: "TEXT_EXTRACTION",
   OCR_IN_PROGRESS: "TEXT_EXTRACTION",
-  OCR_COMPLETED: "AI_STRUCTURING",
+  OCR_COMPLETED: "STORE_IDENTIFICATION",
+  STORE_CONFIRMATION_REQUIRED: "STORE_IDENTIFICATION",
   AI_PROCESSING: "AI_STRUCTURING",
   VALIDATED: "PERSISTENCE",
   REVIEW_REQUIRED: "PERSISTENCE",

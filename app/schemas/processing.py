@@ -242,7 +242,7 @@ class ProposalRow(BaseModel):
     """One proposal as the review queue lists it."""
 
     id: uuid.UUID
-    store_number: str
+    store: StoreRef
     entity_type: str
     entity_key: str
     field: str
@@ -262,7 +262,7 @@ class ProposalRow(BaseModel):
 
 
 class ResultingMapping(BaseModel):
-    store_number: str
+    store: StoreRef
     item_code: str
     units_per_case: int
     source: str
@@ -303,24 +303,104 @@ class ProposalDecisionResult(BaseModel):
     )
 
 
-class StoreSummary(BaseModel):
-    """A store the system holds data for, and how much."""
-
-    store_number: str
-    invoices: int
-    pricing_rows: int
-    catalogue_rows: int
-    case_mappings: int
-    pending_proposals: int
-
-
 class ProductHistory(BaseModel):
     """Everything that ever happened to one product's reusable data, in one store."""
 
-    store_number: str
+    store: StoreRef
     item_code: str
     current_mapping: ResultingMapping | None = None
     proposals: list[ProposalDetail]
+
+
+# ---------------------------------------------------------------------------
+# Stores
+# ---------------------------------------------------------------------------
+
+
+class StoreRef(BaseModel):
+    """
+    How a store is named wherever an invoice, mapping or proposal shows
+    it. `label` is the confirmed name, or the source code marked as not
+    yet confirmed — never a guessed name. `source_codes` are the Item
+    Sales store codes, shown as provenance.
+    """
+
+    id: uuid.UUID
+    label: str
+    identity_status: str
+    display_name: str | None = None
+    address: str | None = None
+    source_codes: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_store(cls, store: Any) -> StoreRef:
+        return cls(
+            id=store.id, label=store.label, identity_status=store.identity_status,
+            display_name=store.display_name, address=store.address_summary,
+            source_codes=store.source_codes,
+        )
+
+
+class StoreIdentifierOut(BaseModel):
+    source_system: str
+    identifier_type: str
+    identifier_value: str
+    verified: bool = Field(description="Whether a person vouched for this identifier.")
+
+
+class StoreDirectoryEntry(StoreRef):
+    """One row of the Store Directory."""
+
+    customer_name: str | None = None
+    address_line_1: str | None = None
+    address_line_2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    postal_code: str | None = None
+    status: str
+    notes: str | None = None
+    identifiers: list[StoreIdentifierOut] = Field(default_factory=list)
+    invoices: int = 0
+    pricing_rows: int = 0
+    identities: int = 0
+    catalogue_rows: int = 0
+    case_mappings: int = 0
+    pending_proposals: int = 0
+
+
+class StoreIdentityUpdate(BaseModel):
+    """
+    A person confirming (or correcting) a store's human identity. Every
+    field optional; `confirm=True` marks the identity confirmed.
+    """
+
+    display_name: str | None = Field(default=None, max_length=128)
+    customer_name: str | None = Field(default=None, max_length=128)
+    address_line_1: str | None = Field(default=None, max_length=128)
+    address_line_2: str | None = Field(default=None, max_length=128)
+    city: str | None = Field(default=None, max_length=64)
+    state: str | None = Field(default=None, max_length=32)
+    postal_code: str | None = Field(default=None, max_length=16)
+    notes: str | None = Field(default=None, max_length=2000)
+    confirm: bool = False
+    confirmed_by: str | None = Field(default=None, max_length=128)
+
+
+class StoreCandidateOut(BaseModel):
+    """A store the document's text names, with the evidence that matched."""
+
+    store_id: uuid.UUID
+    label: str
+    identity_status: str
+    address: str | None = None
+    matched_on: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class StoreConfirmation(BaseModel):
+    """Body of POST /documents/{id}/confirm-store."""
+
+    store_id: uuid.UUID
+    confirmed_by: str | None = Field(default=None, max_length=128)
 
 
 class StageEntry(BaseModel):
@@ -342,12 +422,16 @@ class DocumentStatusData(BaseModel):
     status: str
     is_terminal: bool
     source_type: str | None = None
-    store_number: str | None = Field(
-        default=None,
-        description=(
-            "The store the upload was received for — from the invoice once persisted, "
-            "else from the UPLOAD stage record. Null only for uploads that predate stores."
-        ),
+    store: StoreRef | None = Field(
+        default=None, description="The store this upload is for, once chosen or confirmed."
+    )
+    awaiting_store_confirmation: bool = Field(
+        default=False,
+        description="True while the run is paused for a person to confirm the store.",
+    )
+    store_candidates: list[StoreCandidateOut] = Field(
+        default_factory=list,
+        description="What identification found in the text; empty when nothing matched.",
     )
     invoice_id: uuid.UUID | None = None
     error: dict[str, Any] | None = Field(
@@ -418,7 +502,7 @@ class InvoiceDetailData(BaseModel):
     filename: str
     document_status: str
     source_type: str | None = None
-    store_number: str = Field(
+    store: StoreRef = Field(
         description="The store this invoice was received for; scopes every reference lookup."
     )
 
@@ -480,7 +564,7 @@ class HistoryRow(BaseModel):
     document_id: uuid.UUID
     invoice_id: uuid.UUID | None = None
     filename: str
-    store_number: str | None = None
+    store: StoreRef | None = None
     status: str = Field(description="Document lifecycle status.")
     vendor_name: str | None = None
     invoice_number: str | None = None

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.exceptions import AIStructuringError
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.pdf_builder import build_pdf
 
@@ -38,6 +38,7 @@ INVOICE_PDF = build_pdf(
 @pytest_asyncio.fixture
 async def api_client(app, db_engine, db_session, monkeypatch):
     """ASGI client wired to the test database and a fake-LLM pipeline."""
+    from app.api.v1 import documents as documents_module
     from app.api.v1 import invoices as invoices_module
     from app.api.v1.invoices import get_pipeline
     from app.database.session import get_db
@@ -53,6 +54,7 @@ async def api_client(app, db_engine, db_session, monkeypatch):
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_pipeline] = lambda: pipeline
     monkeypatch.setattr(invoices_module, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(documents_module, "get_session_factory", lambda: factory)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -70,7 +72,7 @@ async def process_file(
     response = await api_client.post(
         "/api/v1/invoices/process",
         files={"file": (filename, content, "application/pdf")},
-        data={"store_number": store},
+        data={"store_id": str(store_id(store))},
     )
     assert response.status_code == 202, response.text
     return response.json()["data"]
@@ -95,7 +97,8 @@ class TestProcessAndStatus:
         assert status["error"] is None
         assert status["source_type"] == "digital_pdf"
         assert [s["stage"] for s in status["stages"]] == [
-            "UPLOAD", "TEXT_EXTRACTION", "AI_STRUCTURING", "VALIDATION", "PERSISTENCE",
+            "UPLOAD", "TEXT_EXTRACTION", "STORE_IDENTIFICATION", "AI_STRUCTURING", "VALIDATION",
+            "PERSISTENCE",
         ]
         assert all(s["status"] == "SUCCESS" for s in status["stages"])
 
@@ -104,7 +107,7 @@ class TestProcessAndStatus:
         response = await api_client.post(
             "/api/v1/invoices/process",
             files={"file": ("copy.pdf", INVOICE_PDF, "application/pdf")},
-            data={"store_number": STORE},
+            data={"store_id": str(store_id(STORE))},
         )
         assert response.status_code == 409
         body = response.json()
@@ -162,7 +165,7 @@ class TestInvoiceDetail:
         db = detail["database"]
         assert db["vendor_saved"] and db["invoice_saved"]
         assert db["items_saved"] == 1
-        assert db["logs_saved"] == 5
+        assert db["logs_saved"] == 6                    # upload, extraction, store identification, structuring, validation, persistence
         assert db["duplicate_check_passed"] is True
         assert db["processing_duration_ms"] >= 0
 

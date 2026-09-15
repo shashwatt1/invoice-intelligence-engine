@@ -46,7 +46,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -83,7 +83,10 @@ class ProductDataProposal(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "product_data_proposals"
 
-    store_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    store_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False,
+        doc="The store this proposal is about; the mapping an approval writes belongs to it.",
+    )
     entity_type: Mapped[str] = mapped_column(
         String(32), nullable=False, doc="What kind of record this targets, e.g. case_mapping."
     )
@@ -115,7 +118,8 @@ class ProductDataProposal(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         Index("idx_product_data_proposals_status", "status"),
-        Index("idx_product_data_proposals_entity", "store_number", "entity_type", "entity_key"),
+        Index("idx_product_data_proposals_entity", "store_id", "entity_type", "entity_key"),
+        Index("idx_product_data_proposals_store", "store_id"),
         Index("idx_product_data_proposals_invoice", "invoice_id"),
     )
 

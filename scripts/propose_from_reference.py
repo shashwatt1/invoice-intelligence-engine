@@ -88,7 +88,7 @@ async def main() -> int:
 
         # The invoice's store, never a global setting: it decides which
         # reference rows are evidence and which review queue this feeds.
-        store = invoice.store_number
+        store = invoice.store_id
         approved = await invoice_units_by_item_code(session, invoice)
         matches = await match_invoice_against_reference(session, invoice)
         proposals = ProductDataProposalRepository(session)
@@ -145,7 +145,7 @@ async def main() -> int:
             print(f"{code:<12} {desc:<23} {best.kind:<19} {best.units_per_case:>5}  {origin[:38]:<38} {action}")
             if not args.dry_run:
                 await proposals.create(
-                    store_number=store, entity_type=ENTITY_CASE_MAPPING, entity_key=code,
+                    store_id=store, entity_type=ENTITY_CASE_MAPPING, entity_key=code,
                     field=FIELD_UNITS_PER_CASE, proposed_value=best.units_per_case,
                     current_value=current.units_per_case if current else None,
                     source=PROPOSAL_SOURCE[best.kind], proposed_by="system:propose-from-reference",

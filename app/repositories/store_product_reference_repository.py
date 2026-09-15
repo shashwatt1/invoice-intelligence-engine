@@ -9,6 +9,7 @@ belongs to the service or API layer that owns the request.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterable, Sequence
 
 from sqlalchemy import select
@@ -21,17 +22,17 @@ class StoreProductReferenceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get(self, store_number: str, item_code: str) -> StoreProductReference | None:
+    async def get(self, store_id: uuid.UUID, item_code: str) -> StoreProductReference | None:
         result = await self._session.execute(
             select(StoreProductReference).where(
-                StoreProductReference.store_number == store_number,
+                StoreProductReference.store_id == store_id,
                 StoreProductReference.item_code == item_code,
             )
         )
         return result.scalar_one_or_none()
 
     async def by_item_codes(
-        self, store_number: str, item_codes: Sequence[str]
+        self, store_id: uuid.UUID, item_codes: Sequence[str]
     ) -> dict[str, StoreProductReference]:
         """
         Reference rows for the given normalized codes, keyed by code.
@@ -45,7 +46,7 @@ class StoreProductReferenceRepository:
             return {}
         result = await self._session.execute(
             select(StoreProductReference).where(
-                StoreProductReference.store_number == store_number,
+                StoreProductReference.store_id == store_id,
                 StoreProductReference.item_code.in_(list({c for c in item_codes if c})),
             )
         )
@@ -53,7 +54,7 @@ class StoreProductReferenceRepository:
 
     async def upsert_many(self, rows: Iterable[dict]) -> tuple[int, int]:
         """
-        Insert or update reference rows, keyed by (store_number, item_code).
+        Insert or update reference rows, keyed by (store_id, item_code).
 
         Returns (inserted, updated). Idempotent by construction: importing
         the same export twice updates in place and leaves the row count
@@ -63,21 +64,21 @@ class StoreProductReferenceRepository:
         if not rows:
             return 0, 0
 
-        store_numbers = {r["store_number"] for r in rows}
+        store_ids = {r["store_id"] for r in rows}
         codes = {r["item_code"] for r in rows}
         existing_result = await self._session.execute(
             select(StoreProductReference).where(
-                StoreProductReference.store_number.in_(store_numbers),
+                StoreProductReference.store_id.in_(store_ids),
                 StoreProductReference.item_code.in_(codes),
             )
         )
         existing = {
-            (row.store_number, row.item_code): row for row in existing_result.scalars()
+            (row.store_id, row.item_code): row for row in existing_result.scalars()
         }
 
         inserted = updated = 0
         for row in rows:
-            key = (row["store_number"], row["item_code"])
+            key = (row["store_id"], row["item_code"])
             current = existing.get(key)
             if current is None:
                 current = StoreProductReference(**row)
@@ -92,11 +93,11 @@ class StoreProductReferenceRepository:
         await self._session.flush()
         return inserted, updated
 
-    async def stats(self, store_number: str) -> dict[str, int]:
+    async def stats(self, store_id: uuid.UUID) -> dict[str, int]:
         rows = (
             await self._session.execute(
                 select(StoreProductReference).where(
-                    StoreProductReference.store_number == store_number
+                    StoreProductReference.store_id == store_id
                 )
             )
         ).scalars().all()

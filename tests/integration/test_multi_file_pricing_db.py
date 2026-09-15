@@ -23,7 +23,7 @@ from app.repositories.product_reference_repository import (
     records_fingerprint,
 )
 from app.services.beer_inventory_import import ReferenceRecord
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import requires_db, store_id
 
 pytestmark = requires_db
 
@@ -42,13 +42,13 @@ def rec(row, code, cost, retail, description="x"):
 
 async def _import(session, records, *, store, source_file):
     counts = await ProductReferenceRepository(session).import_records(
-        records, store_number=store, source_file=source_file, imported_at=datetime.now(UTC))
+        records, store_id=store_id(store), source_file=source_file, imported_at=datetime.now(UTC))
     await session.commit()
     return counts
 
 
 async def _rows(session, store, code=None):
-    query = select(ProductPricing).where(ProductPricing.store_number == store)
+    query = select(ProductPricing).where(ProductPricing.store_id == store_id(store))
     if code:
         query = query.where(ProductPricing.item_code == code)
     return list((await session.execute(
@@ -68,7 +68,7 @@ class TestSameStoreSeveralFiles:
             ("file_2.xlsx", "data", 5, Decimal("1.4870"), Decimal("2.3151")),
         ]
         # both readings are what the matcher sees — neither was chosen for it
-        pricing = await ProductReferenceRepository(db_session).pricing_for(A, ["01200013027"])
+        pricing = await ProductReferenceRepository(db_session).pricing_for(store_id(A), ["01200013027"])
         assert len(pricing["01200013027"]) == 2
 
     async def test_null_cost_from_one_file_does_not_erase_a_real_cost_from_another(self, db_session):
@@ -89,7 +89,7 @@ class TestSameStoreSeveralFiles:
                       store=A, source_file="file_1.xlsx")
         await _import(db_session, [rec(5, "01200013027", "1.487", "2.3151", "MTN DEW BAJA BLAST")],
                       store=A, source_file="file_2.xlsx")
-        identity = (await ProductReferenceRepository(db_session).identity_for(A, ["01200013027"]))["01200013027"]
+        identity = (await ProductReferenceRepository(db_session).identity_for(store_id(A), ["01200013027"]))["01200013027"]
         assert identity.description == "Mountain dew baja blast 20oz"
         assert identity.provenance["description"]["source_file"] == "file_1.xlsx"
 
@@ -102,24 +102,24 @@ class TestStoreIsolation:
         await _import(db_session, [rec(5, "06206705146", "24.00", "26.99")], store=A, source_file="Beer Inventory.xlsx")
 
         b_rows, a_rows = await _rows(db_session, B), await _rows(db_session, A)
-        assert [(r.store_number, r.unit_cost) for r in b_rows] == [(B, Decimal("23.4000"))]
-        assert [(r.store_number, r.unit_cost) for r in a_rows] == [(A, Decimal("24.0000"))]
+        assert [(r.store_id, r.unit_cost) for r in b_rows] == [(store_id(B), Decimal("23.4000"))]
+        assert [(r.store_id, r.unit_cost) for r in a_rows] == [(store_id(A), Decimal("24.0000"))]
 
     async def test_a_second_store_import_changes_nothing_for_the_first(self, db_session):
         await _import(db_session, [rec(5, "06206705146", "23.40", "29.79", "Labatt blue 30cans"),
                                    rec(6, "01820011030", "22.70", "25.72", "Bud 30")],
                       store=B, source_file="Mckinley.xlsx")
-        before = await ProductReferenceRepository(db_session).content_fingerprints(B)
-        identity_before = (await ProductReferenceRepository(db_session).identity_for(B, ["06206705146"]))["06206705146"].description
+        before = await ProductReferenceRepository(db_session).content_fingerprints(store_id(B))
+        identity_before = (await ProductReferenceRepository(db_session).identity_for(store_id(B), ["06206705146"]))["06206705146"].description
 
         await _import(db_session, [rec(5, "06206705146", "1.00", "2.00", "Labatts Blue 30pk")],
                       store=A, source_file="Item_Sales_Summary_x.xlsx")
 
-        assert await ProductReferenceRepository(db_session).content_fingerprints(B) == before
-        assert (await ProductReferenceRepository(db_session).identity_for(B, ["06206705146"]))["06206705146"].description == identity_before
+        assert await ProductReferenceRepository(db_session).content_fingerprints(store_id(B)) == before
+        assert (await ProductReferenceRepository(db_session).identity_for(store_id(B), ["06206705146"]))["06206705146"].description == identity_before
         # and lookups are store-scoped
-        assert set(await ProductReferenceRepository(db_session).pricing_for(B, ["06206705146"])) == {"06206705146"}
-        assert (await ProductReferenceRepository(db_session).pricing_for(B, ["06206705146"]))["06206705146"][0].unit_cost == Decimal("23.4000")
+        assert set(await ProductReferenceRepository(db_session).pricing_for(store_id(B), ["06206705146"])) == {"06206705146"}
+        assert (await ProductReferenceRepository(db_session).pricing_for(store_id(B), ["06206705146"]))["06206705146"][0].unit_cost == Decimal("23.4000")
 
 
 class TestDuplicateContent:
@@ -127,7 +127,7 @@ class TestDuplicateContent:
         records = [rec(5, "01200013027", None, "2.29"), rec(6, "07825000020", "1.28", "1.99")]
         await _import(db_session, records, store=A, source_file="Item_Sales_Summary_2026-09-14T15_45_30.014Z.xlsx")
 
-        fingerprints = await ProductReferenceRepository(db_session).content_fingerprints(A)
+        fingerprints = await ProductReferenceRepository(db_session).content_fingerprints(store_id(A))
         assert fingerprints["Item_Sales_Summary_2026-09-14T15_45_30.014Z.xlsx"] == records_fingerprint(records)
         # a re-download with "(1)" in the name would be refused by the importer:
         twins = [f for f, fp in fingerprints.items()
@@ -137,10 +137,10 @@ class TestDuplicateContent:
     async def test_a_genuinely_different_file_is_not_a_twin(self, db_session):
         await _import(db_session, [rec(5, "01200013027", None, "2.29")], store=A, source_file="f1.xlsx")
         other = [rec(5, "01200013027", "1.487", "2.3151")]
-        fingerprints = await ProductReferenceRepository(db_session).content_fingerprints(A)
+        fingerprints = await ProductReferenceRepository(db_session).content_fingerprints(store_id(A))
         assert not any(fp == records_fingerprint(other) for fp in fingerprints.values())
 
     async def test_fingerprints_are_per_store(self, db_session):
         records = [rec(5, "01200013027", None, "2.29")]
         await _import(db_session, records, store=B, source_file="f.xlsx")
-        assert await ProductReferenceRepository(db_session).content_fingerprints(A) == {}
+        assert await ProductReferenceRepository(db_session).content_fingerprints(store_id(A)) == {}

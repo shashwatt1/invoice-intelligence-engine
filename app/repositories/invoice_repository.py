@@ -30,7 +30,7 @@ class InvoiceRepository:
         self,
         *,
         document_id: uuid.UUID,
-        store_number: str,
+        store_id: uuid.UUID,
         vendor_id: uuid.UUID | None,
         normalized: NormalizedInvoice,
         decision: ProcessingDecision,
@@ -41,7 +41,7 @@ class InvoiceRepository:
         """Persist the invoice header and all line items (flush, no commit)."""
         invoice = Invoice(
             document_id=document_id,
-            store_number=store_number,
+            store_id=store_id,
             vendor_id=vendor_id,
             invoice_number=normalized.invoice_number,
             invoice_date=normalized.invoice_date,

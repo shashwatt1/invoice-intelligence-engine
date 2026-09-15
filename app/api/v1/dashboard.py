@@ -14,6 +14,7 @@ from app.database.session import get_db
 from app.models.document import DocumentStatus
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.stats_repository import StatsRepository
+from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse
 from app.schemas.processing import DashboardData
 
@@ -47,6 +48,8 @@ async def dashboard_summary(
     )
     total_tokens, total_cost = await stats.llm_usage_totals()
 
+    stores = await StoreRepository(db).labels(
+        [i.store_id if i else d.store_id for d, i in recent_rows])
     data = DashboardData(
         total_documents=total,
         completed=completed,
@@ -59,6 +62,8 @@ async def dashboard_summary(
         total_tokens=total_tokens,
         total_estimated_cost_usd=round(total_cost, 6),
         status_breakdown=breakdown,
-        recent=[to_history_row(document, invoice) for document, invoice in recent_rows],
+        recent=[to_history_row(document, invoice,
+                               stores.get(invoice.store_id if invoice else document.store_id))
+                for document, invoice in recent_rows],
     )
     return APIResponse(data=data)

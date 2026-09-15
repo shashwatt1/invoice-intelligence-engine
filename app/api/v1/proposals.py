@@ -33,6 +33,7 @@ from app.repositories.product_data_proposal_repository import (
     ProductDataProposalRepository,
     ProposalImmutableError,
 )
+from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import (
     ProductHistory,
@@ -41,6 +42,7 @@ from app.schemas.processing import (
     ProposalDetail,
     ProposalRow,
     ResultingMapping,
+    StoreRef,
 )
 from app.services import proposal_service
 from app.services.export_service import normalize_item_code
@@ -48,16 +50,33 @@ from app.services.export_service import normalize_item_code
 router = APIRouter(tags=["Master data review"])
 
 
-def _row(p: ProductDataProposal) -> ProposalRow:
-    return ProposalRow.model_validate(p, from_attributes=True)
+async def _store_ref(db: AsyncSession, store_id: uuid.UUID, cache: dict | None = None) -> StoreRef:
+    if cache is not None and store_id in cache:
+        return cache[store_id]
+    store = await StoreRepository(db).get(store_id)
+    ref = StoreRef.from_store(store)
+    if cache is not None:
+        cache[store_id] = ref
+    return ref
+
+
+async def _row(db: AsyncSession, p: ProductDataProposal, cache: dict) -> ProposalRow:
+    return ProposalRow(store=await _store_ref(db, p.store_id, cache),
+                       **{k: getattr(p, k) for k in ProposalRow.model_fields if k != "store"})
 
 
 async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
-    mapping = await ProductCaseMappingRepository(db).get(p.store_number, p.entity_key)
+    store = await _store_ref(db, p.store_id)
+    mapping = await ProductCaseMappingRepository(db).get(p.store_id, p.entity_key)
     resulting = None
     if mapping is not None and mapping.approved_proposal_id == p.id:
-        resulting = ResultingMapping.model_validate(mapping, from_attributes=True)
-    detail = ProposalDetail.model_validate(p, from_attributes=True)
+        resulting = ResultingMapping(
+            store=store, item_code=mapping.item_code, units_per_case=mapping.units_per_case,
+            source=mapping.source, approved_proposal_id=mapping.approved_proposal_id,
+            updated_at=mapping.updated_at,
+        )
+    detail = ProposalDetail(store=store, **{k: getattr(p, k) for k in ProposalDetail.model_fields
+                                            if k not in ("store", "resulting_mapping", "current_master_value")})
     detail.resulting_mapping = resulting
     detail.current_master_value = mapping.units_per_case if mapping else None
     return detail
@@ -76,7 +95,7 @@ async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
 async def list_proposals(
     status: str | None = Query(default=STATUS_PENDING),
     source: str | None = Query(default=None),
-    store_number: str | None = Query(default=None),
+    store_id: uuid.UUID | None = Query(default=None),
     item_code: str | None = Query(default=None),
     invoice_id: uuid.UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
@@ -93,12 +112,13 @@ async def list_proposals(
         source=source,
         entity_key=normalize_item_code(item_code) if item_code else None,
         invoice_id=invoice_id,
-        store_number=store_number,
+        store_id=store_id,
     )
     rows = list(reversed(rows))                      # newest first for a queue
     start = (page - 1) * page_size
+    cache: dict = {}
     return PaginatedResponse(
-        items=[_row(p) for p in rows[start:start + page_size]],
+        items=[await _row(db, p, cache) for p in rows[start:start + page_size]],
         total=len(rows), page=page, page_size=page_size,
     )
 
@@ -177,18 +197,25 @@ async def reject_proposal(
 )
 async def product_history(
     item_code: str,
-    store_number: str = Query(..., min_length=1, max_length=32, pattern=r"^\d+$"),
+    store_id: uuid.UUID = Query(..., description="The store whose history this is. Required."),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[ProductHistory]:
     code = normalize_item_code(item_code)
     if not code:
         raise ValidationError(message="Item code contains no usable digits.")
-    mapping = await ProductCaseMappingRepository(db).get(store_number, code)
-    proposals = await ProductDataProposalRepository(db).list(
-        entity_key=code, store_number=store_number)
+    store = await StoreRepository(db).get(store_id)
+    if store is None:
+        raise RecordNotFoundError(message="Store not found.", detail={"store_id": str(store_id)})
+    ref = StoreRef.from_store(store)
+    mapping = await ProductCaseMappingRepository(db).get(store_id, code)
+    proposals = await ProductDataProposalRepository(db).list(entity_key=code, store_id=store_id)
     return APIResponse(data=ProductHistory(
-        store_number=store_number,
+        store=ref,
         item_code=code,
-        current_mapping=ResultingMapping.model_validate(mapping, from_attributes=True) if mapping else None,
+        current_mapping=ResultingMapping(
+            store=ref, item_code=mapping.item_code, units_per_case=mapping.units_per_case,
+            source=mapping.source, approved_proposal_id=mapping.approved_proposal_id,
+            updated_at=mapping.updated_at,
+        ) if mapping else None,
         proposals=[await _detail(db, p) for p in proposals],
     ))

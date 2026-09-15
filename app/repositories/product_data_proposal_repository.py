@@ -48,7 +48,7 @@ class ProductDataProposalRepository:
         entity_type: str | None = None,
         entity_key: str | None = None,
         invoice_id: uuid.UUID | None = None,
-        store_number: str | None = None,
+        store_id: uuid.UUID | None = None,
     ) -> list[ProductDataProposal]:
         query = select(ProductDataProposal)
         if status:
@@ -61,15 +61,15 @@ class ProductDataProposalRepository:
             query = query.where(ProductDataProposal.entity_key == entity_key)
         if invoice_id:
             query = query.where(ProductDataProposal.invoice_id == invoice_id)
-        if store_number:
-            query = query.where(ProductDataProposal.store_number == store_number)
+        if store_id:
+            query = query.where(ProductDataProposal.store_id == store_id)
         result = await self._session.execute(
             query.order_by(ProductDataProposal.created_at, ProductDataProposal.id)
         )
         return list(result.scalars())
 
     async def pending_for_keys(
-        self, store_number: str, entity_type: str, field: str, keys: Sequence[str]
+        self, store_id: uuid.UUID, entity_type: str, field: str, keys: Sequence[str]
     ) -> dict[str, ProductDataProposal]:
         """Latest PENDING proposal per entity key, for the review UI."""
         if not keys:
@@ -77,7 +77,7 @@ class ProductDataProposalRepository:
         result = await self._session.execute(
             select(ProductDataProposal)
             .where(
-                ProductDataProposal.store_number == store_number,
+                ProductDataProposal.store_id == store_id,
                 ProductDataProposal.entity_type == entity_type,
                 ProductDataProposal.field == field,
                 ProductDataProposal.status == STATUS_PENDING,
@@ -93,7 +93,7 @@ class ProductDataProposalRepository:
     async def create(
         self,
         *,
-        store_number: str,
+        store_id: uuid.UUID,
         entity_type: str,
         entity_key: str,
         field: str,
@@ -122,7 +122,7 @@ class ProductDataProposalRepository:
 
         existing = await self._session.execute(
             select(ProductDataProposal).where(
-                ProductDataProposal.store_number == store_number,
+                ProductDataProposal.store_id == store_id,
                 ProductDataProposal.entity_type == entity_type,
                 ProductDataProposal.entity_key == entity_key,
                 ProductDataProposal.field == field,
@@ -134,7 +134,7 @@ class ProductDataProposalRepository:
                 return row
 
         proposal = ProductDataProposal(
-            store_number=store_number,
+            store_id=store_id,
             entity_type=entity_type,
             entity_key=entity_key,
             field=field,

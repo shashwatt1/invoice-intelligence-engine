@@ -8,12 +8,12 @@ the cost an invoice claims, and to propose a units-per-case value for a
 human to confirm.
 
 Design decisions:
-- Keyed by (store_number, item_code) where item_code comes from the same
+- Keyed by (store_id, item_code) where item_code comes from the same
   normalize_item_code() the formatter uses for EDI bytes [1:12] and
   product_case_mappings uses for its key. 99.8% of the store's scan
   codes are already in that 11-digit form, so the join is exact rather
   than fuzzy.
-- store_number is in the key from the start. Costs are a property of one
+- The store is in the key from the start. Costs are a property of one
   store's purchasing, and retrofitting the column onto live data later
   would be a migration against rows that were never store-scoped.
 - `avg_cost` is the per-selling-unit cost. The export also carries a
@@ -35,10 +35,11 @@ Design decisions:
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -49,8 +50,9 @@ class StoreProductReference(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "store_product_references"
 
-    store_number: Mapped[str] = mapped_column(
-        String(32), nullable=False, doc="Store this catalogue belongs to, e.g. '47708760'."
+    store_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False,
+        doc="The store whose export this row came from; the same UPC in another store is another row.",
     )
     item_code: Mapped[str] = mapped_column(
         String(32),
@@ -92,14 +94,14 @@ class StoreProductReference(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint(
-            "store_number", "item_code", name="uq_store_product_reference_store_item"
+            "store_id", "item_code", name="uq_store_product_reference_store_item"
         ),
         Index("idx_store_product_references_item_code", "item_code"),
-        Index("idx_store_product_references_store", "store_number"),
+        Index("idx_store_product_references_store", "store_id"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<StoreProductReference store={self.store_number!r} "
+            f"<StoreProductReference store={str(self.store_id)[:8]} "
             f"item_code={self.item_code!r} avg_cost={self.avg_cost}>"
         )

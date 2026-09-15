@@ -11,6 +11,7 @@ import { ProcessPage } from "@/pages/process";
 import { ProductHistoryPage } from "@/pages/product-history";
 import { ProposalDetailPage } from "@/pages/proposal-detail";
 import { SettingsPage } from "@/pages/settings";
+import { StoresPage } from "@/pages/stores";
 
 export function App() {
   return (
@@ -22,6 +23,7 @@ export function App() {
         <Route path="/invoices" element={<HistoryPage />} />
         <Route path="/invoices/:invoiceId" element={<InvoiceDetailPage />} />
         <Route path="/documents/:documentId" element={<DocumentStatusPage />} />
+        <Route path="/stores" element={<StoresPage />} />
         <Route path="/data-review" element={<DataReviewPage />} />
         <Route path="/data-review/proposals/:proposalId" element={<ProposalDetailPage />} />
         <Route path="/data-review/products/:itemCode" element={<ProductHistoryPage />} />

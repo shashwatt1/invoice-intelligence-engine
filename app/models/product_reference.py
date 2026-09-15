@@ -39,11 +39,22 @@ its distributor and is only ever matched within it.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, Index, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -72,7 +83,7 @@ class ProductIdentity(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "product_identity"
 
-    store_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    store_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False)
     item_code: Mapped[str] = mapped_column(String(32), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     brand: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -83,7 +94,7 @@ class ProductIdentity(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     __table_args__ = (
-        UniqueConstraint("store_number", "item_code", name="uq_product_identity_store_item"),
+        UniqueConstraint("store_id", "item_code", name="uq_product_identity_store_item"),
         Index("idx_product_identity_item_code", "item_code"),
     )
 
@@ -93,7 +104,7 @@ class ProductIdentifier(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "product_identifier"
 
-    store_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    store_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False)
     item_code: Mapped[str] = mapped_column(String(32), nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     value: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -107,9 +118,9 @@ class ProductIdentifier(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("store_number", "item_code", "kind", "value", "distributor",
+        UniqueConstraint("store_id", "item_code", "kind", "value", "distributor",
                          name="uq_product_identifier"),
-        Index("idx_product_identifier_lookup", "store_number", "kind", "value", "distributor"),
+        Index("idx_product_identifier_lookup", "store_id", "kind", "value", "distributor"),
     )
 
 
@@ -118,7 +129,7 @@ class ProductPricing(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "product_pricing"
 
-    store_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    store_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False)
     item_code: Mapped[str] = mapped_column(String(32), nullable=False)
     distributor: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pricing_basis: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -167,8 +178,8 @@ class ProductPricing(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         # A source row belongs to a store's file: two stores may each
         # have a "Beer Inventory.xlsx", and neither may touch the other's.
-        UniqueConstraint("store_number", "source_file", "source_sheet", "source_row",
+        UniqueConstraint("store_id", "source_file", "source_sheet", "source_row",
                          name="uq_product_pricing_source_row"),
-        Index("idx_product_pricing_item", "store_number", "item_code"),
+        Index("idx_product_pricing_item", "store_id", "item_code"),
         Index("idx_product_pricing_conflicted", "is_conflicted"),
     )

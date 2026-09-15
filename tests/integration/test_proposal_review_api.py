@@ -22,7 +22,7 @@ from app.models.product_data_proposal import (
 )
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.repositories.product_data_proposal_repository import ProductDataProposalRepository
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import requires_db, store_id
 from tests.integration.test_api_db import api_client  # noqa: F401 — fixture reuse
 from tests.integration.test_proposal_governance import (  # noqa: F401 — fixture reuse
     NORMALIZED,
@@ -40,7 +40,7 @@ OTHER = "01820023986"
 async def _pending(db_session, value=4, key=NORMALIZED, source=SOURCE_REFERENCE_DERIVED,
                    invoice_id=None, **cols):
     p = await ProductDataProposalRepository(db_session).create(
-        store_number=STORE, entity_type="case_mapping", entity_key=key,
+        store_id=store_id(STORE), entity_type="case_mapping", entity_key=key,
         field="units_per_case", proposed_value=value, current_value=None,
         source=source, proposed_by="test", invoice_id=invoice_id,
         evidence={"invoice_description": "BUSCH 4/6/160Z CAN", "best": {"kind": "reference_ratio"}},
@@ -130,7 +130,7 @@ class TestDecisions:
                                   json={"reviewed_by": "data-team:shashwat", "note": "ratio + doc agree"})
         assert r.status_code == 200, r.text
         d = r.json()["data"]
-        assert d["applied_to"] == f"product_case_mappings:{STORE}:{NORMALIZED}"
+        assert d["applied_to"] == f"product_case_mappings:{store_id(STORE)}:{NORMALIZED}"
         assert d["proposal"]["status"] == STATUS_APPROVED
         assert d["proposal"]["reviewed_by"] == "data-team:shashwat"
         assert d["proposal"]["reviewed_at"] is not None
@@ -140,7 +140,7 @@ class TestDecisions:
         assert d["proposal"]["resulting_mapping"]["source"] == "APPROVED"
         assert d["proposal"]["current_master_value"] == 4
         # …and real in the table
-        mapping = await ProductCaseMappingRepository(db_session).get(STORE, NORMALIZED)
+        mapping = await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED)
         assert mapping.units_per_case == 4 and mapping.approved_proposal_id == p.id
 
     async def test_reject_leaves_master_data_untouched(self, api_client, db_session):  # noqa: F811
@@ -152,7 +152,7 @@ class TestDecisions:
         assert d["applied_to"] is None
         assert d["proposal"]["status"] == STATUS_REJECTED
         assert d["proposal"]["review_note"] == "wrong pack"
-        assert await ProductCaseMappingRepository(db_session).get(STORE, NORMALIZED) is None
+        assert await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED) is None
 
     async def test_a_decided_proposal_cannot_be_decided_again(self, api_client, db_session):  # noqa: F811
         p = await _pending(db_session, 4)
@@ -160,7 +160,7 @@ class TestDecisions:
         again = await api_client.post(f"/api/v1/proposals/{p.id}/approve", json={"reviewed_by": "r2"})
         assert again.status_code == 422
         assert again.json()["error"]["detail"]["status"] == STATUS_REJECTED
-        assert await ProductCaseMappingRepository(db_session).get(STORE, NORMALIZED) is None
+        assert await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED) is None
         await db_session.refresh(p)
         assert p.reviewed_by == "r1"                      # the first decision stands
 
@@ -202,7 +202,7 @@ class TestProductHistory:
         third = await _pending(db_session, 6)             # still pending, would change 24 -> 6
 
         r = await api_client.get(f"/api/v1/products/{NORMALIZED}8/history",     # as printed, check digit on
-                                 params={"store_number": STORE})
+                                 params={"store_id": store_id(STORE)})
         assert r.status_code == 200
         h = r.json()["data"]
         assert h["item_code"] == NORMALIZED
@@ -216,9 +216,9 @@ class TestProductHistory:
 
     async def test_unknown_product_has_an_empty_history(self, api_client):  # noqa: F811
         h = (await api_client.get("/api/v1/products/99999999999/history",
-                                  params={"store_number": STORE})).json()["data"]
+                                  params={"store_id": store_id(STORE)})).json()["data"]
         assert h["current_mapping"] is None and h["proposals"] == []
         assert (await api_client.get("/api/v1/products/abc/history",
-                                     params={"store_number": STORE})).status_code == 422
+                                     params={"store_id": store_id(STORE)})).status_code == 422
         # the store is not optional: a UPC's history is one store's history
         assert (await api_client.get(f"/api/v1/products/{NORMALIZED}/history")).status_code == 422

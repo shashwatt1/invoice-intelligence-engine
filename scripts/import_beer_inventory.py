@@ -31,24 +31,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.database.session import get_session_factory  # noqa: E402
 from app.repositories.product_reference_repository import ProductReferenceRepository  # noqa: E402
 from app.services.beer_inventory_import import parse_beer_inventory  # noqa: E402
+from app.services.store_resolution import StoreResolutionError, resolve_explicit_store  # noqa: E402
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workbook")
     parser.add_argument("--store", required=True,
-                        help="the store this workbook belongs to — it carries no store preamble, "
-                             "so nothing can check this for you")
+                        help="Store id or Item Sales store code — the workbook carries no store "
+                             "preamble, so a person must say whose it is")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     path = Path(args.workbook)
     if not path.is_file():
         raise SystemExit(f"Not found: {path}")
-    store = args.store
-
     report = parse_beer_inventory(path)
-    print(f"{path.name}  store {store}\n")
+    async with get_session_factory()() as session:
+        try:
+            store = await resolve_explicit_store(session, args.store, path.name)
+        except StoreResolutionError as exc:
+            raise SystemExit(str(exc)) from exc
+        store_id, store_label = store.id, store.label      # read while the session is open
+    print(f"{path.name}  store {store_label} [{store_id}]\n")
     print(f"{'sheet':<20}{'rows':>6}{'with UPC':>10}{'stated':>8}{'package':>9}{'ratio':>7}{'conflicted':>12}")
     for sheet, count in report.per_sheet.items():
         rows = [r for r in report.records if r.sheet == sheet]
@@ -76,7 +81,7 @@ async def main() -> int:
 
     async with get_session_factory()() as session:
         counts = await ProductReferenceRepository(session).import_records(
-            report.records, store_number=store, source_file=path.name,
+            report.records, store_id=store_id, source_file=path.name,
             imported_at=datetime.now(UTC),
         )
         await session.commit()

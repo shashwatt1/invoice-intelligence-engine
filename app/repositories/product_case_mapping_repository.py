@@ -10,6 +10,7 @@ boundaries belong to the service/API layer.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterable
 
 from sqlalchemy import select
@@ -28,17 +29,17 @@ class ProductCaseMappingRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get(self, store_number: str, item_code: str) -> ProductCaseMapping | None:
+    async def get(self, store_id: uuid.UUID, item_code: str) -> ProductCaseMapping | None:
         result = await self._session.execute(
             select(ProductCaseMapping).where(
-                ProductCaseMapping.store_number == store_number,
+                ProductCaseMapping.store_id == store_id,
                 ProductCaseMapping.item_code == item_code,
             )
         )
         return result.scalar_one_or_none()
 
     async def units_by_item_code(
-        self, store_number: str, item_codes: Iterable[str]
+        self, store_id: uuid.UUID, item_codes: Iterable[str]
     ) -> dict[str, int]:
         """
         Confirmed units-per-case for the given codes IN THIS STORE, as a
@@ -49,14 +50,14 @@ class ProductCaseMappingRepository:
         of the session. The store is not optional: a value another store
         confirmed is not evidence here, let alone authority.
         """
-        if not store_number:
-            raise ValueError("store_number is required.")
+        if not store_id:
+            raise ValueError("store_id is required.")
         codes = [code for code in dict.fromkeys(item_codes) if code]
         if not codes:
             return {}
         result = await self._session.execute(
             select(ProductCaseMapping.item_code, ProductCaseMapping.units_per_case).where(
-                ProductCaseMapping.store_number == store_number,
+                ProductCaseMapping.store_id == store_id,
                 ProductCaseMapping.item_code.in_(codes),
             )
         )
@@ -65,7 +66,7 @@ class ProductCaseMappingRepository:
     async def upsert(
         self,
         *,
-        store_number: str,
+        store_id: uuid.UUID,
         item_code: str,
         units_per_case: int,
         description: str | None = None,
@@ -76,16 +77,16 @@ class ProductCaseMappingRepository:
 
         Upserts rather than inserting so re-confirming a product corrects
         the existing row instead of colliding with the unique constraint
-        on (store_number, item_code). Validates here — the database enforces uniqueness
+        on (store_id, item_code). Validates here — the database enforces uniqueness
         but not the value range, and a bad pack size silently corrupts
         Case Retail inside PDI.
 
         Raises:
             ValueError: blank item code, out-of-range units, unknown source.
         """
-        store = (store_number or "").strip()
-        if not store:
-            raise ValueError("store_number is required.")
+        if not isinstance(store_id, uuid.UUID):
+            raise ValueError("store_id must be a Store id (UUID).")
+        store = store_id
         code = (item_code or "").strip()
         if not code:
             raise ValueError("item_code is required.")
@@ -109,7 +110,7 @@ class ProductCaseMappingRepository:
             return existing
 
         mapping = ProductCaseMapping(
-            store_number=store,
+            store_id=store,
             item_code=code,
             units_per_case=units_per_case,
             description=description,

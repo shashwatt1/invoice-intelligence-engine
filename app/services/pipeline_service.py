@@ -45,7 +45,9 @@ from app.models.processing_log import LogStatus, PipelineStage
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.services.extraction_service import ExtractionService
+from app.services.ocr.base import OCRResult
 from app.services.persistence_service import PersistenceService
+from app.services.store_identification_service import candidate_ids, identify_store
 from app.services.structuring_service import StructuringService
 from app.services.validation.report import ProcessingDecision
 from app.services.validation.service import ValidationService
@@ -67,6 +69,7 @@ class PipelineResult:
     source_type: str
     prompt_version: str
     validation_report: dict[str, Any] = field(default_factory=dict)
+    awaiting_store_confirmation: bool = False
     llm_metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -120,14 +123,16 @@ class InvoiceProcessingPipeline:
         file_size_bytes: int,
         file_path: str,
         file_hash: str,
-        store_number: str,
+        store_id: uuid.UUID | None = None,
     ) -> PipelineResult:
         """
         Process one uploaded document end-to-end (intake + all stages).
 
-        `store_number` is the store the invoice is received for. It is
-        required, not defaulted: the store decides which reference data,
-        which case mappings and which review queue the invoice meets.
+        `store_id` is the store the operator says the invoice is for, if
+        they said. There is no default: after text extraction the document
+        is matched against the store master, and unless the operator's
+        choice is consistent with what the document says, the run pauses
+        for a person to confirm (see run_stages).
 
         Raises:
             DuplicateDocumentError: Same content hash already processed.
@@ -141,7 +146,7 @@ class InvoiceProcessingPipeline:
             file_size_bytes=file_size_bytes,
             file_path=file_path,
             file_hash=file_hash,
-            store_number=store_number,
+            store_id=store_id,
         )
         return await self.run_stages(
             session,
@@ -149,7 +154,7 @@ class InvoiceProcessingPipeline:
             file_content=file_content,
             mime_type=mime_type,
             filename=filename,
-            store_number=store_number,
+            store_id=store_id,
         )
 
     async def intake(
@@ -161,7 +166,7 @@ class InvoiceProcessingPipeline:
         file_size_bytes: int,
         file_path: str,
         file_hash: str,
-        store_number: str,
+        store_id: uuid.UUID | None = None,
     ) -> Document:
         """
         Synchronous intake: duplicate check + Document(UPLOADED) + UPLOAD log.
@@ -193,6 +198,7 @@ class InvoiceProcessingPipeline:
             file_path=file_path,
             file_hash=file_hash,
         )
+        document.store_id = store_id
         await logs.add(
             document_id=document.id,
             stage=PipelineStage.UPLOAD,
@@ -202,12 +208,12 @@ class InvoiceProcessingPipeline:
                 "mime_type": mime_type,
                 "file_size_bytes": file_size_bytes,
                 "file_hash": file_hash,
-                "store_number": store_number,
+                "store_id": str(store_id) if store_id else None,
             },
         )
         await session.commit()
         logger.info("pipeline_document_created", document_id=str(document.id), filename=filename,
-                    store_number=store_number)
+                    store_id=str(store_id) if store_id else None)
         return document
 
     async def run_stages(
@@ -218,14 +224,19 @@ class InvoiceProcessingPipeline:
         file_content: bytes,
         mime_type: str,
         filename: str,
-        store_number: str,
+        store_id: uuid.UUID | None = None,
     ) -> PipelineResult:
         """
-        Run extraction → structuring → validation → persistence for an
-        already-intaken document. See process() for the failure contract.
+        Run extraction, then store identification; continue through
+        structuring → validation → persistence only once the store is
+        settled. See process() for the failure contract.
+
+        The store is settled when the operator chose one AND the document
+        does not name a different one. Otherwise the run pauses in
+        STORE_CONFIRMATION_REQUIRED with the candidates recorded, and
+        resume_after_store_confirmation() finishes it later. The pipeline
+        never picks a store itself.
         """
-        if not store_number:
-            raise ValueError("store_number is required to process an invoice.")
         documents = DocumentRepository(session)
         logs = ProcessingLogRepository(session)
 
@@ -263,6 +274,113 @@ class InvoiceProcessingPipeline:
             duration_ms=ocr_result.duration_ms,
         )
         await session.commit()
+
+        # ---- Store identification -------------------------------------------
+        settled = await self._settle_store(session, document, ocr_result.full_text, store_id)
+        if settled is None:
+            return self._paused(document, ocr_result.source_type)
+
+        return await self._run_from_structuring(
+            session, document, ocr_result=ocr_result, filename=filename, store_id=settled
+        )
+
+    async def resume_after_store_confirmation(
+        self, session: AsyncSession, document: Document
+    ) -> PipelineResult:
+        """
+        Finish a run that paused for store confirmation. The text was
+        extracted and stored earlier; nothing is re-extracted.
+        """
+        if not document.store_id:
+            raise ValueError("The document has no confirmed store; nothing to resume.")
+        if document.raw_ocr_text is None:
+            raise ValueError("The document has no extracted text to resume from.")
+        logs = await ProcessingLogRepository(session).for_document(document.id)
+        extraction = next((log for log in logs if log.stage == PipelineStage.TEXT_EXTRACTION), None)
+        payload = (extraction.payload if extraction else None) or {}
+        ocr_result = OCRResult(
+            full_text=document.raw_ocr_text,
+            source_type=document.source_type or "ocr",
+            page_count=int(payload.get("page_count") or 0),
+            mean_confidence=float(payload.get("mean_confidence") or 1.0),
+        )
+        return await self._run_from_structuring(
+            session, document, ocr_result=ocr_result, filename=document.filename,
+            store_id=document.store_id,
+        )
+
+    async def _settle_store(
+        self, session: AsyncSession, document: Document, text: str, chosen: uuid.UUID | None
+    ) -> uuid.UUID | None:
+        """
+        The store to proceed with, or None to pause for a person.
+
+        Records what identification found on the document either way,
+        so the operator sees the evidence whichever way it went.
+        """
+        documents = DocumentRepository(session)
+        logs = ProcessingLogRepository(session)
+        candidates = await identify_store(session, text)
+        found = candidate_ids(candidates)
+        document.store_candidates = [c.to_dict() for c in candidates]
+
+        if chosen is not None and (not found or found == {str(chosen)}):
+            document.store_id = chosen
+            outcome = "operator choice confirmed" if found else "operator choice; document names no store"
+            proceed = True
+        elif chosen is not None:
+            outcome = "operator choice conflicts with what the document names"
+            proceed = False
+        elif len(found) == 1:
+            outcome = "one store matched; awaiting confirmation"
+            proceed = False
+        elif found:
+            outcome = "several stores matched; awaiting selection"
+            proceed = False
+        else:
+            outcome = "no store matched; awaiting manual identification"
+            proceed = False
+
+        await logs.add(
+            document_id=document.id,
+            stage=PipelineStage.STORE_IDENTIFICATION,
+            message=f"Store identification: {outcome}.",
+            payload={
+                "operator_store_id": str(chosen) if chosen else None,
+                "candidates": document.store_candidates,
+                "outcome": outcome,
+                "proceeded": proceed,
+            },
+        )
+        if not proceed:
+            await documents.set_status(document, DocumentStatus.STORE_CONFIRMATION_REQUIRED)
+        await session.commit()
+        logger.info("store_identification", document_id=str(document.id), outcome=outcome,
+                    candidates=len(candidates))
+        return chosen if proceed else None
+
+    @staticmethod
+    def _paused(document: Document, source_type: str) -> PipelineResult:
+        return PipelineResult(
+            document_id=document.id,
+            document_status=DocumentStatus(document.status),
+            decision=ProcessingDecision.REVIEW_REQUIRED,
+            invoice_id=None, vendor_id=None, vendor_created=False,
+            composite_confidence=0.0, source_type=source_type, prompt_version="",
+            awaiting_store_confirmation=True,
+        )
+
+    async def _run_from_structuring(
+        self,
+        session: AsyncSession,
+        document: Document,
+        *,
+        ocr_result: OCRResult,
+        filename: str,
+        store_id: uuid.UUID,
+    ) -> PipelineResult:
+        documents = DocumentRepository(session)
+        logs = ProcessingLogRepository(session)
 
         # ---- AI structuring -------------------------------------------------
         await documents.set_status(document, DocumentStatus.AI_PROCESSING)
@@ -316,7 +434,7 @@ class InvoiceProcessingPipeline:
         # ---- Persistence (atomic) -------------------------------------------
         try:
             invoice, vendor, vendor_created = await self._persistence.persist_invoice(
-                session, document=document, store_number=store_number,
+                session, document=document, store_id=store_id,
                 structuring=structuring, validation=validation,
             )
         except InvoiceBaseException as exc:

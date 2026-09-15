@@ -7,6 +7,7 @@ the same workbook updates in place. Flushes, never commits.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
@@ -40,13 +41,13 @@ class ProductReferenceRepository:
         self._session = session
 
     async def pricing_for(
-        self, store_number: str, item_codes: Sequence[str], *, include_conflicted: bool = False
+        self, store_id: uuid.UUID, item_codes: Sequence[str], *, include_conflicted: bool = False
     ) -> dict[str, list[ProductPricing]]:
         """Every pricing row per product. Conflicted rows excluded unless asked for."""
         if not item_codes:
             return {}
         query = select(ProductPricing).where(
-            ProductPricing.store_number == store_number,
+            ProductPricing.store_id == store_id,
             ProductPricing.item_code.in_(list({c for c in item_codes if c})),
         )
         if not include_conflicted:
@@ -59,35 +60,35 @@ class ProductReferenceRepository:
         return out
 
     async def identity_for(
-        self, store_number: str, item_codes: Sequence[str]
+        self, store_id: uuid.UUID, item_codes: Sequence[str]
     ) -> dict[str, ProductIdentity]:
         if not item_codes:
             return {}
         result = await self._session.execute(
             select(ProductIdentity).where(
-                ProductIdentity.store_number == store_number,
+                ProductIdentity.store_id == store_id,
                 ProductIdentity.item_code.in_(list({c for c in item_codes if c})),
             )
         )
         return {row.item_code: row for row in result.scalars()}
 
-    async def source_files_for(self, store_number: str) -> dict[str, int]:
+    async def source_files_for(self, store_id: uuid.UUID) -> dict[str, int]:
         """Every source_file this store has pricing rows from, with row counts."""
         result = await self._session.execute(
             select(ProductPricing.source_file, func.count())
-            .where(ProductPricing.store_number == store_number)
+            .where(ProductPricing.store_id == store_id)
             .group_by(ProductPricing.source_file)
         )
         return dict(result.all())
 
-    async def content_fingerprints(self, store_number: str) -> dict[str, frozenset]:
+    async def content_fingerprints(self, store_id: uuid.UUID) -> dict[str, frozenset]:
         """
         What each of this store's source files actually said, keyed by
         filename — so a copy of a workbook under another name ("(1)",
         a re-download) is recognised by its content, not its name.
         """
         result = await self._session.execute(
-            select(ProductPricing).where(ProductPricing.store_number == store_number)
+            select(ProductPricing).where(ProductPricing.store_id == store_id)
         )
         by_file: dict[str, set] = {}
         for row in result.scalars():
@@ -101,7 +102,7 @@ class ProductReferenceRepository:
         self,
         records: list[ReferenceRecord],
         *,
-        store_number: str,
+        store_id: uuid.UUID,
         source_file: str,
         imported_at: datetime,
     ) -> dict[str, int]:
@@ -125,18 +126,18 @@ class ProductReferenceRepository:
             (p.source_file, p.source_sheet, p.source_row): p
             for p in (await self._session.execute(
                 select(ProductPricing).where(
-                    ProductPricing.store_number == store_number,
+                    ProductPricing.store_id == store_id,
                     ProductPricing.source_file == source_file,
                 )
             )).scalars()
         }
         codes = {r.item_code for r in records if r.item_code}
-        identities = await self.identity_for(store_number, list(codes))
+        identities = await self.identity_for(store_id, list(codes))
         existing_ids = {
             (i.item_code, i.kind, i.value, i.distributor)
             for i in (await self._session.execute(
                 select(ProductIdentifier).where(
-                    ProductIdentifier.store_number == store_number,
+                    ProductIdentifier.store_id == store_id,
                     ProductIdentifier.item_code.in_(list(codes)) if codes else False,
                 )
             )).scalars()
@@ -150,7 +151,7 @@ class ProductReferenceRepository:
             # --- pricing: one row per source row ---
             key = (source_file, rec.sheet, rec.row)
             fields = {
-                "store_number": store_number, "item_code": rec.item_code,
+                "store_id": store_id, "item_code": rec.item_code,
                 "distributor": rec.distributor, "pricing_basis": rec.pricing_basis,
                 "case_cost": rec.case_cost, "unit_cost": rec.unit_cost,
                 "unit_retail": rec.unit_retail,
@@ -177,7 +178,7 @@ class ProductReferenceRepository:
             # --- identity: first source to say a thing wins, and is named ---
             identity = identities.get(rec.item_code)
             if identity is None:
-                identity = ProductIdentity(store_number=store_number, item_code=rec.item_code,
+                identity = ProductIdentity(store_id=store_id, item_code=rec.item_code,
                                            provenance={})
                 self._session.add(identity)
                 identities[rec.item_code] = identity
@@ -202,7 +203,7 @@ class ProductReferenceRepository:
                 if ikey in existing_ids:
                     continue
                 self._session.add(ProductIdentifier(
-                    store_number=store_number, item_code=rec.item_code, kind=ident.kind,
+                    store_id=store_id, item_code=rec.item_code, kind=ident.kind,
                     value=ident.value, distributor=ident.distributor, source_file=source_file,
                     source_sheet=rec.sheet, source_row=rec.row, imported_at=imported_at,
                 ))

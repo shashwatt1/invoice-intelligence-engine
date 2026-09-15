@@ -28,7 +28,7 @@ from app.repositories.product_data_proposal_repository import (
 from app.schemas.extraction import ExtractedLineItem
 from app.services import proposal_service
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -88,7 +88,7 @@ class TestTheFrontendCannotWriteMasterData:
         assert detail["case_mappings"][0]["pending_proposal_id"] == row["pending_proposal_id"]
 
         # The authoritative table is untouched.
-        assert await ProductCaseMappingRepository(db_session).get(STORE, NORMALIZED) is None
+        assert await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED) is None
         [p] = await ProductDataProposalRepository(db_session).list(entity_key=NORMALIZED)
         assert p.status == STATUS_PENDING
         assert p.proposed_value == 4
@@ -108,13 +108,13 @@ class TestTheFrontendCannotWriteMasterData:
         # An existing (legacy) mapping; the UI's Update sends the same
         # request shape. It must not touch the mapping either.
         await ProductCaseMappingRepository(db_session).upsert(
-            store_number=STORE, item_code=NORMALIZED, units_per_case=4, source="MANUAL")
+            store_id=store_id(STORE), item_code=NORMALIZED, units_per_case=4, source="MANUAL")
         await db_session.commit()
         invoice_id = await process(api_client, app, [line()], "p3.pdf", "update path",
                                    subtotal=18.75, grand_total=18.75)
         await confirm(api_client, invoice_id, 24)
 
-        mapping = await ProductCaseMappingRepository(db_session).get(STORE, NORMALIZED)
+        mapping = await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED)
         await db_session.refresh(mapping)
         assert mapping.units_per_case == 4               # unchanged
         [p] = await ProductDataProposalRepository(db_session).list(
@@ -164,7 +164,7 @@ class TestSourceIsDecidedByTheSystem:
 class TestReview:
     async def _pending(self, db_session, value=4, key=NORMALIZED):
         return await ProductDataProposalRepository(db_session).create(
-            store_number=STORE, entity_type="case_mapping", entity_key=key,
+            store_id=store_id(STORE), entity_type="case_mapping", entity_key=key,
             field="units_per_case", proposed_value=value, current_value=None,
             source=SOURCE_REFERENCE_DERIVED, proposed_by="test",
             evidence={"invoice_description": "BUSCH 4/6/160Z CAN"},
@@ -175,7 +175,7 @@ class TestReview:
         result = await proposal_service.approve(db_session, p, reviewed_by="reviewer:test")
         await db_session.commit()
 
-        mapping = await ProductCaseMappingRepository(db_session).get(STORE, NORMALIZED)
+        mapping = await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED)
         assert mapping is not None
         assert mapping.units_per_case == 4
         assert mapping.source == "APPROVED"
@@ -183,14 +183,14 @@ class TestReview:
         assert p.status == STATUS_APPROVED
         assert p.reviewed_by == "reviewer:test"
         assert p.reviewed_at is not None
-        assert result.applied_to == f"product_case_mappings:{STORE}:{NORMALIZED}"
+        assert result.applied_to == f"product_case_mappings:{store_id(STORE)}:{NORMALIZED}"
 
     async def test_rejection_leaves_master_data_untouched(self, db_session):
         p = await self._pending(db_session)
         await proposal_service.reject(db_session, p, reviewed_by="reviewer:test", note="wrong pack")
         await db_session.commit()
 
-        assert await ProductCaseMappingRepository(db_session).get(STORE, NORMALIZED) is None
+        assert await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED) is None
         assert p.status == STATUS_REJECTED
         assert p.review_note == "wrong pack"
         assert p.reviewed_by == "reviewer:test"
@@ -211,7 +211,7 @@ class TestReview:
         await proposal_service.approve(db_session, second, reviewed_by="r")
         await db_session.commit()
 
-        mapping = await ProductCaseMappingRepository(db_session).get(STORE, NORMALIZED)
+        mapping = await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED)
         assert mapping.units_per_case == 24
         assert mapping.approved_proposal_id == second.id    # points at the newest decision
         assert first.status == STATUS_APPROVED               # history intact
@@ -225,7 +225,7 @@ class TestReview:
         await db_session.commit()
         repo = ProductCaseMappingRepository(db_session)
         for c in codes:
-            assert (await repo.get(STORE, c)).approved_proposal_id is not None
+            assert (await repo.get(store_id(STORE), c)).approved_proposal_id is not None
 
     async def test_approval_then_export_opens(self, api_client, app, db_session):  # noqa: F811
         invoice_id = await process(api_client, app, [line()], "e2e.pdf", "end to end",
@@ -267,7 +267,7 @@ class TestLegacyMappingsRemainValid:
         # Reproduce what migration 0008 did for the 17 pre-existing rows.
         repo = ProductDataProposalRepository(db_session)
         legacy = await repo.create(
-            store_number=STORE, entity_type="case_mapping", entity_key=NORMALIZED,
+            store_id=store_id(STORE), entity_type="case_mapping", entity_key=NORMALIZED,
             field="units_per_case", proposed_value=4, current_value=None,
             source=SOURCE_LEGACY_MIGRATED, proposed_by="system:legacy-migration",
             reason="predates the workflow",
@@ -275,7 +275,7 @@ class TestLegacyMappingsRemainValid:
         await repo.mark_approved(legacy, reviewed_by="system:legacy-migration",
                                  note="Grandfathered; never reviewed by a person.")
         mapping = await ProductCaseMappingRepository(db_session).upsert(
-            store_number=STORE, item_code=NORMALIZED, units_per_case=4, source="VERIFIED_FROM_INVOICE")
+            store_id=store_id(STORE), item_code=NORMALIZED, units_per_case=4, source="VERIFIED_FROM_INVOICE")
         mapping.approved_proposal_id = legacy.id
         await db_session.commit()
 

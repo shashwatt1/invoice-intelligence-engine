@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveProposal,
   confirmCaseMappings,
+  confirmDocumentStore,
   correctLineItem,
   deleteInvoice,
   getDashboardSummary,
@@ -24,6 +25,7 @@ import {
   listStores,
   processInvoice,
   rejectProposal,
+  updateStoreIdentity,
 } from "@/api/endpoints";
 import type {
   CaseMappingConfirmation,
@@ -31,6 +33,7 @@ import type {
   LineItemCorrection,
   ProposalDecision,
   ProposalListParams,
+  StoreIdentityUpdate,
 } from "@/api/types";
 
 export function useDashboard() {
@@ -62,7 +65,10 @@ export function useDocumentStatus(documentId: string | undefined) {
     queryKey: ["document", documentId],
     queryFn: () => getDocumentStatus(documentId!),
     enabled: Boolean(documentId),
-    refetchInterval: (query) => (query.state.data?.is_terminal ? false : 700),
+    // Stops when the run is done — or paused for a person: no point polling
+    // while the operator is deciding which store the document is for.
+    refetchInterval: (query) =>
+      query.state.data?.is_terminal || query.state.data?.awaiting_store_confirmation ? false : 700,
   });
 }
 
@@ -82,8 +88,8 @@ export function useStores() {
 export function useProcessInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ file, storeNumber }: { file: File; storeNumber: string }) =>
-      processInvoice(file, storeNumber),
+    mutationFn: ({ file, storeId }: { file: File; storeId: string | null }) =>
+      processInvoice(file, storeId),
     onSettled: () => {
       // Any outcome (success or duplicate rejection) can change the
       // dashboard and history projections.
@@ -171,11 +177,39 @@ export function useProposal(proposalId: string | undefined) {
   });
 }
 
-export function useProductHistory(storeNumber: string | undefined, itemCode: string | undefined) {
+export function useProductHistory(storeId: string | undefined, itemCode: string | undefined) {
   return useQuery({
-    queryKey: ["product-history", storeNumber, itemCode],
-    queryFn: () => getProductHistory(storeNumber!, itemCode!),
-    enabled: Boolean(storeNumber && itemCode),
+    queryKey: ["product-history", storeId, itemCode],
+    queryFn: () => getProductHistory(storeId!, itemCode!),
+    enabled: Boolean(storeId && itemCode),
+  });
+}
+
+/** Names the store a paused upload is for; the status query is refreshed
+ * so the resumed run's stages appear as they commit. */
+export function useConfirmDocumentStore(documentId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ storeId, confirmedBy }: { storeId: string; confirmedBy: string | null }) =>
+      confirmDocumentStore(documentId!, storeId, confirmedBy),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
+      void queryClient.invalidateQueries({ queryKey: ["stores"] });
+    },
+  });
+}
+
+/** A person confirms or corrects a store's identity in the directory. */
+export function useUpdateStoreIdentity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ storeId, update }: { storeId: string; update: StoreIdentityUpdate }) =>
+      updateStoreIdentity(storeId, update),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["stores"] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      void queryClient.invalidateQueries({ queryKey: ["proposals"] });
+    },
   });
 }
 
@@ -202,7 +236,7 @@ export function useDecideProposal() {
       void queryClient.invalidateQueries({ queryKey: ["proposals"] });
       void queryClient.invalidateQueries({ queryKey: ["proposal", result.proposal.id] });
       void queryClient.invalidateQueries({
-        queryKey: ["product-history", result.proposal.store_number, result.proposal.entity_key],
+        queryKey: ["product-history", result.proposal.store.id, result.proposal.entity_key],
       });
       void queryClient.invalidateQueries({ queryKey: ["invoice"] });
     },

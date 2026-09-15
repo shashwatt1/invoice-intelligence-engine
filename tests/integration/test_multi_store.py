@@ -25,7 +25,7 @@ from app.repositories.product_data_proposal_repository import ProductDataProposa
 from app.services import proposal_service
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.store_reference_service import match_invoice_against_reference
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.integration.test_proposal_governance import line
@@ -57,23 +57,23 @@ async def seed_reference(db_session):
     """The same UPC in both stores, with different retail and descriptions."""
     now = datetime.now(UTC)
     db_session.add_all([
-        ProductPricing(store_number=A, item_code=UPC, distributor="store",
+        ProductPricing(store_id=store_id(A), item_code=UPC, distributor="store",
                        pricing_basis=BASIS_PERIOD_AVERAGE, unit_cost=None,
                        unit_retail=Decimal("26.99"), source_file="Mckinley.xlsx",
                        source_sheet="data", source_row=5, imported_at=now),
-        ProductPricing(store_number=B, item_code=UPC, distributor="store",
+        ProductPricing(store_id=store_id(B), item_code=UPC, distributor="store",
                        pricing_basis=BASIS_PERIOD_AVERAGE, unit_cost=Decimal("23.40"),
                        unit_retail=Decimal("29.79"), source_file="Item_Sales_Summary_x.xlsx",
                        source_sheet="data", source_row=9, imported_at=now),
-        ProductIdentity(store_number=A, item_code=UPC, description="Labatt blue 30cans", provenance={}),
-        ProductIdentity(store_number=B, item_code=UPC, description="Labatts Blue 30pk", provenance={}),
+        ProductIdentity(store_id=store_id(A), item_code=UPC, description="Labatt blue 30cans", provenance={}),
+        ProductIdentity(store_id=store_id(B), item_code=UPC, description="Labatts Blue 30pk", provenance={}),
     ])
     await db_session.commit()
 
 
 async def pending_for(db_session, store, value, key=UPC):
     p = await ProductDataProposalRepository(db_session).create(
-        store_number=store, entity_type="case_mapping", entity_key=key,
+        store_id=store_id(store), entity_type="case_mapping", entity_key=key,
         field="units_per_case", proposed_value=value, current_value=None,
         source="operator_entered", proposed_by="test", evidence={},
     )
@@ -84,37 +84,37 @@ async def pending_for(db_session, store, value, key=UPC):
 class TestMappingsAreStoreScoped:
     async def test_the_same_upc_in_two_stores_is_two_independent_mappings(self, db_session):
         repo = ProductCaseMappingRepository(db_session)
-        await repo.upsert(store_number=A, item_code=UPC, units_per_case=1, source="MANUAL")
-        await repo.upsert(store_number=B, item_code=UPC, units_per_case=30, source="MANUAL")
+        await repo.upsert(store_id=store_id(A), item_code=UPC, units_per_case=1, source="MANUAL")
+        await repo.upsert(store_id=store_id(B), item_code=UPC, units_per_case=30, source="MANUAL")
         await db_session.commit()
 
-        assert (await repo.get(A, UPC)).units_per_case == 1
-        assert (await repo.get(B, UPC)).units_per_case == 30
-        assert await repo.units_by_item_code(A, [UPC]) == {UPC: 1}
-        assert await repo.units_by_item_code(B, [UPC]) == {UPC: 30}
+        assert (await repo.get(store_id(A), UPC)).units_per_case == 1
+        assert (await repo.get(store_id(B), UPC)).units_per_case == 30
+        assert await repo.units_by_item_code(store_id(A), [UPC]) == {UPC: 1}
+        assert await repo.units_by_item_code(store_id(B), [UPC]) == {UPC: 30}
         rows = (await db_session.execute(select(ProductCaseMapping).where(ProductCaseMapping.item_code == UPC))).scalars().all()
-        assert sorted(r.store_number for r in rows) == [A, B]
+        assert sorted(r.store_id for r in rows) == sorted([store_id(A), store_id(B)])
 
     async def test_a_store_with_no_mapping_sees_nothing_however_sure_the_other_store_is(self, db_session):
         repo = ProductCaseMappingRepository(db_session)
-        await repo.upsert(store_number=A, item_code=UPC, units_per_case=1, source="MANUAL")
+        await repo.upsert(store_id=store_id(A), item_code=UPC, units_per_case=1, source="MANUAL")
         await db_session.commit()
-        assert await repo.get(B, UPC) is None
-        assert await repo.units_by_item_code(B, [UPC]) == {}
+        assert await repo.get(store_id(B), UPC) is None
+        assert await repo.units_by_item_code(store_id(B), [UPC]) == {}
 
     async def test_approving_a_proposal_for_store_a_cannot_change_store_b(self, db_session):
         repo = ProductCaseMappingRepository(db_session)
-        await repo.upsert(store_number=B, item_code=UPC, units_per_case=30, source="MANUAL")
+        await repo.upsert(store_id=store_id(B), item_code=UPC, units_per_case=30, source="MANUAL")
         await db_session.commit()
 
         p = await pending_for(db_session, A, 1)
         result = await proposal_service.approve(db_session, p, reviewed_by="reviewer:a")
         await db_session.commit()
 
-        assert result.applied_to == f"product_case_mappings:{A}:{UPC}"
-        a = await repo.get(A, UPC)
+        assert result.applied_to == f"product_case_mappings:{store_id(A)}:{UPC}"
+        a = await repo.get(store_id(A), UPC)
         assert (a.units_per_case, a.approved_proposal_id) == (1, p.id)
-        b = await repo.get(B, UPC)
+        b = await repo.get(store_id(B), UPC)
         assert (b.units_per_case, b.approved_proposal_id) == (30, None)     # untouched
 
     async def test_a_proposal_carries_its_store_into_the_mapping_not_the_callers(self, db_session):
@@ -122,8 +122,8 @@ class TestMappingsAreStoreScoped:
         p = await pending_for(db_session, B, 30)
         await proposal_service.approve(db_session, p, reviewed_by="r")
         await db_session.commit()
-        assert await ProductCaseMappingRepository(db_session).get(A, UPC) is None
-        assert (await ProductCaseMappingRepository(db_session).get(B, UPC)).units_per_case == 30
+        assert await ProductCaseMappingRepository(db_session).get(store_id(A), UPC) is None
+        assert (await ProductCaseMappingRepository(db_session).get(store_id(B), UPC)).units_per_case == 30
 
 
 class TestTheInvoiceStoreDecides:
@@ -132,12 +132,12 @@ class TestTheInvoiceStoreDecides:
                                   "a.pdf", "store a", subtotal=22.70, grand_total=22.70)
         inv_b = await process_for(api_client, app, B, [line("LABATT BLUE 30", UPC_RAW, 22.70)],
                                   "b.pdf", "store b", subtotal=22.70, grand_total=22.70)
-        assert (await detail(api_client, inv_a))["store_number"] == A
-        assert (await detail(api_client, inv_b))["store_number"] == B
-        stored = {str(i.id): i.store_number for i in (await db_session.execute(select(Invoice))).scalars()}
-        assert stored == {inv_a: A, inv_b: B}
+        assert (await detail(api_client, inv_a))["store"]["source_codes"] == [A]
+        assert (await detail(api_client, inv_b))["store"]["source_codes"] == [B]
+        stored = {str(i.id): i.store_id for i in (await db_session.execute(select(Invoice))).scalars()}
+        assert stored == {inv_a: store_id(A), inv_b: store_id(B)}
         history = (await api_client.get("/api/v1/invoices")).json()["items"]
-        assert {h["invoice_id"]: h["store_number"] for h in history} == {inv_a: A, inv_b: B}
+        assert {h["invoice_id"]: h["store"]["source_codes"][0] for h in history} == {inv_a: A, inv_b: B}
 
     async def test_reference_matching_uses_only_the_invoices_store(self, api_client, app, db_session):  # noqa: F811
         await seed_reference(db_session)
@@ -164,7 +164,7 @@ class TestTheInvoiceStoreDecides:
 
     async def test_case_mapping_lookup_and_export_readiness_follow_the_invoice_store(self, api_client, app, db_session):  # noqa: F811
         await ProductCaseMappingRepository(db_session).upsert(
-            store_number=A, item_code=UPC, units_per_case=1, source="MANUAL")
+            store_id=store_id(A), item_code=UPC, units_per_case=1, source="MANUAL")
         await db_session.commit()
         inv_a = await process_for(api_client, app, A, [line("LABATT BLUE 30", UPC_RAW, 22.70)],
                                   "ma.pdf", "map a", subtotal=22.70, grand_total=22.70)
@@ -188,7 +188,7 @@ class TestTheInvoiceStoreDecides:
                                   json={"mappings": [{"item_code": UPC, "units_per_case": 30}]})
         assert r.status_code == 200, r.text
         [p] = await ProductDataProposalRepository(db_session).list(entity_key=UPC)
-        assert (p.store_number, p.status) == (B, STATUS_PENDING)
+        assert (p.store_id, p.status) == (store_id(B), STATUS_PENDING)
         # visible on the store-B invoice, invisible to a store-A invoice
         assert (await detail(api_client, inv_b))["case_mappings"][0]["pending_value"] == 30
         inv_a = await process_for(api_client, app, A, [line("LABATT BLUE 30", UPC_RAW, 22.70)],
@@ -202,33 +202,34 @@ class TestHistoryAndDeletion:
         pb = await pending_for(db_session, B, 30)
         await api_client.post(f"/api/v1/proposals/{pa.id}/approve", json={"reviewed_by": "r"})
 
-        ha = (await api_client.get(f"/api/v1/products/{UPC}/history", params={"store_number": A})).json()["data"]
-        hb = (await api_client.get(f"/api/v1/products/{UPC}/history", params={"store_number": B})).json()["data"]
-        assert ha["store_number"] == A and [p["id"] for p in ha["proposals"]] == [str(pa.id)]
-        assert ha["current_mapping"]["units_per_case"] == 1 and ha["current_mapping"]["store_number"] == A
-        assert hb["store_number"] == B and [p["id"] for p in hb["proposals"]] == [str(pb.id)]
+        ha = (await api_client.get(f"/api/v1/products/{UPC}/history", params={"store_id": store_id(A)})).json()["data"]
+        hb = (await api_client.get(f"/api/v1/products/{UPC}/history", params={"store_id": store_id(B)})).json()["data"]
+        assert ha["store"]["source_codes"] == [A] and [p["id"] for p in ha["proposals"]] == [str(pa.id)]
+        assert ha["current_mapping"]["units_per_case"] == 1 and ha["current_mapping"]["store"]["source_codes"] == [A]
+        assert hb["store"]["source_codes"] == [B] and [p["id"] for p in hb["proposals"]] == [str(pb.id)]
         assert hb["current_mapping"] is None
         # the queue filters by store too
-        queue_b = (await api_client.get("/api/v1/proposals", params={"store_number": B})).json()
+        queue_b = (await api_client.get("/api/v1/proposals", params={"store_id": store_id(B)})).json()
         assert [row["id"] for row in queue_b["items"]] == [str(pb.id)]
 
     async def test_deleting_an_invoice_leaves_master_mappings_alone(self, api_client, app, db_session):  # noqa: F811
         repo = ProductCaseMappingRepository(db_session)
-        await repo.upsert(store_number=A, item_code=UPC, units_per_case=1, source="MANUAL")
-        await repo.upsert(store_number=B, item_code=UPC, units_per_case=30, source="MANUAL")
+        await repo.upsert(store_id=store_id(A), item_code=UPC, units_per_case=1, source="MANUAL")
+        await repo.upsert(store_id=store_id(B), item_code=UPC, units_per_case=30, source="MANUAL")
         await db_session.commit()
         inv_a = await process_for(api_client, app, A, [line("LABATT BLUE 30", UPC_RAW, 22.70)],
                                   "da.pdf", "delete a", subtotal=22.70, grand_total=22.70)
         assert (await api_client.delete(f"/api/v1/invoices/{inv_a}")).status_code in (200, 204)
         assert (await api_client.get(f"/api/v1/invoices/{inv_a}")).status_code == 404
-        assert (await repo.get(A, UPC)).units_per_case == 1
-        assert (await repo.get(B, UPC)).units_per_case == 30
+        assert (await repo.get(store_id(A), UPC)).units_per_case == 1
+        assert (await repo.get(store_id(B), UPC)).units_per_case == 30
 
     async def test_known_stores_are_listed_from_the_data(self, api_client, db_session):  # noqa: F811
         await ProductCaseMappingRepository(db_session).upsert(
-            store_number=A, item_code=UPC, units_per_case=1, source="MANUAL")
+            store_id=store_id(A), item_code=UPC, units_per_case=1, source="MANUAL")
         await seed_reference(db_session)
         stores = (await api_client.get("/api/v1/stores")).json()["data"]
-        assert [s["store_number"] for s in stores] == [A, B]
+        assert sorted(s["source_codes"][0] for s in stores) == [A, B]
+        stores.sort(key=lambda s: s["source_codes"][0])
         assert stores[0]["case_mappings"] == 1 and stores[1]["case_mappings"] == 0
         assert stores[0]["pricing_rows"] == 1 and stores[1]["pricing_rows"] == 1

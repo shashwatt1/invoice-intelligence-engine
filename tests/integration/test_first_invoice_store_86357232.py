@@ -48,7 +48,7 @@ from app.models.product_reference import (
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.repositories.product_data_proposal_repository import ProductDataProposalRepository
 from app.repositories.store_product_reference_repository import StoreProductReferenceRepository
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import requires_db, store_id
 from tests.integration.test_api_db import api_client  # noqa: F401 — fixture reuse
 from tests.integration.test_multi_store import detail, process_for
 from tests.integration.test_proposal_governance import line
@@ -77,46 +77,46 @@ async def seed_both_stores(db_session):
     """The same barcodes in both stores, with values that tell them apart."""
     now = datetime.now(UTC)
     mappings = ProductCaseMappingRepository(db_session)
-    await mappings.upsert(store_number=NEW, item_code=LABATT[1], units_per_case=1, source="MANUAL")
-    await mappings.upsert(store_number=OLD, item_code=LABATT[1], units_per_case=30, source="MANUAL")
-    await mappings.upsert(store_number=OLD, item_code=BUD30[1], units_per_case=1, source="MANUAL")
-    await mappings.upsert(store_number=OLD, item_code=ULTRA[1], units_per_case=8, source="MANUAL")
+    await mappings.upsert(store_id=store_id(NEW), item_code=LABATT[1], units_per_case=1, source="MANUAL")
+    await mappings.upsert(store_id=store_id(OLD), item_code=LABATT[1], units_per_case=30, source="MANUAL")
+    await mappings.upsert(store_id=store_id(OLD), item_code=BUD30[1], units_per_case=1, source="MANUAL")
+    await mappings.upsert(store_id=store_id(OLD), item_code=ULTRA[1], units_per_case=8, source="MANUAL")
 
     db_session.add_all([
         # ULTRA: a typed items/case cell in each store's Beer Inventory — different numbers
-        ProductPricing(store_number=NEW, item_code=ULTRA[1], distributor="Testani",
+        ProductPricing(store_id=store_id(NEW), item_code=ULTRA[1], distributor="Testani",
                        pricing_basis=BASIS_PROMO, case_cost=Decimal("27.60"), unit_cost=Decimal("9.20"),
                        items_per_case_stated=3, source_file="Beer Inventory.xlsx",
                        source_sheet="Sheet1", source_row=56, imported_at=now),
-        ProductPricing(store_number=OLD, item_code=ULTRA[1], distributor="Testani",
+        ProductPricing(store_id=store_id(OLD), item_code=ULTRA[1], distributor="Testani",
                        pricing_basis=BASIS_PROMO, case_cost=Decimal("27.60"), unit_cost=Decimal("3.45"),
                        items_per_case_stated=8, source_file="Beer Inventory.xlsx",
                        source_sheet="Sheet1", source_row=56, imported_at=now),
         # BUD 30: the new store's till scans it at $25.72 (a 30-pack sold whole)
-        ProductPricing(store_number=NEW, item_code=BUD30[1], distributor="store",
+        ProductPricing(store_id=store_id(NEW), item_code=BUD30[1], distributor="store",
                        pricing_basis=BASIS_PERIOD_AVERAGE, unit_cost=None, unit_retail=Decimal("25.72"),
                        source_file="Item_Sales_Summary_2026-09-14T15_45_30.014Z.xlsx",
                        source_sheet="data", source_row=553, imported_at=now),
-        ProductIdentity(store_number=NEW, item_code=ULTRA[1], description="ULTRA 3/8/16 new-store", provenance={}),
-        ProductIdentity(store_number=OLD, item_code=ULTRA[1], description="ULTRA 3/8/16 old-store", provenance={}),
-        ProductIdentity(store_number=OLD, item_code=BUSCH[1], description="Busch LT old-store only", provenance={}),
-        ProductIdentifier(store_number=OLD, item_code=BUSCH[1], kind=KIND_RETAIL_UPC_RAW, value=BUSCH[0],
+        ProductIdentity(store_id=store_id(NEW), item_code=ULTRA[1], description="ULTRA 3/8/16 new-store", provenance={}),
+        ProductIdentity(store_id=store_id(OLD), item_code=ULTRA[1], description="ULTRA 3/8/16 old-store", provenance={}),
+        ProductIdentity(store_id=store_id(OLD), item_code=BUSCH[1], description="Busch LT old-store only", provenance={}),
+        ProductIdentifier(store_id=store_id(OLD), item_code=BUSCH[1], kind=KIND_RETAIL_UPC_RAW, value=BUSCH[0],
                           distributor=None, source_file="x.xlsx", source_sheet="data", source_row=1, imported_at=now),
     ])
     await StoreProductReferenceRepository(db_session).upsert_many([
-        {"store_number": NEW, "item_code": BUD30[1], "scan_code_raw": BUD30[0],
+        {"store_id": store_id(NEW), "item_code": BUD30[1], "scan_code_raw": BUD30[0],
          "description": "Budweiser 30cans (new store)", "avg_cost": None, "avg_price": Decimal("25.72"),
          "source_file": "Item_Sales_Summary_2026-09-14T15_45_30.014Z.xlsx", "imported_at": now},
-        {"store_number": OLD, "item_code": BUD30[1], "scan_code_raw": BUD30[0],
+        {"store_id": store_id(OLD), "item_code": BUD30[1], "scan_code_raw": BUD30[0],
          "description": "Budweiser 30cans (old store)", "avg_cost": Decimal("0.7567"), "avg_price": Decimal("25.72"),
          "source_file": "Item_Sales_Summary_2026-09-07T16_07_36.325Z.xlsx", "imported_at": now},
-        {"store_number": OLD, "item_code": BUSCH[1], "scan_code_raw": BUSCH[0],
+        {"store_id": store_id(OLD), "item_code": BUSCH[1], "scan_code_raw": BUSCH[0],
          "description": "Busch LT (old store)", "avg_cost": Decimal("9.375"), "avg_price": Decimal("11.99"),
          "source_file": "Item_Sales_Summary_2026-09-07T16_07_36.325Z.xlsx", "imported_at": now},
     ])
     # a decision the OLD store already made about BUSCH — must not show in the new store's history
     await ProductDataProposalRepository(db_session).create(
-        store_number=OLD, entity_type="case_mapping", entity_key=BUSCH[1], field="units_per_case",
+        store_id=store_id(OLD), entity_type="case_mapping", entity_key=BUSCH[1], field="units_per_case",
         proposed_value=2, current_value=None, source=SOURCE_DOCUMENT_DERIVED, proposed_by="test", evidence={})
     await db_session.commit()
 
@@ -153,8 +153,8 @@ async def first_invoice(api_client, app, db_session):  # noqa: F811
 class TestTheInvoiceBelongsToItsStore:
     async def test_it_persists_store_86357232(self, api_client, db_session, first_invoice):  # noqa: F811
         invoice = (await db_session.execute(select(Invoice).where(Invoice.id == first_invoice))).scalar_one()
-        assert invoice.store_number == NEW
-        assert (await detail(api_client, first_invoice))["store_number"] == NEW
+        assert invoice.store_id == store_id(NEW)
+        assert (await detail(api_client, first_invoice))["store"]["source_codes"] == [NEW]
 
     async def test_no_query_on_its_behalf_carries_the_other_stores_number(self, api_client, db_engine, first_invoice):  # noqa: F811
         with SqlCapture(db_engine) as sql:
@@ -163,14 +163,17 @@ class TestTheInvoiceBelongsToItsStore:
             await api_client.post(f"/api/v1/invoices/{first_invoice}/case-mappings",
                                   json={"mappings": [{"item_code": ULTRA[1], "units_per_case": 3}]})
         assert sql.calls, "nothing captured — the listener is not on the engine the app uses"
-        leaked = [(s[:80], p) for s, p in sql.calls if OLD in p or OLD in s]
+        # Stores are referenced by id now: the other store's id must appear
+        # in no statement issued on this invoice's behalf, and every
+        # reference table consulted must be consulted with this store's id.
+        other, mine = str(store_id(OLD)), str(store_id(NEW))
+        leaked = [(s[:80], p) for s, p in sql.calls if other in p or other in s]
         assert leaked == []
-        # every reference table consulted was consulted with this store's number
         for table in ("product_pricing", "product_identity", "store_product_references",
                       "product_case_mappings", "product_data_proposals"):
             touched = sql.touching(table)
             assert touched, f"{table} was never queried"
-            assert all(NEW in p or "INSERT" in s or "UPDATE" in s for s, p in touched), table
+            assert all(mine in p or "INSERT" in s or "UPDATE" in s for s, p in touched), table
         # identifiers are never part of invoice processing at all
         assert sql.touching("product_identifier") == []
 
@@ -226,41 +229,41 @@ class TestConfirmingProposesForThisStore:
         assert r.json()["data"]["saved"] == 4
         assert r.json()["data"]["pdi_export_allowed"] is False      # proposals are not mappings
 
-        proposals = await ProductDataProposalRepository(db_session).list(store_number=NEW)
+        proposals = await ProductDataProposalRepository(db_session).list(store_id=store_id(NEW))
         by_code = {p.entity_key: p for p in proposals}
         assert {p.status for p in proposals} == {STATUS_PENDING}
-        assert {p.store_number for p in proposals} == {NEW}
+        assert {p.store_id for p in proposals} == {store_id(NEW)}
         assert str(by_code[ULTRA[1]].invoice_id) == first_invoice
         assert by_code[ULTRA[1]].source == SOURCE_BEER_INVENTORY_EXPLICIT
         assert by_code[BUD30[1]].source == SOURCE_REFERENCE_DERIVED
         assert by_code[BUSCH[1]].source == SOURCE_DOCUMENT_DERIVED
         assert by_code[BEATBOX[1]].source == SOURCE_OPERATOR_ENTERED
         # nothing was approved, nothing was written to master data
-        assert await ProductCaseMappingRepository(db_session).get(NEW, ULTRA[1]) is None
-        assert await ProductCaseMappingRepository(db_session).get(NEW, BEATBOX[1]) is None
+        assert await ProductCaseMappingRepository(db_session).get(store_id(NEW), ULTRA[1]) is None
+        assert await ProductCaseMappingRepository(db_session).get(store_id(NEW), BEATBOX[1]) is None
         # the other store's rows are exactly as seeded
-        assert (await ProductCaseMappingRepository(db_session).get(OLD, ULTRA[1])).units_per_case == 8
-        assert (await ProductCaseMappingRepository(db_session).get(OLD, LABATT[1])).units_per_case == 30
+        assert (await ProductCaseMappingRepository(db_session).get(store_id(OLD), ULTRA[1])).units_per_case == 8
+        assert (await ProductCaseMappingRepository(db_session).get(store_id(OLD), LABATT[1])).units_per_case == 30
 
     async def test_the_review_queue_detail_and_history_show_the_store(self, api_client, first_invoice):  # noqa: F811
         await api_client.post(f"/api/v1/invoices/{first_invoice}/case-mappings",
                               json={"mappings": [{"item_code": BUSCH[1], "units_per_case": 2}]})
 
-        queue_new = (await api_client.get("/api/v1/proposals", params={"store_number": NEW})).json()
-        assert [(row["store_number"], row["entity_key"], row["status"]) for row in queue_new["items"]] == \
+        queue_new = (await api_client.get("/api/v1/proposals", params={"store_id": store_id(NEW)})).json()
+        assert [(row["store"]["source_codes"][0], row["entity_key"], row["status"]) for row in queue_new["items"]] == \
             [(NEW, BUSCH[1], STATUS_PENDING)]
-        queue_old = (await api_client.get("/api/v1/proposals", params={"store_number": OLD})).json()
+        queue_old = (await api_client.get("/api/v1/proposals", params={"store_id": store_id(OLD)})).json()
         assert [row["entity_key"] for row in queue_old["items"]] == [BUSCH[1]]     # the OLD store's own, separate
         assert queue_old["items"][0]["id"] != queue_new["items"][0]["id"]
         by_invoice = (await api_client.get("/api/v1/proposals", params={"invoice_id": first_invoice})).json()
-        assert [row["store_number"] for row in by_invoice["items"]] == [NEW]
+        assert [row["store"]["source_codes"][0] for row in by_invoice["items"]] == [NEW]
 
         p = (await api_client.get(f"/api/v1/proposals/{queue_new['items'][0]['id']}")).json()["data"]
-        assert p["store_number"] == NEW and p["current_master_value"] is None
+        assert p["store"]["source_codes"] == [NEW] and p["current_master_value"] is None
 
         history = (await api_client.get(f"/api/v1/products/{BUSCH[1]}/history",
-                                        params={"store_number": NEW})).json()["data"]
-        assert history["store_number"] == NEW
+                                        params={"store_id": store_id(NEW)})).json()["data"]
+        assert history["store"]["source_codes"] == [NEW]
         assert [q["id"] for q in history["proposals"]] == [queue_new["items"][0]["id"]]
         assert history["current_mapping"] is None
 
@@ -274,10 +277,10 @@ class TestOnlyStoreScopedApprovalUnblocksTheExport:
             {"item_code": BUD30[1], "units_per_case": 1},
             {"item_code": BUSCH[1], "units_per_case": 2},
         ]})
-        for p in await ProductDataProposalRepository(db_session).list(store_number=NEW, status=STATUS_PENDING):
+        for p in await ProductDataProposalRepository(db_session).list(store_id=store_id(NEW), status=STATUS_PENDING):
             r = await api_client.post(f"/api/v1/proposals/{p.id}/approve", json={"reviewed_by": "data-team:test"})
             assert r.status_code == 200, r.text
-            assert r.json()["data"]["applied_to"] == f"product_case_mappings:{NEW}:{p.entity_key}"
+            assert r.json()["data"]["applied_to"] == f"product_case_mappings:{store_id(NEW)}:{p.entity_key}"
 
         # BEATBOX is still unmapped — three approvals do not make four
         export = await api_client.get(f"/api/v1/invoices/{first_invoice}/export", params={"format": "pdi"})
@@ -286,7 +289,7 @@ class TestOnlyStoreScopedApprovalUnblocksTheExport:
 
         await api_client.post(f"/api/v1/invoices/{first_invoice}/case-mappings",
                               json={"mappings": [{"item_code": BEATBOX[1], "units_per_case": 12}]})
-        [last] = await ProductDataProposalRepository(db_session).list(store_number=NEW, status=STATUS_PENDING)
+        [last] = await ProductDataProposalRepository(db_session).list(store_id=store_id(NEW), status=STATUS_PENDING)
         await api_client.post(f"/api/v1/proposals/{last.id}/approve", json={"reviewed_by": "data-team:test"})
 
         d = await detail(api_client, first_invoice)
@@ -299,8 +302,8 @@ class TestOnlyStoreScopedApprovalUnblocksTheExport:
 
         # the other store's mappings are untouched by all of it
         old = {m.item_code: m.units_per_case for m in (await db_session.execute(
-            select(ProductCaseMapping).where(ProductCaseMapping.store_number == OLD))).scalars()}
+            select(ProductCaseMapping).where(ProductCaseMapping.store_id == store_id(OLD)))).scalars()}
         assert old == {LABATT[1]: 30, BUD30[1]: 1, ULTRA[1]: 8}
         new = {m.item_code: m.units_per_case for m in (await db_session.execute(
-            select(ProductCaseMapping).where(ProductCaseMapping.store_number == NEW))).scalars()}
+            select(ProductCaseMapping).where(ProductCaseMapping.store_id == store_id(NEW)))).scalars()}
         assert new == {LABATT[1]: 1, ULTRA[1]: 3, BUD30[1]: 1, BUSCH[1]: 2, BEATBOX[1]: 12}

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import type { ProductHistory, ProposalDetail } from "@/api/types";
 import { ProposalSourceBadge, ProposalStatusBadge } from "@/components/review/proposal-badges";
+import { StoreChip } from "@/components/shared/store-chip";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +33,7 @@ export function ProposalTimeline({
         {mapping ? (
           <>
             <span>
-              Master data today in store <span className="font-mono">{mapping.store_number}</span>:{" "}
+              Master data today in <StoreChip store={mapping.store} link={false} />:{" "}
               <span className="font-semibold">{mapping.units_per_case} units/case</span>
             </span>
             <span className="text-muted-foreground">
@@ -51,7 +52,7 @@ export function ProposalTimeline({
           </>
         ) : (
           <span className="text-muted-foreground">
-            No master data in store <span className="font-mono">{history.store_number}</span> — this product is
+            No master data in <StoreChip store={history.store} link={false} /> — this product is
             unmapped here. Nothing reaches an EDI for it, whatever another store decided.
           </span>
         )}

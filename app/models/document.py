@@ -18,9 +18,12 @@ Design decisions:
 
 from __future__ import annotations
 
+import uuid
 from enum import StrEnum
+from typing import Any
 
-from sqlalchemy import Index, Integer, String, Text, text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -42,6 +45,7 @@ class DocumentStatus(StrEnum):
     AI_PROCESSING = "AI_PROCESSING"
     VALIDATED = "VALIDATED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    STORE_CONFIRMATION_REQUIRED = "STORE_CONFIRMATION_REQUIRED"   # text extracted; waiting for a person
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
@@ -86,6 +90,14 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # OCR / extraction results (populated by Milestone 2)
+    # The store this upload is for. Set at upload when the operator chose
+    # one, or on confirmation after identification; NULL while waiting.
+    store_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("stores.id", ondelete="SET NULL"), nullable=True
+    )
+    # What store identification found in the extracted text, for the
+    # operator to confirm or override. A list of candidate dicts.
+    store_candidates: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     raw_ocr_text: Mapped[str | None] = mapped_column(
         Text, nullable=True, doc="Raw text extracted by OCR or pdfplumber."
     )

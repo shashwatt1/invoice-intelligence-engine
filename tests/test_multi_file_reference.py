@@ -13,6 +13,7 @@ read once, and nothing is ever filed under the wrong store.
 from __future__ import annotations
 
 import importlib.util
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -27,6 +28,7 @@ STORE_DIR = Path("data/reference/store_86357232")
 FILE_1 = STORE_DIR / "Item_Sales_Summary_2026-09-14T15_45_30.014Z.xlsx"
 FILE_2 = STORE_DIR / "Item_Sales_Summary_2026-09-14T15_56_01.537Z.xlsx"
 MCKINLEY = Path("data/reference/store_47708760/Mckinley-07-24_to_07-26.xlsx")
+STORE_ID = uuid.uuid4()
 requires_store_files = pytest.mark.skipif(
     not (FILE_1.is_file() and FILE_2.is_file()), reason="store 86357232 exports not present"
 )
@@ -59,9 +61,11 @@ class TestCatalogueUnionAcrossFiles:
                   row("07825000020", "Same everywhere", avg_price="1.99", avg_cost="1.28"),
                   row("22222222222", "Only in B"))
         module = _catalogue_script()
-        parsed = [(p.name, parse_item_sales_summary(p)) for p in (a, b)]
-        return module.build_union(parsed, store_override=store, imported_at=datetime.now(UTC),
-                                  on_conflict=on_conflict)
+        # build_union is given the Store id each file resolved to; the
+        # store-code -> Store resolution itself is covered by
+        # tests/integration/test_importer_store_resolution.py.
+        parsed = [(p.name, parse_item_sales_summary(p), STORE_ID) for p in (a, b)]
+        return module.build_union(parsed, imported_at=datetime.now(UTC), on_conflict=on_conflict)
 
     def test_a_disagreement_is_reported_and_neither_reading_chosen_by_default(self, tmp_path):
         rows, conflicts = self._union(tmp_path)
@@ -86,10 +90,6 @@ class TestCatalogueUnionAcrossFiles:
         rows, _ = self._union(tmp_path, on_conflict="last")
         [r] = [r for r in rows if r["item_code"] == "01200013027"]
         assert r["avg_cost"] == Decimal("1.487") and r["source_file"] == "Item_Sales_Summary_b.xlsx"
-
-    def test_a_file_naming_another_store_is_refused(self, tmp_path):
-        with pytest.raises(SystemExit, match="says store 86357232 but --store 47708760"):
-            self._union(tmp_path, store="47708760")
 
     def test_null_cost_and_real_cost_are_a_disagreement_not_a_merge(self, tmp_path):
         # The whole point of NULL-not-zero: "no cost on file" and "$1.487"

@@ -8,6 +8,7 @@ import { rowDestination } from "@/lib/routes";
 import { ConfidenceInline } from "@/components/shared/confidence-meter";
 import { Pagination } from "@/components/shared/pagination";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { StoreChip } from "@/components/shared/store-chip";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -171,8 +172,8 @@ export function HistoryPage() {
                       <TableCell className="max-w-48 truncate font-medium">
                         {row.filename}
                       </TableCell>
-                      <TableCell className="font-mono text-[0.78rem] text-muted-foreground">
-                        {row.store_number ?? "—"}
+                      <TableCell>
+                        <StoreChip store={row.store} link={false} compact />
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {row.vendor_name ?? "—"}

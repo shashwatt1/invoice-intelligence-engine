@@ -31,7 +31,7 @@ from app.models import (
 from app.schemas.extraction import ExtractedLineItem, ExtractedVendor
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.validation.report import ProcessingDecision
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import requires_db, store_id
 from tests.integration.fakes import FakeExtraction, FakeStructuring, extracted_invoice
 
 pytestmark = requires_db
@@ -52,7 +52,7 @@ def upload_kwargs(seed: str = "a") -> dict:
         "file_size_bytes": 2048,
         "file_path": f"/uploads/invoice-{seed}.pdf",
         "file_hash": ("0" * 63) + seed,
-        "store_number": "47708760",
+        "store_id": store_id("47708760"),
     }
 
 
@@ -107,6 +107,7 @@ class TestHappyPath:
         assert stages == [
             PipelineStage.UPLOAD,
             PipelineStage.TEXT_EXTRACTION,
+            PipelineStage.STORE_IDENTIFICATION,
             PipelineStage.AI_STRUCTURING,
             PipelineStage.VALIDATION,
             PipelineStage.PERSISTENCE,

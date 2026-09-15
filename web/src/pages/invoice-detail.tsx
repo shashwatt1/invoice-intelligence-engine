@@ -12,6 +12,7 @@ import { DeveloperPanel } from "@/components/invoice/developer-panel";
 import { PdiExportConfirmDialog } from "@/components/invoice/pdi-export-confirm-dialog";
 import { ValidationReportCard } from "@/components/invoice/validation-report";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { StoreChip } from "@/components/shared/store-chip";
 import { ErrorState } from "@/components/shared/states";
 import {
   AlertDialog,
@@ -359,7 +360,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
       </div>
 
       {/* Case → unit mapping: the remaining gate on the PDI download */}
-      <CaseMappingCard invoiceId={detail.invoice_id} storeNumber={detail.store_number} rows={detail.case_mappings} />
+      <CaseMappingCard invoiceId={detail.invoice_id} store={detail.store} rows={detail.case_mappings} />
 
       {/* Line items */}
       <Card className="gap-0 p-0">
@@ -488,7 +489,12 @@ export function InvoiceDetailPage() {
         <>
           <PageHeader
             title={data.invoice_number ?? "(no invoice number)"}
-            description={`store ${data.store_number} · ${data.filename} · ${data.source_type ?? "—"} · processed ${formatDateTime(data.created_at)}`}
+            description={
+              <span className="inline-flex flex-wrap items-center gap-1.5">
+                <StoreChip store={data.store} withAddress /> · {data.filename} · {data.source_type ?? "—"} ·
+                processed {formatDateTime(data.created_at)}
+              </span>
+            }
             actions={
               <div className="flex items-center gap-2">
                 {data.composite_confidence !== null && (

@@ -305,18 +305,18 @@ async def match_invoice_against_reference(
     purpose: no caller can match one store's invoice against another
     store's catalogue.
     """
-    store_number = invoice.store_number
-    if not store_number:
-        raise ValueError("invoice has no store_number; reference matching needs one.")
+    store_id = invoice.store_id
+    if not store_id:
+        raise ValueError("invoice has no store_id; reference matching needs one.")
     costs: dict[str, Decimal | None] = {}
     for item in invoice.items:
         code = normalize_item_code(item.product_sku)
         if code and code not in costs:
             costs[code] = item.unit_price
 
-    sales = await StoreProductReferenceRepository(session).by_item_codes(store_number, list(costs))
-    pricing = await ProductReferenceRepository(session).pricing_for(store_number, list(costs))
-    identity = await ProductReferenceRepository(session).identity_for(store_number, list(costs))
+    sales = await StoreProductReferenceRepository(session).by_item_codes(store_id, list(costs))
+    pricing = await ProductReferenceRepository(session).pricing_for(store_id, list(costs))
+    identity = await ProductReferenceRepository(session).identity_for(store_id, list(costs))
 
     # The document's own unambiguous pack reading, used only to break a
     # retail tie — never as evidence on its own here.

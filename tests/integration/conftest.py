@@ -14,12 +14,16 @@ development database is never touched. Tables come from Base.metadata
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
+from app.models.store import SOURCE_ITEM_SALES, TYPE_STORE_CODE
+from app.repositories.store_repository import StoreRepository
 
 RUN_DB_TESTS = os.getenv("RUN_DB_TESTS") == "1"
 
@@ -107,7 +111,8 @@ async def db_engine():
         await conn.execute(
             text(
                 "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
-                "documents, product_case_mappings, store_product_references, product_data_proposals, product_pricing, product_identifier, product_identity CASCADE"
+                "documents, product_case_mappings, store_product_references, product_data_proposals, "
+                "product_pricing, product_identifier, product_identity, store_identifiers, stores CASCADE"
             )
         )
     await engine.dispose()
@@ -122,11 +127,34 @@ async def db_session(db_engine) -> AsyncSession:
         await session.execute(
             text(
                 "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
-                "documents, product_case_mappings, store_product_references, product_data_proposals, product_pricing, product_identifier, product_identity CASCADE"
+                "documents, product_case_mappings, store_product_references, product_data_proposals, "
+                "product_pricing, product_identifier, product_identity, store_identifiers, stores CASCADE"
             )
         )
         await session.commit()
+        # Every integration test runs with the two reference stores present,
+        # known by their Item Sales store codes, identity unresolved — as
+        # the migration left production. Tests refer to them through
+        # KNOWN_STORES / store_id() so no test carries a raw UUID.
+        KNOWN_STORES.clear()
+        for code in ("47708760", "86357232"):
+            store = await StoreRepository(session).create(
+                notes=f"test fixture: Item Sales store code {code}")
+            await StoreRepository(session).add_identifier(
+                store, SOURCE_ITEM_SALES, TYPE_STORE_CODE, code,
+                evidence={"origin": "test fixture", "verified": True})
+            KNOWN_STORES[code] = store.id
+        await session.commit()
         yield session
+
+
+# Item Sales store code -> Store.id for the current test. Filled by db_session.
+KNOWN_STORES: dict[str, uuid.UUID] = {}
+
+
+def store_id(code: str) -> uuid.UUID:
+    """The Store id behind an Item Sales store code, in the current test."""
+    return KNOWN_STORES[code]
 
 
 async def approve_all_pending(session, *, reviewed_by: str = "test:reviewer") -> int:

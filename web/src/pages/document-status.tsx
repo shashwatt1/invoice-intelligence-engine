@@ -2,6 +2,7 @@ import { ArrowLeft, ArrowRight } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
 import { PageHeader } from "@/components/layout/page-header";
+import { StoreChip } from "@/components/shared/store-chip";
 import { ProcessingTimeline } from "@/components/processing/processing-timeline";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ErrorState } from "@/components/shared/states";
@@ -40,7 +41,12 @@ export function DocumentStatusPage() {
         <>
           <PageHeader
             title={data.filename}
-            description={`store ${data.store_number ?? "?"} · document ${data.document_id.slice(0, 8)} · created ${formatDateTime(data.created_at)}`}
+            description={
+              <span className="inline-flex flex-wrap items-center gap-1.5">
+                <StoreChip store={data.store} /> · document {data.document_id.slice(0, 8)} · created{" "}
+                {formatDateTime(data.created_at)}
+              </span>
+            }
             actions={<StatusBadge status={data.status} />}
           />
 

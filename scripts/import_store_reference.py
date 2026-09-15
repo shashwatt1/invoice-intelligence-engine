@@ -9,7 +9,7 @@ store_product_references, as a UNION across every file given.
     python scripts/import_store_reference.py data/reference/store_47708760/
     python scripts/import_store_reference.py --store 47708760 file.xlsx
 
-Idempotent: rows are upserted on (store_number, item_code), so importing
+Idempotent: rows are upserted on (store_id, item_code), so importing
 the same export twice updates in place and leaves the row count
 unchanged. Identical files under different names are read once. Two
 files that disagree about a product are reported and, by default, that
@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,6 +40,10 @@ from app.repositories.store_product_reference_repository import (  # noqa: E402
 )
 from app.services.reference_workbooks import discover_workbooks  # noqa: E402
 from app.services.store_reference_import import ParseResult, parse_item_sales_summary  # noqa: E402
+from app.services.store_resolution import (  # noqa: E402
+    StoreResolutionError,
+    resolve_item_sales_store,
+)
 
 
 def _workbooks(targets: list[str]) -> list[Path]:
@@ -58,9 +63,8 @@ ON_CONFLICT = ("skip", "first", "last")
 
 
 def build_union(
-    parsed: list[tuple[str, ParseResult]],
+    parsed: list[tuple[str, ParseResult, uuid.UUID]],
     *,
-    store_override: str | None,
     imported_at: datetime,
     on_conflict: str = "skip",
 ) -> tuple[list[dict], list[dict]]:
@@ -74,21 +78,13 @@ def build_union(
     pricing table keeps both readings with their provenance. --on-conflict
     first|last picks one explicitly. Returns (rows, conflicts).
     """
-    union: dict[tuple[str, str], dict] = {}
+    union: dict[tuple[uuid.UUID, str], dict] = {}
     conflicts: list[dict] = []
-    for filename, result in parsed:
-        store = store_override or result.store_number
-        if store is None:
-            raise SystemExit(f"{filename}: no store number in the file; pass --store.")
-        if store_override and result.store_number and result.store_number != store_override:
-            raise SystemExit(
-                f"{filename}: the file says store {result.store_number} but --store "
-                f"{store_override} was given. Refusing to file one store's data under another."
-            )
+    for filename, result, store_id in parsed:
         for row in result.rows:
-            key = (store, row.item_code)
+            key = (store_id, row.item_code)
             candidate = {
-                "store_number": store, "item_code": row.item_code,
+                "store_id": store_id, "item_code": row.item_code,
                 "scan_code_raw": row.scan_code_raw, "description": row.description,
                 "avg_cost": row.avg_cost, "avg_price": row.avg_price,
                 "source_file": filename, "imported_at": imported_at,
@@ -119,7 +115,9 @@ def build_union(
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("targets", nargs="+", help="xlsx files or a directory of them")
-    parser.add_argument("--store", help="store number (default: read from the file preamble)")
+    parser.add_argument("--store", help="Store id or Item Sales store code; must agree with each file")
+    parser.add_argument("--create-store", action="store_true",
+                        help="create an unresolved store for a store code the master does not know")
     parser.add_argument("--dry-run", action="store_true",
                         help="parse and report; write nothing")
     parser.add_argument("--on-conflict", choices=ON_CONFLICT, default="skip",
@@ -130,23 +128,35 @@ async def main() -> int:
     paths = _workbooks(args.targets)
     imported_at = datetime.now(UTC)
 
-    parsed: list[tuple[str, ParseResult]] = []
+    session_factory = get_session_factory()
+    session = session_factory()
+    parsed: list[tuple[str, ParseResult, uuid.UUID]] = []
+    stores: dict[uuid.UUID, object] = {}
     totals = {"parsed": 0, "no_code": 0, "dup_in_file": 0, "zero_cost_nulled": 0}
-    print(f"{'file':<46}{'store':>10}{'rows':>7}{'costed':>8}{'0->NULL':>9}{'skipped':>9}")
+    print(f"{'file':<46}{'store code':>11}{'rows':>7}{'costed':>8}{'0->NULL':>9}{'skipped':>9}")
     for path in paths:
         result = parse_item_sales_summary(path)
-        store = args.store or result.store_number or "?"
+        try:
+            resolved = await resolve_item_sales_store(
+                session, source_code=result.store_number, requested=args.store,
+                filename=path.name, create_missing=args.create_store and not args.dry_run,
+            )
+        except StoreResolutionError as exc:
+            await session.rollback()
+            await session.close()
+            raise SystemExit(str(exc)) from exc
+        stores[resolved.store.id] = resolved.store
         totals["parsed"] += len(result.rows)
         totals["no_code"] += result.skipped_no_code
         totals["dup_in_file"] += result.skipped_duplicate
         totals["zero_cost_nulled"] += result.zero_cost_nulled
-        print(f"{path.name[:45]:<46}{store:>10}{len(result.rows):>7}"
+        print(f"{path.name[:45]:<46}{str(result.store_number):>11}{len(result.rows):>7}"
               f"{result.costed:>8}{result.zero_cost_nulled:>9}"
-              f"{result.skipped_no_code + result.skipped_duplicate:>9}")
-        parsed.append((path.name, result))
+              f"{result.skipped_no_code + result.skipped_duplicate:>9}"
+              f"   → {resolved.store.label}{'  (store created)' if resolved.created else ''}")
+        parsed.append((path.name, result, resolved.store.id))
 
-    rows, conflicts = build_union(parsed, store_override=args.store, imported_at=imported_at,
-                                  on_conflict=args.on_conflict)
+    rows, conflicts = build_union(parsed, imported_at=imported_at, on_conflict=args.on_conflict)
     costed = sum(1 for r in rows if r["avg_cost"] is not None)
     print(f"\nUNION: {len(rows)} distinct products across {len(paths)} file(s)")
     print(f"  costed (avg_cost present)  : {costed}")
@@ -169,15 +179,16 @@ async def main() -> int:
                   f"price={c['second']['avg_price']}")
 
     if args.dry_run:
+        await session.rollback()
+        await session.close()
         print("\nDRY RUN — nothing written.")
         return 0
 
-    session_factory = get_session_factory()
-    async with session_factory() as session:
+    async with session:
         repository = StoreProductReferenceRepository(session)
         inserted, updated = await repository.upsert_many(rows)
         await session.commit()
-        stats = await repository.stats(rows[0]["store_number"])
+        stats = await repository.stats(rows[0]["store_id"])
 
     print(f"\nWROTE: {inserted} inserted, {updated} updated")
     print(f"  store_product_references now: {stats['total']} rows "

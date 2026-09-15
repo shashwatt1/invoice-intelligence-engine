@@ -17,7 +17,6 @@ Design decisions:
 
 from __future__ import annotations
 
-import re
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
@@ -39,6 +38,7 @@ from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CA
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
+from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import (
     CaseMappingRequest,
@@ -53,6 +53,7 @@ from app.schemas.processing import (
     LineItemCorrectionResult,
     LineItemData,
     ProcessAccepted,
+    StoreRef,
     VendorData,
 )
 from app.services.case_mapping_service import (
@@ -87,7 +88,7 @@ async def _run_pipeline_background(
     file_content: bytes,
     mime_type: str,
     filename: str,
-    store_number: str,
+    store_id: uuid.UUID | None,
 ) -> None:
     """
     Execute the remaining pipeline stages after the 202 response.
@@ -105,7 +106,7 @@ async def _run_pipeline_background(
         try:
             await pipeline.run_stages(
                 session, document, file_content=file_content, mime_type=mime_type,
-                filename=filename, store_number=store_number,
+                filename=filename, store_id=store_id,
             )
         except InvoiceBaseException as exc:
             logger.warning(
@@ -117,26 +118,30 @@ async def _run_pipeline_background(
             logger.exception("background_pipeline_crashed", document_id=str(document_id))
 
 
-STORE_NUMBER_PATTERN = re.compile(r"^\d{1,32}$")
-
-
-def require_store_number(value: str | None) -> str:
-    """The store an invoice is received for, or a clear refusal."""
-    store = (value or "").strip()
-    if not store:
+async def resolve_chosen_store(db: AsyncSession, value: str | None) -> uuid.UUID | None:
+    """
+    The store the operator chose up front, if any — as a Store id that
+    exists. A blank value means "not chosen yet" (identification will
+    ask); a value that is not a known store is refused outright. There
+    is no configured store to fall back on.
+    """
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        store_id = uuid.UUID(text)
+    except ValueError as exc:
         raise ValidationError(
-            message=(
-                "store_number is required: it decides which store's reference data, "
-                "case mappings and review queue this invoice meets. There is no default store."
-            ),
-            detail={"field": "store_number", "reason": "missing"},
-        )
-    if not STORE_NUMBER_PATTERN.match(store):
+            message=f"store_id {value!r} is not a store id. Choose a store from the directory.",
+            detail={"field": "store_id", "reason": "invalid", "value": value},
+        ) from exc
+    store = await StoreRepository(db).get(store_id)
+    if store is None:
         raise ValidationError(
-            message=f"store_number {value!r} is not a store number (digits only, up to 32).",
-            detail={"field": "store_number", "reason": "invalid", "value": value},
+            message=f"store_id {value!r} is not a known store. Choose a store from the directory.",
+            detail={"field": "store_id", "reason": "unknown", "value": value},
         )
-    return store
+    return store.id
 
 
 @router.post(
@@ -150,25 +155,26 @@ def require_store_number(value: str | None) -> str:
         "Poll the returned `status_url` to follow each stage live."
         "\n\n**Accepted formats:** PDF, PNG, JPEG · **Max size:** 25 MB"
         "\n\n**409** if the same file (SHA-256) was already processed."
-        "\n\n`store_number` is required: it decides which store's reference data, "
-        "case mappings and review queue the invoice meets. There is no default."
+        "\n\n`store_id` (optional) is the store the operator says the invoice is for. After "
+        "text extraction the document is matched against the store master; the run pauses in "
+        "`STORE_CONFIRMATION_REQUIRED` for a person to confirm unless the operator's choice "
+        "agrees with what the document says. There is no default store."
     ),
 )
 async def process_invoice(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Invoice file (PDF, PNG, or JPEG)."),
-    store_number: str | None = Form(
-        default=None, description="The store this invoice was received for (digits). Required.",
+    store_id: str | None = Form(
+        default=None,
+        description="The Store id the operator chose, if chosen up front. Never a default.",
     ),
     db: AsyncSession = Depends(get_db),
     upload_service: UploadService = Depends(get_upload_service),
     pipeline: InvoiceProcessingPipeline = Depends(get_pipeline),
 ) -> APIResponse[ProcessAccepted]:
-    # The store is checked before the file is touched: an invoice with no
-    # store meets the wrong reference data and the wrong mappings, so it
-    # is refused outright — nothing is stored, no document row is made,
-    # and there is deliberately no configured store to fall back on.
-    store_number = require_store_number(store_number)
+    # Checked before the file is touched: a store that does not exist is
+    # refused outright — nothing is stored, no document row is made.
+    chosen = await resolve_chosen_store(db, store_id)
     upload = await upload_service.handle_upload(file)
 
     await file.seek(0)
@@ -181,7 +187,7 @@ async def process_invoice(
         file_size_bytes=upload.file_size_bytes,
         file_path=upload.file_path,
         file_hash=upload.file_hash,
-        store_number=store_number,
+        store_id=chosen,
     )
     background_tasks.add_task(
         _run_pipeline_background,
@@ -190,7 +196,7 @@ async def process_invoice(
         contents,
         upload.mime_type,
         upload.filename,
-        store_number,
+        chosen,
     )
     return APIResponse(
         data=ProcessAccepted(
@@ -229,8 +235,12 @@ async def list_invoices(
         page=page,
         page_size=page_size,
     )
+    stores = await StoreRepository(db).labels(
+        [i.store_id if i else d.store_id for d, i in rows])
     return PaginatedResponse(
-        items=[to_history_row(document, invoice) for document, invoice in rows],
+        items=[to_history_row(document, invoice,
+                              stores.get(invoice.store_id if invoice else document.store_id))
+               for document, invoice in rows],
         total=total,
         page=page,
         page_size=page_size,
@@ -260,7 +270,7 @@ async def get_invoice(
     logs = await ProcessingLogRepository(db).for_document(invoice.document_id)
     payloads = {log.stage: log.payload for log in logs if log.payload}
     document = invoice.document
-    store = invoice.store_number
+    store = invoice.store_id
     units = await invoice_units_by_item_code(db, invoice)
     reference = await match_invoice_against_reference(db, invoice)
     # Queued-but-unreviewed values, so the operator sees what is already
@@ -281,7 +291,7 @@ async def get_invoice(
         filename=document.filename,
         document_status=document.status,
         source_type=document.source_type,
-        store_number=invoice.store_number,
+        store=StoreRef.from_store(await StoreRepository(db).get(invoice.store_id)),
         invoice_number=invoice.invoice_number,
         invoice_date=invoice.invoice_date,
         due_date=invoice.due_date,
@@ -427,7 +437,7 @@ async def confirm_case_mappings(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
 
-    store = invoice.store_number
+    store = invoice.store_id
     units = await invoice_units_by_item_code(db, invoice)
     reference = await match_invoice_against_reference(db, invoice)
     # The review rows tell the system how each value relates to what the
@@ -459,7 +469,7 @@ async def confirm_case_mappings(
             )
         await propose_case_mapping(
             db,
-            store_number=store,
+            store_id=store,
             invoice=invoice,
             item_code=code,
             units_per_case=confirmation.units_per_case,

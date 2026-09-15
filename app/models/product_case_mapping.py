@@ -14,7 +14,7 @@ Design decisions:
   the EDI (digits only, UPC-12 check digit dropped), so a mapping saved
   from one invoice is found again from any other invoice carrying the
   same barcode, however it happens to be printed.
-- A unique constraint on (store_number, item_code) enforces one mapping
+- A unique constraint on (store_id, item_code) enforces one mapping
   per product per store;
   the repository upserts rather than inserting blindly, so a re-confirmed
   product updates in place instead of creating a duplicate.
@@ -52,8 +52,8 @@ class ProductCaseMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "product_case_mappings"
 
-    store_number: Mapped[str] = mapped_column(
-        String(32), nullable=False,
+    store_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False,
         doc="The store this value is authoritative for. Never inherited by another store.",
     )
     item_code: Mapped[str] = mapped_column(
@@ -92,13 +92,13 @@ class ProductCaseMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        UniqueConstraint("store_number", "item_code", name="uq_product_case_mapping_store_item"),
+        UniqueConstraint("store_id", "item_code", name="uq_product_case_mapping_store_item"),
         Index("idx_product_case_mappings_item_code", "item_code"),
-        Index("idx_product_case_mappings_store", "store_number"),
+        Index("idx_product_case_mappings_store", "store_id"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<ProductCaseMapping store={self.store_number!r} item_code={self.item_code!r} "
+            f"<ProductCaseMapping store={str(self.store_id)[:8]} item_code={self.item_code!r} "
             f"units_per_case={self.units_per_case} source={self.source!r}>"
         )

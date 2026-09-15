@@ -11,15 +11,16 @@ from __future__ import annotations
 from app.models.document import Document
 from app.models.invoice import Invoice
 from app.models.processing_log import ProcessingLog
-from app.schemas.processing import HistoryRow, StageEntry
+from app.models.store import Store
+from app.schemas.processing import HistoryRow, StageEntry, StoreRef
 
 
-def to_history_row(document: Document, invoice: Invoice | None) -> HistoryRow:
+def to_history_row(document: Document, invoice: Invoice | None, store: Store | None = None) -> HistoryRow:
     return HistoryRow(
         document_id=document.id,
         invoice_id=invoice.id if invoice else None,
         filename=document.filename,
-        store_number=invoice.store_number if invoice else None,
+        store=StoreRef.from_store(store) if store else None,
         status=document.status,
         vendor_name=invoice.vendor_name if invoice else None,
         invoice_number=invoice.invoice_number if invoice else None,

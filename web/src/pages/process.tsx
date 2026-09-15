@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { ApiError } from "@/api/client";
 import { PageHeader } from "@/components/layout/page-header";
 import { ProcessingTimeline } from "@/components/processing/processing-timeline";
+import { StoreConfirmation } from "@/components/processing/store-confirmation";
+import { StoreChip } from "@/components/shared/store-chip";
 import { UploadDropzone } from "@/components/processing/upload-dropzone";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
@@ -38,20 +40,24 @@ export function ProcessPage() {
 
   const isRunning = Boolean(documentId) && !status.data?.is_terminal;
   const terminal = status.data?.is_terminal ? status.data : null;
-  const selected = (stores.data ?? []).find((s) => s.store_number === store) ?? null;
-  const storeValid = selected !== null && /^\d+$/.test(store);
+  const selected = (stores.data ?? []).find((s) => s.id === store) ?? null;
+  const awaiting = status.data?.awaiting_store_confirmation ?? false;
 
   const start = () => {
-    if (!file || !storeValid) {
-      toast.error("Select the store this invoice was received for before processing.");
-      return;
-    }
+    if (!file) return;
     setDuplicate(null);
-    setSubmittedStore(store);
-    processMutation.mutate({ file, storeNumber: store }, {
+    setSubmittedStore(selected?.label ?? null);
+    // The store may be chosen now or after the document has been read:
+    // either way a person decides, and the document's own text is checked
+    // against the choice before anything is processed under it.
+    processMutation.mutate({ file, storeId: selected?.id ?? null }, {
       onSuccess: (accepted) => {
         setDocumentId(accepted.document_id);
-        toast.info(`Processing ${accepted.filename} for store ${store}`);
+        toast.info(
+          selected
+            ? `Processing ${accepted.filename} for ${selected.label}`
+            : `Reading ${accepted.filename} — the store will be confirmed once the document is read`,
+        );
       },
       onError: (error) => {
         if (error instanceof ApiError && error.errorCode === "ERR_DUPLICATE_DOCUMENT") {
@@ -84,39 +90,40 @@ export function ProcessPage() {
         {/* Left: upload */}
         <div className="space-y-4">
           <div className="space-y-1">
-            <label htmlFor="store-number" className="text-[0.78rem] font-medium">
-              Store <span className="text-danger">*</span>
+            <label htmlFor="store-select" className="text-[0.78rem] font-medium">
+              Store <span className="text-muted-foreground">(if you know it)</span>
             </label>
             <Select
               value={store}
               onValueChange={setStore}
-              disabled={isRunning || processMutation.isPending || Boolean(terminal)}
+              disabled={isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
             >
-              <SelectTrigger id="store-number" className="w-full font-mono" aria-required>
+              <SelectTrigger id="store-select" className="w-full">
                 <SelectValue
                   placeholder={
                     stores.isPending
-                      ? "Loading stores…"
+                      ? "Loading the store directory…"
                       : stores.isError
-                        ? "Stores unavailable — cannot process"
-                        : "Select the store this invoice is for"
+                        ? "Store directory unavailable"
+                        : "Decide after the document is read"
                   }
                 />
               </SelectTrigger>
               <SelectContent>
                 {(stores.data ?? []).map((s) => (
-                  <SelectItem key={s.store_number} value={s.store_number} className="font-mono">
-                    {s.store_number}
-                    <span className="ml-2 font-sans text-[0.72rem] text-muted-foreground">
-                      {s.case_mappings} mappings · {s.catalogue_rows} catalogue · {s.pricing_rows} pricing rows
-                    </span>
+                  <SelectItem key={s.id} value={s.id}>
+                    <span className={s.identity_status !== "confirmed" ? "font-mono" : undefined}>{s.label}</span>
+                    {s.address ? (
+                      <span className="ml-2 text-[0.72rem] text-muted-foreground">{s.address}</span>
+                    ) : null}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <p className="text-[0.7rem] text-muted-foreground">
-              Decides which store's reference data, case mappings and review queue this invoice
-              meets. There is no default and the store is never read from the document.
+              The store decides which reference data, case mappings and review queue the invoice
+              meets. There is no default: after the document is read, what it says is checked
+              against your choice, and you confirm before anything is processed.
             </p>
           </div>
 
@@ -126,18 +133,23 @@ export function ProcessPage() {
               data-testid="selected-store"
             >
               <Store className="size-4 shrink-0 text-primary" />
-              <span>
-                Processing for store <span className="font-mono font-semibold">{selected.store_number}</span>
+              <span className="inline-flex items-center gap-1.5">
+                Processing for <StoreChip store={selected} withAddress link={false} />
               </span>
               <span className="text-muted-foreground">
                 {selected.case_mappings} approved mappings · {selected.catalogue_rows} catalogue rows ·{" "}
                 {selected.pricing_rows} pricing rows · {selected.invoices} invoices so far
               </span>
+              {selected.identity_status !== "confirmed" ? (
+                <span className="text-warning text-[0.72rem] font-medium">
+                  This store's location has not been confirmed — confirm it in the Store Directory.
+                </span>
+              ) : null}
             </div>
           ) : (
-            <div className="bg-warning-soft/60 text-warning flex items-center gap-2 rounded-md px-3 py-2 text-[0.78rem] font-medium">
+            <div className="flex items-center gap-2 rounded-md bg-muted/60 px-3 py-2 text-[0.78rem] text-muted-foreground">
               <Store className="size-4 shrink-0" />
-              No store selected — processing is blocked until one is.
+              No store chosen — the document will be read first, then you will confirm the store it names.
             </div>
           )}
 
@@ -156,20 +168,24 @@ export function ProcessPage() {
             <Button
               className="flex-1"
               size="lg"
-              disabled={!file || !storeValid || isRunning || processMutation.isPending || Boolean(terminal)}
+              disabled={!file || isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
               onClick={start}
-              title={!storeValid ? "Select a store first" : !file ? "Choose a file first" : undefined}
+              title={!file ? "Choose a file first" : undefined}
             >
               <Sparkles className="size-4" />
               {processMutation.isPending
-                ? `Uploading for store ${submittedStore ?? store}…`
-                : isRunning
-                  ? `Processing for store ${submittedStore ?? store}…`
-                  : storeValid
-                    ? `Process invoice for store ${store}`
-                    : "Select a store to process"}
+                ? "Uploading…"
+                : awaiting
+                  ? "Waiting for store confirmation"
+                  : isRunning
+                    ? submittedStore
+                      ? `Processing for ${submittedStore}…`
+                      : "Reading the document…"
+                    : selected
+                      ? `Process invoice for ${selected.label}`
+                      : "Read the document, then confirm the store"}
             </Button>
-            {(terminal || duplicate) && (
+            {(terminal || duplicate || awaiting) && (
               <Button variant="outline" size="lg" onClick={reset}>
                 <RotateCcw className="size-4" /> New upload
               </Button>
@@ -212,11 +228,7 @@ export function ProcessPage() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2 text-[0.95rem]">
               Processing timeline
-              {(status.data?.store_number ?? submittedStore) ? (
-                <span className="rounded-md border px-1.5 py-0.5 font-mono text-[0.72rem] font-medium text-muted-foreground">
-                  store {status.data?.store_number ?? submittedStore}
-                </span>
-              ) : null}
+              {status.data?.store ? <StoreChip store={status.data.store} link={false} /> : null}
             </CardTitle>
             {status.data && <StatusBadge status={status.data.status} />}
           </CardHeader>
@@ -224,6 +236,11 @@ export function ProcessPage() {
             {status.data ? (
               <>
                 <ProcessingTimeline status={status.data} />
+                {awaiting && status.data ? (
+                  <div className="mt-4">
+                    <StoreConfirmation status={status.data} stores={stores.data ?? []} />
+                  </div>
+                ) : null}
                 <AnimatePresence>
                   {terminal && terminal.status !== "FAILED" && terminal.invoice_id && (
                     <motion.div
@@ -231,10 +248,9 @@ export function ProcessPage() {
                       animate={{ opacity: 1, y: 0 }}
                       className="mt-5 border-t pt-4"
                     >
-                      <p className="mb-3 text-[0.8rem]">
-                        Persisted for store{" "}
-                        <span className="font-mono font-semibold">{terminal.store_number ?? submittedStore ?? "?"}</span> — its
-                        case mappings, reference evidence and review queue are that store's own.
+                      <p className="mb-3 flex flex-wrap items-center gap-1.5 text-[0.8rem]">
+                        Persisted for <StoreChip store={terminal.store} withAddress /> — its case mappings,
+                        reference evidence and review queue are that store's own.
                       </p>
                       {terminal.status === "REVIEW_REQUIRED" && (
                         <p className="mb-3 text-[0.8rem] text-muted-foreground">

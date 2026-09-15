@@ -7,6 +7,7 @@ import { DecisionPanel } from "@/components/review/decision-panel";
 import { EvidencePanel } from "@/components/review/evidence-panel";
 import { ProposalSourceBadge, ProposalStatusBadge } from "@/components/review/proposal-badges";
 import { ProposalTimeline } from "@/components/review/proposal-timeline";
+import { StoreChip } from "@/components/shared/store-chip";
 import { ErrorState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -90,7 +91,7 @@ function ValueComparison({ proposal: p }: { proposal: ProposalDetail }) {
 export function ProposalDetailPage() {
   const { proposalId } = useParams<{ proposalId: string }>();
   const { data, isPending, isError, error, refetch } = useProposal(proposalId);
-  const history = useProductHistory(data?.store_number, data?.entity_key);
+  const history = useProductHistory(data?.store.id, data?.entity_key);
 
   return (
     <>
@@ -116,9 +117,7 @@ export function ProposalDetailPage() {
             title={
               <span className="flex flex-wrap items-center gap-2">
                 <span className="font-mono">{data.entity_key}</span>
-                <span className="rounded-md border px-1.5 py-0.5 font-mono text-[0.72rem] font-medium" title="The store this proposal — and the mapping it would write — belongs to">
-                  store {data.store_number}
-                </span>
+                <StoreChip store={data.store} withAddress />
                 <ProposalStatusBadge status={data.status} />
                 <ProposalSourceBadge source={data.source} />
               </span>
@@ -126,7 +125,7 @@ export function ProposalDetailPage() {
             description={`${data.entity_type.replace(/_/g, " ")} · ${data.field.replace(/_/g, " ")} · proposed ${formatDateTime(data.created_at)} by ${data.proposed_by}`}
             actions={
               <Button asChild variant="outline" size="sm">
-                <Link to={`/data-review/products/${data.entity_key}?store=${data.store_number}`}>
+                <Link to={`/data-review/products/${data.entity_key}?store=${data.store.id}`}>
                   <History className="size-3.5" /> Product history
                 </Link>
               </Button>
@@ -160,7 +159,7 @@ export function ProposalDetailPage() {
                   {data.review_note ? <span className="text-muted-foreground">“{data.review_note}”</span> : null}
                   {data.resulting_mapping ? (
                     <span className="text-muted-foreground">
-                      → <span className="font-mono">product_case_mappings[{data.resulting_mapping.store_number}].{data.resulting_mapping.item_code}</span>{" "}
+                      → <span className="font-mono">product_case_mappings[{data.resulting_mapping.store.label}].{data.resulting_mapping.item_code}</span>{" "}
                       = {data.resulting_mapping.units_per_case} (source {data.resulting_mapping.source})
                     </span>
                   ) : null}
@@ -186,7 +185,7 @@ export function ProposalDetailPage() {
 
               <Card className="gap-0 p-0">
                 <CardHeader className="px-5 py-3">
-                  <CardTitle className="text-[0.9rem]">This product's history in store {data.store_number}</CardTitle>
+                  <CardTitle className="text-[0.9rem]">This product's history in {data.store.label}</CardTitle>
                   <p className="text-[0.75rem] text-muted-foreground">
                     Every proposal ever made for UPC {data.entity_key} in this store, oldest first.
                   </p>

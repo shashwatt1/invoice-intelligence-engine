@@ -88,7 +88,7 @@ async def invoice_units_by_item_code(
         if code
     ]
     return await ProductCaseMappingRepository(session).units_by_item_code(
-        invoice.store_number, codes
+        invoice.store_id, codes
     )
 
 

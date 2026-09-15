@@ -5,6 +5,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import type { ProposalListParams, ProposalSource, ProposalStatus } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
 import { ProposalSourceBadge, ProposalStatusBadge } from "@/components/review/proposal-badges";
+import { StoreChip } from "@/components/shared/store-chip";
 import { Pagination } from "@/components/shared/pagination";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { Card, CardContent } from "@/components/ui/card";
@@ -94,7 +95,7 @@ export function DataReviewPage() {
     () => ({
       status,
       source: source === "ALL" ? undefined : source,
-      store_number: store === "ALL" ? undefined : store,
+      store_id: store === "ALL" ? undefined : store,
       item_code: upc || undefined,
       invoice_id: /^[0-9a-f-]{36}$/i.test(invoice) ? invoice : undefined,
       page,
@@ -143,8 +144,8 @@ export function DataReviewPage() {
           <SelectContent>
             <SelectItem value="ALL">All stores</SelectItem>
             {(stores.data ?? []).map((s) => (
-              <SelectItem key={s.store_number} value={s.store_number} className="font-mono">
-                {s.store_number}
+              <SelectItem key={s.id} value={s.id}>
+                {s.label}
               </SelectItem>
             ))}
           </SelectContent>
@@ -235,7 +236,7 @@ export function DataReviewPage() {
                         onClick={() => navigate(`/data-review/proposals/${row.id}`)}
                         data-testid="proposal-row"
                       >
-                        <TableCell className="font-mono text-[0.78rem] text-muted-foreground">{row.store_number}</TableCell>
+                        <TableCell><StoreChip store={row.store} link={false} compact /></TableCell>
                         <TableCell className="font-mono text-[0.8rem] font-medium">{row.entity_key}</TableCell>
                         <TableCell className="text-[0.78rem] whitespace-nowrap text-muted-foreground">{row.field.replace(/_/g, " ")}</TableCell>
                         <TableCell className="text-right tabular-nums text-muted-foreground">

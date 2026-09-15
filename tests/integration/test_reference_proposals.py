@@ -28,7 +28,7 @@ from app.repositories.product_data_proposal_repository import (
 from app.schemas.extraction import ExtractedLineItem
 from app.services import proposal_service
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -42,7 +42,7 @@ ULTRA_212 = "01820006991"      # ULTRA 2/12 CAN — Zink package "24/12OZ 2/12 C
 
 def pricing(item_code, **over):
     base = {
-        "store_number": STORE, "item_code": item_code, "distributor": "Testani",
+        "store_id": store_id(STORE), "item_code": item_code, "distributor": "Testani",
         "pricing_basis": BASIS_PROMO, "case_cost": Decimal("27.60"), "unit_cost": Decimal("9.20"),
         "source_file": "Beer Inventory.xlsx", "source_sheet": "Sheet1", "source_row": 56,
         "imported_at": datetime.now(UTC),
@@ -133,7 +133,7 @@ class TestConfirmingAReferenceSuggestionProposesWithProvenance:
         assert p.status == STATUS_PENDING
         assert p.source == SOURCE_BEER_INVENTORY_EXPLICIT
         assert p.evidence["suggestion_source"] == "reference_explicit"
-        assert await ProductCaseMappingRepository(db_session).get(STORE, ULTRA_38) is None   # not yet
+        assert await ProductCaseMappingRepository(db_session).get(store_id(STORE), ULTRA_38) is None   # not yet
 
     async def test_a_package_confirmation_is_labelled_as_such(self, api_client, app, db_session):  # noqa: F811
         db_session.add(pricing(ULTRA_212, distributor="Zink", source_sheet="Zink - Tiki",
@@ -166,7 +166,7 @@ class TestOnlyApprovalReachesTheEdi:
         await proposal_service.reject(db_session, p, reviewed_by="r", note="checking")
         await db_session.commit()
         assert (await api_client.get(url, params={"format": "pdi"})).status_code == 422
-        assert await ProductCaseMappingRepository(db_session).get(STORE, ULTRA_38) is None
+        assert await ProductCaseMappingRepository(db_session).get(store_id(STORE), ULTRA_38) is None
 
         # A fresh proposal, approved: the EDI carries it.
         await api_client.post(f"/api/v1/invoices/{invoice_id}/case-mappings",
@@ -188,7 +188,7 @@ class TestRetailEvidence:
 
     def _period_row(self, code, retail, row):
         return ProductPricing(
-            store_number=STORE, item_code=code, distributor="store", pricing_basis="period_average",
+            store_id=store_id(STORE), item_code=code, distributor="store", pricing_basis="period_average",
             unit_retail=Decimal(retail), unit_cost=None,
             source_file="Mckinley-07-24_to_07-26.xlsx", source_sheet="data", source_row=row,
             imported_at=datetime.now(UTC),
@@ -255,6 +255,6 @@ class TestRetailEvidence:
         assert p.status == STATUS_PENDING
         assert p.source == "reference_derived"
         assert p.evidence["suggestion_source"] == "reference_retail"
-        assert await ProductCaseMappingRepository(db_session).get(STORE, "01820011030") is None
+        assert await ProductCaseMappingRepository(db_session).get(store_id(STORE), "01820011030") is None
         export = await api_client.get(f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"})
         assert export.status_code == 422

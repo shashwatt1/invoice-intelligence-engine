@@ -11,6 +11,7 @@ export type DocumentStatus =
   | "AI_PROCESSING"
   | "VALIDATED"
   | "REVIEW_REQUIRED"
+  | "STORE_CONFIRMATION_REQUIRED"
   | "COMPLETED"
   | "FAILED";
 
@@ -19,6 +20,7 @@ export type InvoiceDecision = "VALIDATED" | "REVIEW_REQUIRED";
 export type PipelineStage =
   | "UPLOAD"
   | "TEXT_EXTRACTION"
+  | "STORE_IDENTIFICATION"
   | "AI_STRUCTURING"
   | "VALIDATION"
   | "PERSISTENCE";
@@ -52,6 +54,72 @@ export interface Paginated<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Stores (app/api/v1/stores.py)
+// ---------------------------------------------------------------------------
+
+/**
+ * How a store is named wherever an invoice, mapping or proposal shows it.
+ * `label` is the confirmed name, or the source code marked as not yet
+ * confirmed — never a guessed name. `source_codes` are the Item Sales
+ * store codes, shown as provenance.
+ */
+export interface StoreRef {
+  id: string;
+  label: string;
+  identity_status: "confirmed" | "unresolved";
+  display_name: string | null;
+  address: string | null;
+  source_codes: string[];
+}
+
+export interface StoreIdentifier {
+  source_system: string;
+  identifier_type: string;
+  identifier_value: string;
+  verified: boolean;
+}
+
+export interface StoreDirectoryEntry extends StoreRef {
+  customer_name: string | null;
+  address_line_1: string | null;
+  address_line_2: string | null;
+  city: string | null;
+  state: string | null;
+  postal_code: string | null;
+  status: string;
+  notes: string | null;
+  identifiers: StoreIdentifier[];
+  invoices: number;
+  pricing_rows: number;
+  identities: number;
+  catalogue_rows: number;
+  case_mappings: number;
+  pending_proposals: number;
+}
+
+export interface StoreIdentityUpdate {
+  display_name?: string | null;
+  customer_name?: string | null;
+  address_line_1?: string | null;
+  address_line_2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postal_code?: string | null;
+  notes?: string | null;
+  confirm?: boolean;
+  confirmed_by?: string | null;
+}
+
+/** A store the document's text names, with the evidence that matched. */
+export interface StoreCandidate {
+  store_id: string;
+  label: string;
+  identity_status: "confirmed" | "unresolved";
+  address: string | null;
+  matched_on: { kind: string; value: string; source_system: string; verified: boolean }[];
+}
+
+// ---------------------------------------------------------------------------
 // Processing (app/schemas/processing.py)
 // ---------------------------------------------------------------------------
 
@@ -77,8 +145,12 @@ export interface DocumentStatusData {
   status: DocumentStatus;
   is_terminal: boolean;
   source_type: string | null;
-  /** The store the upload was received for, known from the moment of upload. */
-  store_number: string | null;
+  /** The store this upload is for, once chosen or confirmed. */
+  store: StoreRef | null;
+  /** True while the run is paused for a person to confirm the store. */
+  awaiting_store_confirmation: boolean;
+  /** What identification found in the text; empty when nothing matched. */
+  store_candidates: StoreCandidate[];
   invoice_id: string | null;
   error: { stage?: PipelineStage; message?: string; error_code?: string } | null;
   stages: StageEntry[];
@@ -267,7 +339,7 @@ export interface InvoiceDetail {
   source_type: string | null;
   /** The store this invoice was received for. Every reference lookup,
    * case mapping and proposal on this page is that store's own. */
-  store_number: string;
+  store: StoreRef;
 
   invoice_number: string | null;
   invoice_date: string | null;
@@ -332,7 +404,7 @@ export type ProposalSource =
 
 export interface ProposalRow {
   id: string;
-  store_number: string;
+  store: StoreRef;
   entity_type: string;
   entity_key: string;
   field: string;
@@ -353,7 +425,7 @@ export interface ProposalRow {
 
 /** The authoritative row a decision produced (product_case_mappings). */
 export interface ResultingMapping {
-  store_number: string;
+  store: StoreRef;
   item_code: string;
   units_per_case: number;
   source: string;
@@ -385,7 +457,7 @@ export interface ProposalDecisionResult {
 
 export interface ProductHistory {
   /** A UPC's history is one store's history. */
-  store_number: string;
+  store: StoreRef;
   item_code: string;
   current_mapping: ResultingMapping | null;
   /** Oldest first — the audit trail. */
@@ -395,7 +467,7 @@ export interface ProductHistory {
 export interface ProposalListParams {
   status?: ProposalStatus | "ALL";
   source?: ProposalSource;
-  store_number?: string;
+  store_id?: string;
   item_code?: string;
   invoice_id?: string;
   page?: number;
@@ -410,7 +482,7 @@ export interface HistoryRow {
   document_id: string;
   invoice_id: string | null;
   filename: string;
-  store_number: string | null;
+  store: StoreRef | null;
   status: DocumentStatus;
   vendor_name: string | null;
   invoice_number: string | null;
@@ -435,16 +507,6 @@ export interface DashboardData {
   total_estimated_cost_usd: number;
   status_breakdown: Partial<Record<DocumentStatus, number>>;
   recent: HistoryRow[];
-}
-
-/** A store the system holds data for (GET /stores). */
-export interface StoreSummary {
-  store_number: string;
-  invoices: number;
-  pricing_rows: number;
-  catalogue_rows: number;
-  case_mappings: number;
-  pending_proposals: number;
 }
 
 export interface InvoiceListParams {
