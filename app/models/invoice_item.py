@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import ForeignKey, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -85,8 +86,10 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
         server_default="product",
         doc=(
             "'product' for goods (delivered or shorted), 'charge' for a delivery / fuel / "
-            "service amount printed as a row of the item table. A charge is kept for "
-            "audit and totals; it never becomes a PDI product record."
+            "service amount printed as a row of the item table, 'duplicate' for a row a "
+            "reviewer resolved as the same physical row as another (overlapping photos). "
+            "Charges and duplicates are kept for audit; neither becomes a PDI product record "
+            "and neither counts toward the subtotal."
         ),
     )
     deposit: Mapped[Decimal | None] = mapped_column(
@@ -100,6 +103,23 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
     )
 
     # Phase 3 — product matching
+    # Multi-photo provenance: the 1-based photo numbers this row was read
+    # from, as the model reported them. NULL for single-file intakes and
+    # rows persisted before document_pages existed.
+    source_pages: Mapped[list[int] | None] = mapped_column(
+        JSONB, nullable=True,
+        doc="Photo/page numbers (1-based) that captured this row; NULL when not a multi-photo intake.",
+    )
+    # Set when the model could not tell whether this row is the same
+    # physical invoice row as an earlier one (overlapping photos) or a
+    # legitimate second row. {"of_sort_order": int, "reason": str,
+    # "resolution": null | "same_row" | "separate_rows", "decided_by",
+    # "decided_at", "note"}. Unresolved → the invoice is REVIEW_REQUIRED.
+    duplicate_candidate: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True,
+        doc="Possible cross-photo duplicate of another row, and how a reviewer resolved it.",
+    )
+
     corrected_fields: Mapped[list[str] | None] = mapped_column(
         JSONB,
         nullable=True,

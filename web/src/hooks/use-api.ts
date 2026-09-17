@@ -12,6 +12,7 @@ import {
   approveProposal,
   bulkApproveProposals,
   bulkRejectProposals,
+  decideDuplicate,
   confirmCaseMappings,
   confirmDocumentStore,
   correctLineItem,
@@ -35,6 +36,7 @@ import type {
   InvoiceListParams,
   LineItemCorrection,
   BulkProposalDecision,
+  DuplicateDecision,
   ProposalDecision,
   ProposalListParams,
   ProposalRevision,
@@ -93,8 +95,8 @@ export function useStores() {
 export function useProcessInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ file, storeId }: { file: File; storeId: string | null }) =>
-      processInvoice(file, storeId),
+    mutationFn: ({ files, storeId }: { files: File[]; storeId: string | null }) =>
+      processInvoice(files, storeId),
     onSettled: () => {
       // Any outcome (success or duplicate rejection) can change the
       // dashboard and history projections.
@@ -283,6 +285,20 @@ export function useReviseProposal() {
         queryKey: ["product-history", result.proposal.store.id, result.proposal.entity_key],
       });
       void queryClient.invalidateQueries({ queryKey: ["invoice"] });
+    },
+  });
+}
+
+/** A reviewer's decision on a possible cross-photo duplicate row. */
+export function useDecideDuplicate(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sortOrder, decision }: { sortOrder: number; decision: DuplicateDecision }) =>
+      decideDuplicate(invoiceId, sortOrder, decision),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 }

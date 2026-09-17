@@ -11,11 +11,13 @@ boundaries belong to the service layer.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentStatus
+from app.models.document_page import DocumentPage
 from app.models.invoice import Invoice
 
 # Whitelisted sort keys → ORDER BY expressions (never interpolate user input)
@@ -59,6 +61,32 @@ class DocumentRepository:
 
     async def get(self, document_id: uuid.UUID) -> Document | None:
         return await self._session.get(Document, document_id)
+
+    async def page_by_hash(self, file_hash: str) -> DocumentPage | None:
+        """A photo already used in an intake, by its own content hash."""
+        result = await self._session.execute(
+            select(DocumentPage).where(DocumentPage.file_hash == file_hash).limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def pages(self, document: Document) -> list[DocumentPage]:
+        """The document's photos in operator order (empty for pre-multi-photo rows)."""
+        result = await self._session.execute(
+            select(DocumentPage).where(DocumentPage.document_id == document.id)
+            .order_by(DocumentPage.page_number)
+        )
+        return list(result.scalars())
+
+    async def page_counts(self, document_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """Photos per document; documents without page rows are one file."""
+        if not document_ids:
+            return {}
+        result = await self._session.execute(
+            select(DocumentPage.document_id, func.count(DocumentPage.id))
+            .where(DocumentPage.document_id.in_(list(document_ids)))
+            .group_by(DocumentPage.document_id)
+        )
+        return {doc_id: int(n) for doc_id, n in result.all()}
 
     async def get_by_hash(self, file_hash: str) -> Document | None:
         """Find an existing document with the same content hash (duplicate check)."""

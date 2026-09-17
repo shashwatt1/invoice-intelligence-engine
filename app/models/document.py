@@ -105,6 +105,14 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(20), nullable=True, doc="Extraction method: 'digital_pdf' or 'ocr'."
     )
 
+    # The photos of a multi-photo intake, in operator order. Empty for
+    # documents that predate document_pages (their one file is described
+    # by the columns above).
+    pages = relationship(
+        "DocumentPage", back_populates="document", cascade="all, delete-orphan",
+        order_by="DocumentPage.page_number",
+    )
+
     # Relationship to processing logs
     processing_logs = relationship(
         "ProcessingLog", back_populates="document", cascade="all, delete-orphan"

@@ -33,6 +33,7 @@ from app.models.product_data_proposal import (
     VALID_STATUSES,
     ProductDataProposal,
 )
+from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.repositories.product_data_proposal_repository import (
     ProductDataProposalRepository,
@@ -71,9 +72,21 @@ async def _store_ref(db: AsyncSession, store_id: uuid.UUID, cache: dict | None =
     return ref
 
 
+async def _invoice_exists(db: AsyncSession, invoice_id: uuid.UUID | None, cache: dict) -> bool:
+    """Whether the invoice a proposal was raised on is still there (deleted invoices leave their history)."""
+    if invoice_id is None:
+        return True
+    key = ("invoice", invoice_id)
+    if key not in cache:
+        cache[key] = await InvoiceRepository(db).get(invoice_id) is not None
+    return cache[key]
+
+
 async def _row(db: AsyncSession, p: ProductDataProposal, cache: dict) -> ProposalRow:
     return ProposalRow(store=await _store_ref(db, p.store_id, cache),
-                       **{k: getattr(p, k) for k in ProposalRow.model_fields if k != "store"})
+                       invoice_deleted=not await _invoice_exists(db, p.invoice_id, cache),
+                       **{k: getattr(p, k) for k in ProposalRow.model_fields
+                          if k not in ("store", "invoice_deleted")})
 
 
 async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
@@ -86,8 +99,11 @@ async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
             source=mapping.source, approved_proposal_id=mapping.approved_proposal_id,
             updated_at=mapping.updated_at,
         )
-    detail = ProposalDetail(store=store, **{k: getattr(p, k) for k in ProposalDetail.model_fields
-                                            if k not in ("store", "resulting_mapping", "current_master_value")})
+    detail = ProposalDetail(store=store,
+                            invoice_deleted=not await _invoice_exists(db, p.invoice_id, {}),
+                            **{k: getattr(p, k) for k in ProposalDetail.model_fields
+                               if k not in ("store", "resulting_mapping", "current_master_value",
+                                            "invoice_deleted")})
     detail.resulting_mapping = resulting
     detail.current_master_value = mapping.units_per_case if mapping else None
     return detail

@@ -33,6 +33,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.schemas.extraction import ExtractedInvoice
 from app.services.validation.checks import (
+    check_cross_photo_duplicates,
     check_date_order,
     check_grand_total_math,
     check_line_item_math,
@@ -116,6 +117,7 @@ class ValidationService:
         checks += check_grand_total_math(normalized, self._tolerance)
         checks += check_tax_consistency(normalized, self._tolerance)
         checks += check_date_order(normalized)
+        checks += check_cross_photo_duplicates(normalized)
 
         confidence = compute_confidence(
             ocr_confidence, self._aggregate_ai_confidence(extracted), checks

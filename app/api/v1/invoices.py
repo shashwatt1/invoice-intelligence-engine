@@ -18,6 +18,7 @@ Design decisions:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,7 @@ from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CA
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
+from app.repositories.product_data_proposal_repository import ProductDataProposalRepository
 from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import (
@@ -46,9 +48,13 @@ from app.schemas.processing import (
     CaseMappingRow,
     CorrectedLineItem,
     DatabaseConfirmation,
+    DocumentPhoto,
+    DuplicateDecision,
+    DuplicateDecisionResult,
     HistoryRow,
     InvoiceDeleteResult,
     InvoiceDetailData,
+    InvoiceReviewSummary,
     LineItemCorrection,
     LineItemCorrectionResult,
     LineItemData,
@@ -61,7 +67,7 @@ from app.services.case_mapping_service import (
     invoice_units_by_item_code,
 )
 from app.services.export_service import normalize_item_code, pdi_export_eligibility
-from app.services.pipeline_service import InvoiceProcessingPipeline
+from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
 from app.services.storage_service import get_storage_service
@@ -85,9 +91,7 @@ def get_pipeline() -> InvoiceProcessingPipeline:
 async def _run_pipeline_background(
     pipeline: InvoiceProcessingPipeline,
     document_id: uuid.UUID,
-    file_content: bytes,
-    mime_type: str,
-    filename: str,
+    pages: list[PageUpload],
     store_id: uuid.UUID | None,
 ) -> None:
     """
@@ -104,10 +108,7 @@ async def _run_pipeline_background(
             logger.error("background_document_missing", document_id=str(document_id))
             return
         try:
-            await pipeline.run_stages(
-                session, document, file_content=file_content, mime_type=mime_type,
-                filename=filename, store_id=store_id,
-            )
+            await pipeline.run_stages_pages(session, document, pages, store_id=store_id)
         except InvoiceBaseException as exc:
             logger.warning(
                 "background_pipeline_failed",
@@ -148,13 +149,19 @@ async def resolve_chosen_store(db: AsyncSession, value: str | None) -> uuid.UUID
     "/invoices/process",
     response_model=APIResponse[ProcessAccepted],
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Upload and process an invoice",
+    summary="Upload and process an invoice — one file, or several photos of one invoice",
     description=(
-        "Validates and stores the file, creates the document record, and runs "
+        "Validates and stores the file(s), creates the document record, and runs "
         "OCR → AI structuring → validation → persistence in the background. "
         "Poll the returned `status_url` to follow each stage live."
-        "\n\n**Accepted formats:** PDF, PNG, JPEG · **Max size:** 25 MB"
-        "\n\n**409** if the same file (SHA-256) was already processed."
+        "\n\n**One invoice, many photos:** send several `files` (in top-to-bottom order) "
+        "when a long invoice was photographed in overlapping pieces. Each photo is OCR'd "
+        "on its own; the texts are combined into one photo-separated context and ONE "
+        "invoice is extracted from it, each row recording which photo(s) it was read from. "
+        "`file` (single) is still accepted."
+        "\n\n**Accepted formats:** PDF, PNG, JPEG · **Max size:** 25 MB per file"
+        "\n\n**409** if the same file (SHA-256), the same set of photos, or a photo already "
+        "used in another intake was already processed."
         "\n\n`store_id` (optional) is the store the operator says the invoice is for. After "
         "text extraction the document is matched against the store master; the run pauses in "
         "`STORE_CONFIRMATION_REQUIRED` for a person to confirm unless the operator's choice "
@@ -163,7 +170,10 @@ async def resolve_chosen_store(db: AsyncSession, value: str | None) -> uuid.UUID
 )
 async def process_invoice(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(..., description="Invoice file (PDF, PNG, or JPEG)."),
+    file: UploadFile | None = File(default=None, description="One invoice file (PDF, PNG, or JPEG)."),
+    files: list[UploadFile] = File(
+        default=[], description="Several photos of ONE invoice, in top-to-bottom order.",
+    ),
     store_id: str | None = Form(
         default=None,
         description="The Store id the operator chose, if chosen up front. Never a default.",
@@ -172,36 +182,30 @@ async def process_invoice(
     upload_service: UploadService = Depends(get_upload_service),
     pipeline: InvoiceProcessingPipeline = Depends(get_pipeline),
 ) -> APIResponse[ProcessAccepted]:
-    # Checked before the file is touched: a store that does not exist is
+    uploads = ([file] if file is not None else []) + list(files)
+    if not uploads:
+        raise ValidationError(message="Send one `file`, or one or more `files` (photos of one invoice).")
+    # Checked before any file is touched: a store that does not exist is
     # refused outright — nothing is stored, no document row is made.
     chosen = await resolve_chosen_store(db, store_id)
-    upload = await upload_service.handle_upload(file)
 
-    await file.seek(0)
-    contents = await file.read()
+    pages: list[PageUpload] = []
+    for upload_file in uploads:
+        upload = await upload_service.handle_upload(upload_file)
+        await upload_file.seek(0)
+        contents = await upload_file.read()
+        pages.append(PageUpload(
+            filename=upload.filename, mime_type=upload.mime_type,
+            file_size_bytes=upload.file_size_bytes, file_path=upload.file_path,
+            file_hash=upload.file_hash, content=contents,
+        ))
 
-    document = await pipeline.intake(
-        db,
-        filename=upload.filename,
-        mime_type=upload.mime_type,
-        file_size_bytes=upload.file_size_bytes,
-        file_path=upload.file_path,
-        file_hash=upload.file_hash,
-        store_id=chosen,
-    )
-    background_tasks.add_task(
-        _run_pipeline_background,
-        pipeline,
-        document.id,
-        contents,
-        upload.mime_type,
-        upload.filename,
-        chosen,
-    )
+    document = await pipeline.intake_pages(db, pages, store_id=chosen)
+    background_tasks.add_task(_run_pipeline_background, pipeline, document.id, pages, chosen)
     return APIResponse(
         data=ProcessAccepted(
             document_id=document.id,
-            filename=upload.filename,
+            filename=document.filename,
             status=document.status,
             status_url=f"/api/v1/documents/{document.id}",
         )
@@ -237,9 +241,15 @@ async def list_invoices(
     )
     stores = await StoreRepository(db).labels(
         [i.store_id if i else d.store_id for d, i in rows])
+    reviews = await ProductDataProposalRepository(db).by_invoice_ids(
+        [i.id for _, i in rows if i is not None])
+    photo_counts = await DocumentRepository(db).page_counts([d.id for d, _ in rows])
     return PaginatedResponse(
         items=[to_history_row(document, invoice,
-                              stores.get(invoice.store_id if invoice else document.store_id))
+                              stores.get(invoice.store_id if invoice else document.store_id),
+                              review=InvoiceReviewSummary.from_proposals(reviews.get(invoice.id, []))
+                              if invoice else None,
+                              photo_count=photo_counts.get(document.id, 1))
                for document, invoice in rows],
         total=total,
         page=page,
@@ -284,6 +294,8 @@ async def get_invoice(
         CaseMappingRow(**vars(status))
         for status in build_case_mapping_status(invoice, units, reference, pending)
     ]
+    proposals = await ProductDataProposalRepository(db).list(invoice_id=invoice.id, store_id=invoice.store_id)
+    photos = await DocumentRepository(db).pages(document)
 
     data = InvoiceDetailData(
         invoice_id=invoice.id,
@@ -311,6 +323,17 @@ async def get_invoice(
         pdi_export_allowed=pdi_eligibility.allowed,
         pdi_export_requires_confirmation=pdi_eligibility.requires_confirmation,
         pdi_export_blocked_reason=pdi_eligibility.blocked_reason,
+        photos=[DocumentPhoto(
+            page_number=p.page_number, filename=p.filename, mime_type=p.mime_type,
+            file_size_bytes=p.file_size_bytes, source_type=p.source_type,
+            mean_confidence=p.mean_confidence,
+            text_chars=len(p.raw_ocr_text) if p.raw_ocr_text else None,
+        ) for p in photos] if len(photos) > 1 else [],
+        duplicate_review_required=any(
+            item.duplicate_candidate and not item.duplicate_candidate.get("resolution")
+            for item in invoice.items
+        ),
+        review=InvoiceReviewSummary.from_proposals(proposals),
         case_mappings=case_mappings,
         vendor=VendorData.model_validate(invoice.vendor, from_attributes=True)
         if invoice.vendor
@@ -325,6 +348,8 @@ async def get_invoice(
                 unit_deposit=float(item.deposit) if item.deposit is not None else None,
                 line_type=item.line_type,
                 sort_order=item.sort_order,
+                source_pages=item.source_pages or [],
+                duplicate_candidate=item.duplicate_candidate,
                 corrected_fields=item.corrected_fields or [],
             )
             for item in sorted(invoice.items, key=lambda i: i.sort_order)
@@ -351,11 +376,15 @@ async def get_invoice(
     summary="Permanently delete an invoice",
     description=(
         "Deletes the underlying document, which cascades (via existing "
-        "database foreign keys) to the invoice, its line items, and its "
-        "processing logs — no partial state, no orphaned rows. Also "
-        "removes the stored source file on a best-effort basis. This is a "
-        "hard delete with no undo; intended for the development workflow "
-        "of reprocessing the same invoice while refining extraction."
+        "database foreign keys) to the invoice, its line items, its photos "
+        "and its processing logs — no partial state. Also removes the stored "
+        "source file(s) on a best-effort basis. This is a hard delete with no "
+        "undo; intended for the development workflow of reprocessing the same "
+        "invoice while refining extraction."
+        "\n\nWhat deliberately stays: the invoice's proposal rows (immutable "
+        "review history — Data Review shows them with `invoice_deleted`) and any "
+        "master-data mapping an approval wrote. Operational data goes; audit "
+        "history and master data do not."
     ),
     responses={404: {"description": "Invoice not found"}},
 )
@@ -371,7 +400,10 @@ async def delete_invoice(
 
     document = invoice.document
     document_id = document.id
-    file_path = document.file_path
+    file_paths = [document.file_path] + [
+        p.file_path for p in await DocumentRepository(db).pages(document)
+        if p.file_path != document.file_path
+    ]
 
     # Deleting the document cascades to the invoice, its items, and its
     # processing logs at the database level — nothing else to clean up
@@ -380,19 +412,20 @@ async def delete_invoice(
     await DocumentRepository(db).delete(document)
     await db.commit()
 
-    try:
-        await get_storage_service().delete(file_path)
-    except StorageError as exc:
-        # The database is already correctly cleaned up — a leftover file
-        # on disk is not user-visible and not worth failing the request
-        # over, but it's worth knowing about.
-        logger.warning(
-            "invoice_delete_file_cleanup_failed",
-            invoice_id=str(invoice_id),
-            document_id=str(document_id),
-            file_path=file_path,
-            error=str(exc),
-        )
+    for file_path in file_paths:
+        try:
+            await get_storage_service().delete(file_path)
+        except StorageError as exc:
+            # The database is already correctly cleaned up — a leftover file
+            # on disk is not user-visible and not worth failing the request
+            # over, but it's worth knowing about.
+            logger.warning(
+                "invoice_delete_file_cleanup_failed",
+                invoice_id=str(invoice_id),
+                document_id=str(document_id),
+                file_path=file_path,
+                error=str(exc),
+            )
 
     return APIResponse(
         data=InvoiceDeleteResult(invoice_id=invoice_id, document_id=document_id)
@@ -579,3 +612,85 @@ async def correct_line_item(
             pdi_export_blocked_reason=eligibility.blocked_reason,
         )
     )
+
+
+@router.post(
+    "/invoices/{invoice_id}/items/{sort_order}/duplicate-decision",
+    response_model=APIResponse[DuplicateDecisionResult],
+    summary="Decide a possible cross-photo duplicate",
+    description=(
+        "When one invoice was read from overlapping photos and the model could not "
+        "tell whether a row is the same physical row as an earlier one, it kept both "
+        "and flagged the later one; the invoice is REVIEW_REQUIRED until a person "
+        "decides here. 'same_row' keeps the flagged row for audit but types it "
+        "'duplicate' so it leaves the subtotal and the EDI; 'separate_rows' clears "
+        "the flag and both rows stay. Validation then runs again with the pipeline's "
+        "own rules — nothing is re-extracted and no quantity is ever adjusted to make "
+        "totals work."
+    ),
+    responses={404: {"description": "Invoice or line item not found"},
+               422: {"description": "The row carries no duplicate candidate, or was decided"}},
+)
+async def decide_duplicate(
+    invoice_id: uuid.UUID,
+    sort_order: int,
+    body: DuplicateDecision,
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[DuplicateDecisionResult]:
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    item = next((i for i in invoice.items if i.sort_order == sort_order), None)
+    if item is None:
+        raise RecordNotFoundError(
+            message="Line item not found on this invoice.",
+            detail={"invoice_id": str(invoice_id), "sort_order": sort_order},
+        )
+    candidate = dict(item.duplicate_candidate or {})
+    if not candidate or candidate.get("of_sort_order") is None:
+        raise ValidationError(
+            message="This row is not flagged as a possible duplicate.",
+            detail={"invoice_id": str(invoice_id), "sort_order": sort_order},
+        )
+    if candidate.get("resolution"):
+        raise ValidationError(
+            message=(f"This row was already decided as '{candidate['resolution']}' by "
+                     f"{candidate.get('decided_by')}; a decision is not changed here."),
+            detail={"invoice_id": str(invoice_id), "sort_order": sort_order,
+                    "resolution": candidate["resolution"]},
+        )
+
+    candidate.update({
+        "resolution": body.decision,
+        "decided_by": body.decided_by,
+        "decided_at": datetime.now(UTC).isoformat(),
+        "note": body.note,
+    })
+    item.duplicate_candidate = candidate
+    if body.decision == "same_row":
+        item.line_type = "duplicate"
+    await db.flush()
+
+    await ProcessingLogRepository(db).add(
+        document_id=invoice.document_id,
+        stage=PipelineStage.VALIDATION,
+        message=(f"Row {sort_order} decided '{body.decision}' against row "
+                 f"{candidate['of_sort_order']} by {body.decided_by}."),
+        payload={"event": "duplicate_decision", "sort_order": sort_order,
+                 "of_sort_order": candidate["of_sort_order"], "decision": body.decision,
+                 "decided_by": body.decided_by, "note": body.note},
+    )
+
+    invoice = await repository.get_detail(invoice_id)
+    report = await revalidate_invoice(db, invoice)
+    units = await invoice_units_by_item_code(db, invoice)
+    eligibility = pdi_export_eligibility(invoice, units)
+    await db.commit()
+
+    return APIResponse(data=DuplicateDecisionResult(
+        sort_order=sort_order, of_sort_order=candidate["of_sort_order"], decision=body.decision,
+        line_type=item.line_type, status=report.decision.value,
+        failed_checks=len(report.failed_checks), review_reasons=report.review_reasons,
+        pdi_export_allowed=eligibility.allowed, pdi_export_blocked_reason=eligibility.blocked_reason,
+    ))

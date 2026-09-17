@@ -367,7 +367,18 @@ export function DataReviewPage() {
                               {row.source_row !== null ? ` · r${row.source_row}` : ""}
                             </span>
                           ) : row.invoice_id ? (
-                            <span title={row.invoice_id}>invoice {row.invoice_id.slice(0, 8)}…</span>
+                            <span title={row.invoice_id}>
+                              invoice {row.invoice_id.slice(0, 8)}…
+                              {row.invoice_deleted ? (
+                                <span
+                                  className="ml-1 rounded bg-muted px-1 text-[0.65rem] font-medium text-muted-foreground"
+                                  title="The source invoice was deleted. This proposal is immutable history and stays; any mapping its approval wrote stays too."
+                                  data-testid="invoice-deleted"
+                                >
+                                  invoice deleted
+                                </span>
+                              ) : null}
+                            </span>
                           ) : (
                             "—"
                           )}

@@ -193,16 +193,18 @@ class TestPromptV3ColumnDisambiguation:
     prompt edit can't quietly drop them.
     """
 
-    def test_v5_is_active_and_keeps_every_earlier_instruction(self):
-        assert ACTIVE_VERSION == "v5"
-        v3, v4, v5 = (get_prompt(v).system_prompt for v in ("v3", "v4", "v5"))
+    def test_v6_is_active_and_keeps_every_earlier_instruction(self):
+        assert ACTIVE_VERSION == "v6"
+        v3, v4, v5, v6 = (get_prompt(v).system_prompt for v in ("v3", "v4", "v5", "v6"))
         for kept in ("QUANTITY IS NOT PACK SIZE", "WHOLESALE COST IS NOT RETAIL PRICE",
                      "quantity x unit_price ~= line_total", "VENDOR vs CUSTOMER", "Prefer null",
                      "D.PRICE", "U.PRICE", "Step 1b"):
-            assert kept in v3 and kept in v4 and kept in v5, kept
-        assert "NET                     -> AMBIGUOUS" in v5      # v4's correction survives
+            assert kept in v3 and kept in v4 and kept in v5 and kept in v6, kept
+        assert "NET                     -> AMBIGUOUS" in v6      # v4's correction survives
+        assert "## Step 1c" in v6                             # v5's row anchoring survives
         assert get_prompt("v3").system_prompt == v3          # earlier versions are untouched
         assert get_prompt("v4").system_prompt == v4
+        assert get_prompt("v5").system_prompt == v5
 
     def test_teaches_net_vs_gross_price_selection(self):
         system = get_prompt("v3").system_prompt
@@ -273,3 +275,37 @@ class TestLLMFactory:
     def test_unknown_provider_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown LLM provider"):
             get_llm_provider("claude")
+
+
+class TestPromptV6MultiPhoto:
+    """
+    v6 exists because one invoice may arrive as several overlapping
+    photographs. The model gets each photo's OCR text under its own
+    header and must return each physical row once — never merging when
+    it cannot tell an overlap from a legitimately repeated row.
+    """
+
+    def test_overlap_is_reconciled_by_context_not_by_upc_alone(self):
+        system = get_prompt("v6").system_prompt
+        assert "## Step 1d" in system
+        assert "--- PHOTO k of N ---" in system
+        assert "emit them once, with source_pages listing both photos" in system
+        assert "The same UPC on two rows is NOT by itself an overlap" in system
+
+    def test_uncertainty_is_flagged_never_merged(self):
+        from app.schemas.extraction import ExtractedLineItem
+
+        system = get_prompt("v6").system_prompt
+        assert "DO NOT merge them" in system
+        assert "possible_duplicate_of" in system
+        fields = ExtractedLineItem.model_fields
+        assert fields["source_pages"].default_factory is not None
+        assert fields["possible_duplicate_of"].default is None
+        assert "Never merge when unsure" in fields["possible_duplicate_of"].description
+
+    def test_single_file_text_is_unchanged_from_v5(self):
+        from app.prompts.invoice_extraction import _STEP_1D
+
+        v5 = get_prompt("v5").system_prompt
+        v6 = get_prompt("v6").system_prompt
+        assert v6.replace(_STEP_1D, "## Step 2 — Extract each line\n") == v5

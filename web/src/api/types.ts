@@ -152,10 +152,76 @@ export interface DocumentStatusData {
   /** What identification found in the text; empty when nothing matched. */
   store_candidates: StoreCandidate[];
   invoice_id: string | null;
+  /** The photos of a multi-photo intake, in order; empty for one file. */
+  photos: DocumentPhoto[];
   error: { stage?: PipelineStage; message?: string; error_code?: string } | null;
   stages: StageEntry[];
   created_at: string;
   updated_at: string;
+}
+
+export interface DocumentPhoto {
+  page_number: number;
+  filename: string;
+  mime_type: string;
+  file_size_bytes: number;
+  source_type: string | null;
+  mean_confidence: number | null;
+  text_chars: number | null;
+}
+
+export interface DuplicateCandidate {
+  of_sort_order: number;
+  reason: string | null;
+  resolution: "same_row" | "separate_rows" | null;
+  decided_by?: string | null;
+  decided_at?: string | null;
+  note?: string | null;
+}
+
+export type InvoiceReviewStatus = "NONE" | "PENDING" | "APPROVED" | "REJECTED";
+
+export interface InvoiceReviewProposal {
+  id: string;
+  entity_key: string;
+  field: string;
+  current_value: unknown | null;
+  proposed_value: unknown;
+  status: ProposalStatus;
+  source: ProposalSource;
+  proposed_by: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  revised_from: string | null;
+}
+
+/** This invoice's master-data review, from its proposal rows. Separate from
+ * the store's identity status and from the validation status. */
+export interface InvoiceReviewSummary {
+  status: InvoiceReviewStatus;
+  pending: number;
+  approved: number;
+  rejected: number;
+  proposals: InvoiceReviewProposal[];
+}
+
+export interface DuplicateDecision {
+  decision: "same_row" | "separate_rows";
+  decided_by: string;
+  note?: string | null;
+}
+
+export interface DuplicateDecisionResult {
+  sort_order: number;
+  of_sort_order: number;
+  decision: string;
+  line_type: string;
+  status: string;
+  failed_checks: number;
+  review_reasons: string[];
+  pdi_export_allowed: boolean;
+  pdi_export_blocked_reason: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +242,14 @@ export interface LineItem {
    * includes it. */
   unit_deposit: number | null;
   sort_order: number;
+  /** "product", "charge", or "duplicate" (a row a reviewer resolved as seen twice). */
+  line_type: string;
+  /** Photo numbers (1-based) this row was read from; empty for a single file. */
+  source_pages: number[];
+  /** Set when the model could not tell whether this row is the same physical
+   * row as an earlier one (overlapping photos). Unresolved until a reviewer
+   * decides; the invoice is REVIEW_REQUIRED meanwhile. */
+  duplicate_candidate: DuplicateCandidate | null;
   /** Transaction fields on this line replaced by a person. Empty means
    * every value came from extraction. */
   corrected_fields: string[];
@@ -365,6 +439,11 @@ export interface InvoiceDetail {
   pdi_export_blocked_reason: string | null;
   /** Units-per-case state per product. A row with mapped=false is why
    * pdi_export_allowed is false; confirming it unblocks the download. */
+  /** The photos of a multi-photo intake, in order; empty for one file. */
+  photos: DocumentPhoto[];
+  /** An unresolved cross-photo duplicate candidate blocks this invoice. */
+  duplicate_review_required: boolean;
+  review: InvoiceReviewSummary;
   case_mappings: CaseMappingRow[];
 
   vendor: Vendor | null;
@@ -415,6 +494,9 @@ export interface ProposalRow {
   source_sheet: string | null;
   source_row: number | null;
   invoice_id: string | null;
+  /** The invoice this was raised on has since been deleted; the proposal
+   * is immutable history and stays. */
+  invoice_deleted: boolean;
   proposed_by: string;
   status: ProposalStatus;
   reviewed_by: string | null;
@@ -526,6 +608,8 @@ export interface HistoryRow {
   currency: string | null;
   composite_confidence: number | null;
   source_type: string | null;
+  photo_count: number;
+  review: InvoiceReviewSummary | null;
   created_at: string;
 }
 

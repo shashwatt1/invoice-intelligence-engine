@@ -12,11 +12,16 @@ from app.models.document import Document
 from app.models.invoice import Invoice
 from app.models.processing_log import ProcessingLog
 from app.models.store import Store
-from app.schemas.processing import HistoryRow, StageEntry, StoreRef
+from app.schemas.processing import HistoryRow, InvoiceReviewSummary, StageEntry, StoreRef
 
 
-def to_history_row(document: Document, invoice: Invoice | None, store: Store | None = None) -> HistoryRow:
+def to_history_row(
+    document: Document, invoice: Invoice | None, store: Store | None = None,
+    *, review: InvoiceReviewSummary | None = None, photo_count: int = 1,
+) -> HistoryRow:
     return HistoryRow(
+        review=review,
+        photo_count=photo_count,
         document_id=document.id,
         invoice_id=invoice.id if invoice else None,
         filename=document.filename,

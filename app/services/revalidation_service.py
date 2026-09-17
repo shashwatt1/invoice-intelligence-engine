@@ -49,6 +49,7 @@ from app.models.processing_log import LogStatus, PipelineStage
 from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.schemas.normalized import NormalizedInvoice, NormalizedLineItem
 from app.services.validation.checks import (
+    check_cross_photo_duplicates,
     check_date_order,
     check_grand_total_math,
     check_line_item_math,
@@ -84,6 +85,7 @@ def normalized_from_persisted(invoice: Invoice) -> NormalizedInvoice:
         grand_total=invoice.grand_total,
         line_items=tuple(
             NormalizedLineItem(
+                line_type=item.line_type or "product",
                 description=item.description,
                 product_code=item.product_sku,
                 pack_size=item.pack_size,
@@ -94,6 +96,14 @@ def normalized_from_persisted(invoice: Invoice) -> NormalizedInvoice:
                 line_total=item.line_total,
                 tax_rate=item.tax_rate,
                 sort_order=item.sort_order,
+                source_pages=tuple(item.source_pages or ()),
+                # a resolved candidate is no longer a question for validation
+                possible_duplicate_of=(
+                    (item.duplicate_candidate or {}).get("of_sort_order")
+                    if item.duplicate_candidate and not (item.duplicate_candidate or {}).get("resolution")
+                    else None
+                ),
+                duplicate_reason=(item.duplicate_candidate or {}).get("reason"),
             )
             for item in sorted(invoice.items, key=lambda i: i.sort_order)
         ),
@@ -130,6 +140,7 @@ def build_report(
     checks += check_grand_total_math(normalized, tolerance)
     checks += check_tax_consistency(normalized, tolerance)
     checks += check_date_order(normalized)
+    checks += check_cross_photo_duplicates(normalized)
 
     confidence = compute_confidence(ocr_confidence, ai_confidence, checks)
     failed = [c for c in checks if c.status is CheckStatus.FAILED]

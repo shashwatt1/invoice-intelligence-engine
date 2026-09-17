@@ -22,10 +22,18 @@ Design decisions:
   complete validation report, persistence identifiers).
 - Stage services are injectable for tests; defaults resolve lazily so
   constructing the pipeline requires no OCR/LLM credentials.
+- One invoice may arrive as several overlapping photographs. Each photo
+  is a DocumentPage and is OCR'd on its own; the texts are combined into
+  one page-separated context (photo_context.combine_photos) and the
+  model extracts ONE invoice from it, saying which photo(s) each row was
+  read from. A single file is a one-page intake and reads exactly as
+  before.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -41,12 +49,14 @@ from app.core.exceptions import (
 )
 from app.core.logging import get_logger
 from app.models.document import Document, DocumentStatus
+from app.models.document_page import DocumentPage
 from app.models.processing_log import LogStatus, PipelineStage
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.services.extraction_service import ExtractionService
 from app.services.ocr.base import OCRResult
 from app.services.persistence_service import PersistenceService
+from app.services.photo_context import PhotoOCR, combine_photos
 from app.services.store_identification_service import candidate_ids, identify_store
 from app.services.structuring_service import StructuringService
 from app.services.validation.report import ProcessingDecision
@@ -71,6 +81,30 @@ class PipelineResult:
     validation_report: dict[str, Any] = field(default_factory=dict)
     awaiting_store_confirmation: bool = False
     llm_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PageUpload:
+    """One stored photo/file of an intake, in operator order."""
+
+    filename: str
+    mime_type: str
+    file_size_bytes: int
+    file_path: str
+    file_hash: str
+    content: bytes
+
+
+def intake_hash(pages: list[PageUpload]) -> str:
+    """
+    The Document's duplicate-check hash: the file's own hash for one file
+    (unchanged from before), the hash of the ordered page hashes for
+    several — so re-uploading the same photos in the same order is a
+    duplicate, and the same photos in another order is not silently one.
+    """
+    if len(pages) == 1:
+        return pages[0].file_hash
+    return hashlib.sha256("\n".join(p.file_hash for p in pages).encode()).hexdigest()
 
 
 class InvoiceProcessingPipeline:
@@ -139,23 +173,10 @@ class InvoiceProcessingPipeline:
             OCRExtractionError / AIStructuringError / DatabaseError:
                 Stage failures, after the document is marked FAILED.
         """
-        document = await self.intake(
-            session,
-            filename=filename,
-            mime_type=mime_type,
-            file_size_bytes=file_size_bytes,
-            file_path=file_path,
-            file_hash=file_hash,
-            store_id=store_id,
-        )
-        return await self.run_stages(
-            session,
-            document,
-            file_content=file_content,
-            mime_type=mime_type,
-            filename=filename,
-            store_id=store_id,
-        )
+        page = PageUpload(filename=filename, mime_type=mime_type, file_size_bytes=file_size_bytes,
+                          file_path=file_path, file_hash=file_hash, content=file_content)
+        document = await self.intake_pages(session, [page], store_id=store_id)
+        return await self.run_stages_pages(session, document, [page], store_id=store_id)
 
     async def intake(
         self,
@@ -168,51 +189,100 @@ class InvoiceProcessingPipeline:
         file_hash: str,
         store_id: uuid.UUID | None = None,
     ) -> Document:
-        """
-        Synchronous intake: duplicate check + Document(UPLOADED) + UPLOAD log.
+        """Single-file intake — one page. See intake_pages()."""
+        page = PageUpload(filename=filename, mime_type=mime_type, file_size_bytes=file_size_bytes,
+                          file_path=file_path, file_hash=file_hash, content=b"")
+        return await self.intake_pages(session, [page], store_id=store_id)
 
-        Split from run_stages() so the API can return 202 with a document_id
-        immediately and execute the remaining stages in the background while
-        clients poll the document status.
+    async def intake_pages(
+        self,
+        session: AsyncSession,
+        pages: list[PageUpload],
+        *,
+        store_id: uuid.UUID | None = None,
+    ) -> Document:
+        """
+        Synchronous intake: duplicate check + Document(UPLOADED) + one
+        DocumentPage per photo + UPLOAD log.
+
+        Split from run_stages_pages() so the API can return 202 with a
+        document_id immediately and execute the remaining stages in the
+        background while clients poll the document status.
+
+        The Document's own filename/path/hash are the first photo's (one
+        file: exactly as before) and the combined intake hash; every photo
+        also keeps its own row so a photo already used in another intake
+        is refused.
 
         Raises:
-            DuplicateDocumentError: Same content hash already processed.
+            DuplicateDocumentError: Same content already processed.
         """
+        if not pages:
+            raise ValueError("An intake needs at least one file.")
         documents = DocumentRepository(session)
         logs = ProcessingLogRepository(session)
 
-        existing = await documents.get_by_hash(file_hash)
+        combined_hash = intake_hash(pages)
+        existing = await documents.get_by_hash(combined_hash)
         if existing is not None:
             raise DuplicateDocumentError(
                 detail={
                     "existing_document_id": str(existing.id),
                     "existing_status": existing.status,
-                    "file_hash": file_hash,
+                    "file_hash": combined_hash,
                 }
             )
+        for page in pages:
+            used = await documents.page_by_hash(page.file_hash)
+            if used is not None:
+                raise DuplicateDocumentError(
+                    message=f"'{page.filename}' is already photo {used.page_number} of another intake.",
+                    detail={
+                        "existing_document_id": str(used.document_id),
+                        "existing_page_number": used.page_number,
+                        "filename": page.filename,
+                        "file_hash": page.file_hash,
+                    },
+                )
 
+        first = pages[0]
         document = await documents.create(
-            filename=filename,
-            mime_type=mime_type,
-            file_size_bytes=file_size_bytes,
-            file_path=file_path,
-            file_hash=file_hash,
+            filename=first.filename if len(pages) == 1 else f"{first.filename} (+{len(pages) - 1} more)",
+            mime_type=first.mime_type,
+            file_size_bytes=sum(p.file_size_bytes for p in pages),
+            file_path=first.file_path,
+            file_hash=combined_hash,
         )
         document.store_id = store_id
+        for number, page in enumerate(pages, start=1):
+            session.add(DocumentPage(
+                document_id=document.id, page_number=number, filename=page.filename,
+                mime_type=page.mime_type, file_size_bytes=page.file_size_bytes,
+                file_path=page.file_path, file_hash=page.file_hash,
+            ))
+        await session.flush()
         await logs.add(
             document_id=document.id,
             stage=PipelineStage.UPLOAD,
-            message="Document received and stored.",
+            message=(
+                "Document received and stored." if len(pages) == 1
+                else f"{len(pages)} photos received and stored as one intake."
+            ),
             payload={
-                "filename": filename,
-                "mime_type": mime_type,
-                "file_size_bytes": file_size_bytes,
-                "file_hash": file_hash,
+                "filename": document.filename,
+                "mime_type": first.mime_type,
+                "file_size_bytes": document.file_size_bytes,
+                "file_hash": combined_hash,
+                "page_count": len(pages),
+                "pages": [{"page_number": i, "filename": p.filename, "file_hash": p.file_hash,
+                           "file_size_bytes": p.file_size_bytes}
+                          for i, p in enumerate(pages, start=1)],
                 "store_id": str(store_id) if store_id else None,
             },
         )
         await session.commit()
-        logger.info("pipeline_document_created", document_id=str(document.id), filename=filename,
+        logger.info("pipeline_document_created", document_id=str(document.id),
+                    filename=document.filename, page_count=len(pages),
                     store_id=str(store_id) if store_id else None)
         return document
 
@@ -226,10 +296,24 @@ class InvoiceProcessingPipeline:
         filename: str,
         store_id: uuid.UUID | None = None,
     ) -> PipelineResult:
+        """Single-file run. See run_stages_pages()."""
+        page = PageUpload(filename=filename, mime_type=mime_type, file_size_bytes=len(file_content),
+                          file_path=document.file_path, file_hash=document.file_hash,
+                          content=file_content)
+        return await self.run_stages_pages(session, document, [page], store_id=store_id)
+
+    async def run_stages_pages(
+        self,
+        session: AsyncSession,
+        document: Document,
+        pages: list[PageUpload],
+        *,
+        store_id: uuid.UUID | None = None,
+    ) -> PipelineResult:
         """
-        Run extraction, then store identification; continue through
-        structuring → validation → persistence only once the store is
-        settled. See process() for the failure contract.
+        Run extraction on every photo, combine, then store identification;
+        continue through structuring → validation → persistence only once
+        the store is settled. See process() for the failure contract.
 
         The store is settled when the operator chose one AND the document
         does not name a different one. Otherwise the run pauses in
@@ -240,11 +324,13 @@ class InvoiceProcessingPipeline:
         documents = DocumentRepository(session)
         logs = ProcessingLogRepository(session)
 
-        # ---- Text extraction ----------------------------------------------
+        # ---- Text extraction, one photo at a time, in parallel ---------------
         await documents.set_status(document, DocumentStatus.OCR_IN_PROGRESS)
         await session.commit()
         try:
-            ocr_result = await self.extraction.extract_text(file_content, mime_type, filename)
+            results = await asyncio.gather(*(
+                self.extraction.extract_text(p.content, p.mime_type, p.filename) for p in pages
+            ))
         except InvoiceBaseException as exc:
             await self._fail(session, document, PipelineStage.TEXT_EXTRACTION, exc)
             raise
@@ -258,18 +344,40 @@ class InvoiceProcessingPipeline:
             await self._fail(session, document, PipelineStage.TEXT_EXTRACTION, wrapped)
             raise wrapped from exc
 
+        photos = [PhotoOCR(page_number=i, filename=p.filename, result=r)
+                  for i, (p, r) in enumerate(zip(pages, results, strict=True), start=1)]
+        page_rows = {row.page_number: row for row in await documents.pages(document)}
+        for photo in photos:
+            row = page_rows.get(photo.page_number)
+            if row is not None:
+                row.raw_ocr_text = photo.result.full_text
+                row.source_type = photo.result.source_type
+                row.mean_confidence = round(photo.result.mean_confidence, 4)
+                row.ocr_duration_ms = photo.result.duration_ms
+        ocr_result = combine_photos(photos)
+
         await documents.store_extraction(
             document, raw_ocr_text=ocr_result.full_text, source_type=ocr_result.source_type
         )
         await logs.add(
             document_id=document.id,
             stage=PipelineStage.TEXT_EXTRACTION,
-            message=f"Text extracted via {ocr_result.source_type}.",
+            message=(
+                f"Text extracted via {ocr_result.source_type}." if len(photos) == 1
+                else f"Text extracted from {len(photos)} photos via {ocr_result.source_type}; combined."
+            ),
             payload={
                 "source_type": ocr_result.source_type,
                 "page_count": ocr_result.page_count,
+                "photo_count": len(photos),
                 "mean_confidence": round(ocr_result.mean_confidence, 4),
                 "text_chars": len(ocr_result.full_text),
+                "photos": [{"page_number": p.page_number, "filename": p.filename,
+                            "source_type": p.result.source_type,
+                            "mean_confidence": round(p.result.mean_confidence, 4),
+                            "text_chars": len(p.result.full_text),
+                            "duration_ms": p.result.duration_ms}
+                           for p in photos],
             },
             duration_ms=ocr_result.duration_ms,
         )
@@ -281,7 +389,7 @@ class InvoiceProcessingPipeline:
             return self._paused(document, ocr_result.source_type)
 
         return await self._run_from_structuring(
-            session, document, ocr_result=ocr_result, filename=filename, store_id=settled
+            session, document, ocr_result=ocr_result, filename=document.filename, store_id=settled
         )
 
     async def resume_after_store_confirmation(

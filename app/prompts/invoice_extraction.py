@@ -435,6 +435,44 @@ def _derive_v5(base: str) -> str:
 _SYSTEM_PROMPT_V5 = _derive_v5(_SYSTEM_PROMPT_V4)
 
 
+# v6 — overlapping photographs of one invoice. A person photographing a
+# long invoice takes several shots that overlap (photo 1: rows 1-18,
+# photo 2: rows 15-25, photo 3: rows 22-30). Each photo is OCR'd on its
+# own and the texts arrive as '--- PHOTO k of N ---' sections. The model
+# must return each PHYSICAL row once, say which photos it saw the row in,
+# and — when it cannot tell an overlap from a legitimate repeated row —
+# keep both and flag them rather than merge. Single-file text carries no
+# photo sections and reads exactly as v5.
+_STEP_1D = """## Step 1d — Several photographs of ONE invoice
+
+When the text is divided into sections headed '--- PHOTO k of N ---', the sections are overlapping photographs of the SAME invoice, in top-to-bottom order. A long invoice is photographed in pieces and the pieces overlap, so the rows at the bottom of one photo are usually the rows at the top of the next. Return ONE invoice with each PHYSICAL row exactly once:
+
+  1. Find the overlap between consecutive photos: a run of rows at the end of photo k that reappears, in the same order and with the same UPC, name, quantity, prices and line total, at the start of photo k+1. Those are the same rows seen twice — emit them once, with source_pages listing both photos.
+  2. The same UPC on two rows is NOT by itself an overlap: an invoice can legitimately list a product twice (two case sizes, a re-delivery, a shorted row and a delivered row). Rows that differ in quantity, price, line total or package, or that sit in different neighbourhoods of rows, are separate rows — keep both, each with its own source_pages.
+  3. If you cannot tell whether two rows are one physical row seen twice or two rows, DO NOT merge them. Emit both, and on the later one set possible_duplicate_of to the index of the earlier row and duplicate_reason to what agrees and what differs. A person will decide.
+  4. Header and totals may appear in more than one photo; report each figure once. The row count N in Step 1c is the count of DISTINCT physical rows.
+  5. Set source_pages on every line item: the photo number(s) the row was read from.
+
+## Step 2 — Extract each line
+"""
+
+_V6_EDITS = (
+    ("## Step 2 — Extract each line\n", _STEP_1D),
+)
+
+
+def _derive_v6(base: str) -> str:
+    text = base
+    for old, new in _V6_EDITS:
+        if old not in text:
+            raise RuntimeError("v6 derivation: expected v5 passage not found; v5 text changed?")
+        text = text.replace(old, new, 1)
+    return text
+
+
+_SYSTEM_PROMPT_V6 = _derive_v6(_SYSTEM_PROMPT_V5)
+
+
 _REGISTRY: dict[str, PromptTemplate] = {
     "v1": PromptTemplate(
         version="v1",
@@ -461,9 +499,14 @@ _REGISTRY: dict[str, PromptTemplate] = {
         system_prompt=_SYSTEM_PROMPT_V5,
         build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
     ),
+    "v6": PromptTemplate(
+        version="v6",
+        system_prompt=_SYSTEM_PROMPT_V6,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
 }
 
-ACTIVE_VERSION = "v5"
+ACTIVE_VERSION = "v6"
 
 
 def get_prompt(version: str | None = None) -> PromptTemplate:

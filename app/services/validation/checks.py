@@ -356,3 +356,37 @@ def check_date_order(invoice: NormalizedInvoice) -> list[CheckResult]:
             actual=invoice.due_date.isoformat(),
         )
     ]
+
+
+def check_cross_photo_duplicates(invoice: NormalizedInvoice) -> list[CheckResult]:
+    """
+    Unresolved cross-photo duplicate candidates block the invoice.
+
+    When one invoice is read from several overlapping photographs, the
+    model returns each physical row once — except when it cannot tell an
+    overlap from a legitimately repeated row, in which case it keeps both
+    and flags the later one. Nothing here merges or drops a row: a
+    flagged pair is a decision for a person, and until it is made the
+    invoice is REVIEW_REQUIRED. Deterministic code never guesses which
+    of two rows is real.
+    """
+    flagged = [item for item in invoice.line_items if item.possible_duplicate_of is not None]
+    if not flagged:
+        return [CheckResult(name="CROSS_PHOTO_DUPLICATES", status=CheckStatus.PASSED)]
+    results = []
+    for item in flagged:
+        other = item.possible_duplicate_of
+        results.append(CheckResult(
+            name="CROSS_PHOTO_DUPLICATES",
+            status=CheckStatus.FAILED,
+            field=f"line_items[{item.sort_order}]",
+            message=(
+                f"Row {item.sort_order} may be the same physical row as row {other} "
+                f"(overlapping photos {', '.join(map(str, item.source_pages)) or '?'}): "
+                f"{item.duplicate_reason or 'the model could not decide'}. "
+                "A reviewer must decide before export."
+            ),
+            expected=f"one decision for rows {other} and {item.sort_order}",
+            actual="unresolved",
+        ))
+    return results

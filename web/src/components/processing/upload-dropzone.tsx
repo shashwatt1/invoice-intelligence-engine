@@ -1,5 +1,5 @@
-import { FileText, UploadCloud, X } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, FileText, ImagePlus, UploadCloud, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -15,15 +15,46 @@ function formatSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+function sameFile(a: File, b: File): boolean {
+  return a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
+}
+
+function Thumbnail({ file }: { file: File }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file.type.startsWith("image/")) return;
+    const next = URL.createObjectURL(file);
+    setUrl(next);
+    return () => URL.revokeObjectURL(next);
+  }, [file]);
+  return (
+    <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-accent">
+      {url ? (
+        <img src={url} alt="" className="size-full object-cover" />
+      ) : (
+        <FileText className="size-5 text-accent-foreground" />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The files of ONE invoice, in top-to-bottom order.
+ *
+ * A long invoice is photographed in overlapping pieces; the operator adds
+ * every photo here, in order, and the backend reads them as one intake —
+ * one OCR context, one extraction, one invoice. Nothing has to be cropped
+ * or trimmed to avoid overlap. A single PDF or photo is simply a list of
+ * one. Order matters (it is the photo number the extraction reports), so
+ * rows can be moved; a photo can be removed until processing starts.
+ */
 export function UploadDropzone({
-  file,
-  onFileSelected,
-  onClear,
+  files,
+  onFilesChange,
   disabled,
 }: {
-  file: File | null;
-  onFileSelected: (file: File) => void;
-  onClear: () => void;
+  files: File[];
+  onFilesChange: (files: File[]) => void;
   disabled?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -31,28 +62,50 @@ export function UploadDropzone({
   const [rejection, setRejection] = useState<string | null>(null);
 
   const accept = useCallback(
-    (candidate: File) => {
-      if (!ACCEPTED_TYPES.includes(candidate.type)) {
-        setRejection(`"${candidate.name}" is not a PDF, PNG, or JPEG.`);
-        return;
+    (candidates: File[]) => {
+      const problems: string[] = [];
+      const accepted: File[] = [];
+      for (const candidate of candidates) {
+        if (!ACCEPTED_TYPES.includes(candidate.type)) {
+          problems.push(`"${candidate.name}" is not a PDF, PNG, or JPEG.`);
+        } else if (candidate.size > MAX_SIZE_MB * 1024 * 1024) {
+          problems.push(`"${candidate.name}" exceeds the ${MAX_SIZE_MB} MB limit.`);
+        } else if (files.some((existing) => sameFile(existing, candidate))) {
+          problems.push(`"${candidate.name}" is already in the list.`);
+        } else {
+          accepted.push(candidate);
+        }
       }
-      if (candidate.size > MAX_SIZE_MB * 1024 * 1024) {
-        setRejection(`"${candidate.name}" exceeds the ${MAX_SIZE_MB} MB limit.`);
-        return;
-      }
-      setRejection(null);
-      onFileSelected(candidate);
+      setRejection(problems.length ? problems.join(" ") : null);
+      if (accepted.length) onFilesChange([...files, ...accepted]);
     },
-    [onFileSelected],
+    [files, onFilesChange],
   );
 
   const handleDrop = (event: DragEvent) => {
     event.preventDefault();
     setIsDragging(false);
     if (disabled) return;
-    const dropped = event.dataTransfer.files?.[0];
-    if (dropped) accept(dropped);
+    accept(Array.from(event.dataTransfer.files ?? []));
   };
+
+  const move = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= files.length) return;
+    const next = [...files];
+    [next[index], next[target]] = [next[target], next[index]];
+    onFilesChange(next);
+  };
+
+  const remove = (index: number) => onFilesChange(files.filter((_, i) => i !== index));
+
+  const dropzoneClass = cn(
+    "flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-card text-center transition-all",
+    isDragging
+      ? "border-primary bg-accent/60 scale-[1.01]"
+      : "border-border hover:border-primary/50 hover:bg-secondary/40",
+    disabled && "pointer-events-none opacity-60",
+  );
 
   return (
     <div>
@@ -60,30 +113,95 @@ export function UploadDropzone({
         ref={inputRef}
         type="file"
         accept={ACCEPT_ATTR}
+        multiple
         className="hidden"
+        data-testid="file-input"
         onChange={(event) => {
-          const chosen = event.target.files?.[0];
-          if (chosen) accept(chosen);
+          accept(Array.from(event.target.files ?? []));
           event.target.value = "";
         }}
       />
 
-      {file ? (
-        <div className="flex items-center gap-3 rounded-xl border bg-card p-4">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-accent">
-            <FileText className="size-5 text-accent-foreground" />
+      {files.length > 0 ? (
+        <div className="space-y-2" data-testid="photo-list">
+          <div className="flex items-center justify-between">
+            <span className="text-[0.78rem] font-medium">
+              Invoice {files.length === 1 ? "file" : `photos · ${files.length}`}
+            </span>
+            {files.length > 1 ? (
+              <span className="text-[0.7rem] text-muted-foreground">
+                Top to bottom, in this order — overlap between photos is fine
+              </span>
+            ) : null}
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[0.85rem] font-semibold">{file.name}</div>
-            <div className="text-[0.75rem] text-muted-foreground">
-              {formatSize(file.size)} · {file.type.replace("application/", "").toUpperCase()}
-            </div>
-          </div>
-          {!disabled && (
-            <Button variant="ghost" size="icon-sm" onClick={onClear} aria-label="Remove file">
-              <X className="size-4" />
-            </Button>
-          )}
+          <ol className="space-y-1.5">
+            {files.map((file, index) => (
+              <li
+                key={`${file.name}-${file.size}-${file.lastModified}`}
+                className="flex items-center gap-3 rounded-xl border bg-card p-2.5"
+                data-testid="photo-row"
+              >
+                <span className="w-5 text-center font-mono text-[0.78rem] font-semibold text-muted-foreground">
+                  {index + 1}
+                </span>
+                <Thumbnail file={file} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[0.85rem] font-semibold">{file.name}</div>
+                  <div className="text-[0.75rem] text-muted-foreground">
+                    {formatSize(file.size)} · {file.type.replace("application/", "").replace("image/", "").toUpperCase()}
+                  </div>
+                </div>
+                {!disabled ? (
+                  <div className="flex items-center gap-0.5">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Move ${file.name} up`}
+                      disabled={index === 0}
+                      onClick={() => move(index, -1)}
+                    >
+                      <ArrowUp className="size-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Move ${file.name} down`}
+                      disabled={index === files.length - 1}
+                      onClick={() => move(index, 1)}
+                    >
+                      <ArrowDown className="size-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Remove ${file.name}`}
+                      onClick={() => remove(index)}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+          {!disabled ? (
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+              className={cn(dropzoneClass, "px-4 py-3")}
+              data-testid="add-photo"
+            >
+              <span className="inline-flex items-center gap-2 text-[0.82rem] font-medium">
+                <ImagePlus className="size-4" /> Add {files.length === 1 ? "another photo of this invoice" : "photo"}
+              </span>
+            </button>
+          ) : null}
         </div>
       ) : (
         <button
@@ -96,13 +214,8 @@ export function UploadDropzone({
           }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
-          className={cn(
-            "flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-card px-6 py-14 text-center transition-all",
-            isDragging
-              ? "border-primary bg-accent/60 scale-[1.01]"
-              : "border-border hover:border-primary/50 hover:bg-secondary/40",
-            disabled && "pointer-events-none opacity-60",
-          )}
+          className={cn(dropzoneClass, "px-6 py-14")}
+          data-testid="dropzone"
         >
           <div
             className={cn(
@@ -114,11 +227,11 @@ export function UploadDropzone({
           </div>
           <div>
             <div className="text-[0.9rem] font-semibold">
-              {isDragging ? "Drop to upload" : "Drag & drop an invoice"}
+              {isDragging ? "Drop to upload" : "Drag & drop an invoice — one file, or several photos of it"}
             </div>
             <div className="mt-0.5 text-[0.78rem] text-muted-foreground">
               or <span className="font-medium text-primary">browse files</span> · up to{" "}
-              {MAX_SIZE_MB} MB
+              {MAX_SIZE_MB} MB each · overlapping photos of a long invoice are reconciled into one
             </div>
           </div>
           <div className="flex gap-1.5">

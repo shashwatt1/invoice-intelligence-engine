@@ -202,6 +202,28 @@ class ExtractedLineItem(BaseModel):
         default=None,
         description="Your confidence that this row was read correctly, 0.0 to 1.0.",
     )
+    source_pages: list[int] = Field(
+        default_factory=list,
+        description=(
+            "When the text is split into '--- PHOTO k of N ---' sections: the photo "
+            "numbers (1-based) this row appears in — one number when it is in one "
+            "photo, two or more when the same physical row is captured in overlapping "
+            "photos. Empty when the text has no photo sections."
+        ),
+    )
+    possible_duplicate_of: int | None = Field(
+        default=None, ge=0,
+        description=(
+            "Only for multi-photo text. The 0-based index (in line_items) of an EARLIER "
+            "row that this row MAY be the same physical invoice row as, when you cannot "
+            "tell an overlap from a legitimate second row. Leave null when you are "
+            "confident either way. Never merge when unsure — emit both rows and set this."
+        ),
+    )
+    duplicate_reason: str | None = Field(
+        default=None,
+        description="Why possible_duplicate_of could not be decided (what agrees, what differs).",
+    )
 
 
 class ExtractedInvoice(BaseModel):

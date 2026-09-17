@@ -18,6 +18,8 @@ import type {
   Paginated,
   BulkDecisionResult,
   BulkProposalDecision,
+  DuplicateDecision,
+  DuplicateDecisionResult,
   ProcessAccepted,
   ProductHistory,
   ProposalDecision,
@@ -31,11 +33,13 @@ import type {
   StoreIdentityUpdate,
 } from "./types";
 
-/** `storeId` is the store the operator chose up front, if any. Without it
+/** `files` are the photos of ONE invoice in top-to-bottom order (a single
+ * PDF or photo is a list of one); the backend reads them as one intake.
+ * `storeId` is the store the operator chose up front, if any. Without it
  * the run pauses after text extraction for a person to confirm the store. */
-export async function processInvoice(file: File, storeId: string | null): Promise<ProcessAccepted> {
+export async function processInvoice(files: File[], storeId: string | null): Promise<ProcessAccepted> {
   const form = new FormData();
-  form.append("file", file);
+  for (const file of files) form.append("files", file);
   if (storeId) form.append("store_id", storeId);
   const { data } = await apiClient.post<ApiEnvelope<ProcessAccepted>>(
     "/invoices/process",
@@ -224,6 +228,22 @@ export async function confirmDocumentStore(
   const { data } = await apiClient.post<ApiEnvelope<DocumentStatusData>>(
     `/documents/${documentId}/confirm-store`,
     { store_id: storeId, confirmed_by: confirmedBy },
+  );
+  return data.data!;
+}
+
+/** Decide whether a flagged row is an earlier row seen again in an
+ * overlapping photo ('same_row': kept for audit, typed duplicate, out of
+ * totals and EDI) or a legitimate second row ('separate_rows'). Validation
+ * re-runs; no quantity is ever changed. */
+export async function decideDuplicate(
+  invoiceId: string,
+  sortOrder: number,
+  decision: DuplicateDecision,
+): Promise<DuplicateDecisionResult> {
+  const { data } = await apiClient.post<ApiEnvelope<DuplicateDecisionResult>>(
+    `/invoices/${invoiceId}/items/${sortOrder}/duplicate-decision`,
+    decision,
   );
   return data.data!;
 }

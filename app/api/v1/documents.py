@@ -29,6 +29,7 @@ from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse
 from app.schemas.processing import (
+    DocumentPhoto,
     DocumentStatusData,
     StoreCandidateOut,
     StoreConfirmation,
@@ -79,7 +80,14 @@ async def get_document_status(
 async def _status_data(db, document, logs, invoice, failure, include_payloads) -> DocumentStatusData:
     store_id = invoice.store_id if invoice else document.store_id
     store = await StoreRepository(db).get(store_id) if store_id else None
+    photos = await DocumentRepository(db).pages(document)
     return DocumentStatusData(
+        photos=[DocumentPhoto(
+            page_number=p.page_number, filename=p.filename, mime_type=p.mime_type,
+            file_size_bytes=p.file_size_bytes, source_type=p.source_type,
+            mean_confidence=p.mean_confidence,
+            text_chars=len(p.raw_ocr_text) if p.raw_ocr_text else None,
+        ) for p in photos] if len(photos) > 1 else [],
         document_id=document.id,
         filename=document.filename,
         status=document.status,

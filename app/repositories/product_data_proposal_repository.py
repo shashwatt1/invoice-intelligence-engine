@@ -68,6 +68,22 @@ class ProductDataProposalRepository:
         )
         return list(result.scalars())
 
+    async def by_invoice_ids(
+        self, invoice_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, list[ProductDataProposal]]:
+        """Every proposal raised on each of these invoices, oldest first."""
+        if not invoice_ids:
+            return {}
+        result = await self._session.execute(
+            select(ProductDataProposal)
+            .where(ProductDataProposal.invoice_id.in_(list(invoice_ids)))
+            .order_by(ProductDataProposal.created_at, ProductDataProposal.id)
+        )
+        grouped: dict[uuid.UUID, list[ProductDataProposal]] = {}
+        for row in result.scalars():
+            grouped.setdefault(row.invoice_id, []).append(row)
+        return grouped
+
     async def pending_for_keys(
         self, store_id: uuid.UUID, entity_type: str, field: str, keys: Sequence[str]
     ) -> dict[str, ProductDataProposal]:

@@ -58,6 +58,7 @@ function row(id: string, entity_key: string, proposed_value: number, extra: Part
     source_sheet: null,
     source_row: null,
     invoice_id: "9a72e038-d190-46f0-b4d7-24873aeb0240",
+    invoice_deleted: false,
     proposed_by: "frontend:review-ui",
     status: "PENDING",
     reviewed_by: null,

@@ -189,3 +189,45 @@ class TestExtractionToCanonical:
     def test_a_charge_is_not_allowed_to_carry_a_placeholder_code_into_a_mapping(self):
         with pytest.raises(ValueError):
             ExtractedLineItem(line_type="fee", description="x")           # only product / charge
+
+
+class TestRevalidationKeepsLineTypes:
+    """
+    Revalidation (after a correction or a duplicate decision) re-judges
+    the STORED invoice. It must carry the stored line types and photo
+    provenance across, or a delivery charge would be re-summed as a
+    product and a resolved duplicate re-counted.
+    """
+
+    def test_charge_and_duplicate_rows_stay_out_of_the_subtotal(self):
+        from app.services.revalidation_service import build_report, normalized_from_persisted
+
+        inv = sheehan_like()
+        inv.items.append(item(5, "BUD ICE C-15 25OZ", "018200250064", "1", "23.90", "24.65",
+                              deposit="0.75", discount="6.35", pack="C-15 25OZ", line_type="duplicate"))
+        inv.items[5].source_pages = [2]
+        inv.items[5].duplicate_candidate = {"of_sort_order": 4, "reason": "seen twice",
+                                            "resolution": "same_row", "decided_by": "r"}
+        normalized = normalized_from_persisted(inv)
+        assert [i.line_type for i in normalized.line_items] == [
+            "product", "product", "product", "charge", "product", "duplicate"]
+        assert normalized.line_items[5].source_pages == (2,)
+        assert normalized.line_items[5].possible_duplicate_of is None      # resolved: not a question
+        # the duplicate row changes nothing about the subtotal judgement:
+        # the report reads exactly as for the same invoice without it
+        with_dup = build_report(inv, ocr_confidence=0.95, ai_confidence=0.95)
+        inv.items.pop()
+        without = build_report(inv, ocr_confidence=0.95, ai_confidence=0.95)
+        failed = lambda r: sorted((c.name, c.field) for c in r.checks if c.status.value == "FAILED")  # noqa: E731
+        assert failed(with_dup) == failed(without)
+        assert not any(name == "CROSS_PHOTO_DUPLICATES" for name, _ in failed(with_dup))
+
+    def test_an_unresolved_candidate_still_blocks(self):
+        from app.services.revalidation_service import build_report, normalized_from_persisted
+
+        inv = sheehan_like()
+        inv.items[4].duplicate_candidate = {"of_sort_order": 1, "reason": "unsure", "resolution": None}
+        assert normalized_from_persisted(inv).line_items[4].possible_duplicate_of == 1
+        report = build_report(inv, ocr_confidence=0.95, ai_confidence=0.95)
+        assert report.decision.value == "REVIEW_REQUIRED"
+        assert any(c.name == "CROSS_PHOTO_DUPLICATES" and c.status.value == "FAILED" for c in report.checks)

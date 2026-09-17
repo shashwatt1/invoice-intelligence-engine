@@ -28,6 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useInvoices } from "@/hooks/use-api";
+import { reviewHeadline } from "@/lib/review";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 
 const PAGE_SIZE = 15;
@@ -159,6 +160,7 @@ export function HistoryPage() {
                     <TableHead className="text-right">Total</TableHead>
                     <TableHead>Confidence</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Data Review</TableHead>
                     <TableHead className="text-right">Processed</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -192,6 +194,26 @@ export function HistoryPage() {
                       </TableCell>
                       <TableCell>
                         <StatusBadge status={row.status} />
+                      </TableCell>
+                      <TableCell className="text-[0.75rem] whitespace-nowrap" data-testid="history-review">
+                        {row.review === null || row.review.status === "NONE" ? (
+                          <span className="text-muted-foreground">—</span>
+                        ) : (
+                          <span
+                            className={
+                              row.review.status === "PENDING"
+                                ? "text-warning font-medium"
+                                : row.review.status === "APPROVED"
+                                  ? "text-success"
+                                  : "text-muted-foreground"
+                            }
+                          >
+                            {reviewHeadline(row.review)}
+                          </span>
+                        )}
+                        {row.photo_count > 1 ? (
+                          <span className="block text-[0.68rem] text-muted-foreground">{row.photo_count} photos</span>
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-right text-[0.78rem] whitespace-nowrap text-muted-foreground">
                         {formatDateTime(row.created_at)}

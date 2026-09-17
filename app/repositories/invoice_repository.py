@@ -88,6 +88,12 @@ class InvoiceRepository:
                     discount=item.unit_discount,
                     deposit=item.unit_deposit,
                     sort_order=item.sort_order,
+                    source_pages=list(item.source_pages) or None,
+                    duplicate_candidate=(
+                        {"of_sort_order": item.possible_duplicate_of,
+                         "reason": item.duplicate_reason, "resolution": None}
+                        if item.possible_duplicate_of is not None else None
+                    ),
                 )
             )
         await self._session.flush()

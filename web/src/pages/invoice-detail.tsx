@@ -9,6 +9,8 @@ import { PageHeader } from "@/components/layout/page-header";
 import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
 import { DatabaseConfirmationCard } from "@/components/invoice/database-confirmation";
 import { DeveloperPanel } from "@/components/invoice/developer-panel";
+import { DuplicateReviewCard } from "@/components/invoice/duplicate-review-card";
+import { InvoiceReviewCard } from "@/components/invoice/invoice-review-card";
 import { PdiExportConfirmDialog } from "@/components/invoice/pdi-export-confirm-dialog";
 import { ValidationReportCard } from "@/components/invoice/validation-report";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -338,6 +340,12 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
             <Field label="Due date" value={formatDate(detail.due_date)} />
             <Field label="Currency" value={detail.currency} />
             <Field label="Extraction model" value={detail.extraction_model ?? "—"} />
+            {detail.photos.length > 1 ? (
+              <Field
+                label="Photos"
+                value={`${detail.photos.length} read as one invoice: ${detail.photos.map((p) => `${p.page_number}. ${p.filename}`).join(", ")}`}
+              />
+            ) : null}
           </CardContent>
         </Card>
         <Card>
@@ -359,8 +367,14 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
         </Card>
       </div>
 
+      {/* Overlapping photos the model could not reconcile on its own */}
+      <DuplicateReviewCard detail={detail} />
+
       {/* Case → unit mapping: the remaining gate on the PDI download */}
       <CaseMappingCard invoiceId={detail.invoice_id} store={detail.store} rows={detail.case_mappings} />
+
+      {/* What this invoice put forward for review, and what became of it */}
+      <InvoiceReviewCard invoiceId={detail.invoice_id} review={detail.review} />
 
       {/* Line items */}
       <Card className="gap-0 p-0">
@@ -383,6 +397,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead>Product</TableHead>
+                  {detail.photos.length > 1 ? <TableHead>Photo</TableHead> : null}
                   <TableHead className="text-right">Quantity</TableHead>
                   <TableHead className="text-right">Unit price</TableHead>
                   <TableHead className="text-right">Deposit</TableHead>
@@ -392,10 +407,31 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
               </TableHeader>
               <TableBody>
                 {detail.line_items.map((item) => (
-                  <TableRow key={item.sort_order}>
+                  <TableRow
+                    key={item.sort_order}
+                    className={
+                      item.line_type === "duplicate"
+                        ? "text-muted-foreground line-through"
+                        : item.duplicate_candidate && !item.duplicate_candidate.resolution
+                          ? "bg-warning-soft/40"
+                          : undefined
+                    }
+                  >
                     <TableCell className="max-w-80 truncate font-medium">
                       {item.description}
+                      {item.line_type === "charge" ? (
+                        <span className="ml-1.5 text-[0.68rem] font-normal text-muted-foreground">charge</span>
+                      ) : item.line_type === "duplicate" ? (
+                        <span className="ml-1.5 text-[0.68rem] font-normal no-underline">seen twice · counted once</span>
+                      ) : item.duplicate_candidate && !item.duplicate_candidate.resolution ? (
+                        <span className="ml-1.5 text-[0.68rem] font-normal text-warning">possible duplicate of row {item.duplicate_candidate.of_sort_order}</span>
+                      ) : null}
                     </TableCell>
+                    {detail.photos.length > 1 ? (
+                      <TableCell className="font-mono text-[0.72rem] text-muted-foreground" data-testid="photo-badge">
+                        {item.source_pages.length ? item.source_pages.map((p) => `P${p}`).join(" ") : "—"}
+                      </TableCell>
+                    ) : null}
                     <TableCell className="text-right tabular-nums">
                       <EditableAmount
                         invoiceId={detail.invoice_id}

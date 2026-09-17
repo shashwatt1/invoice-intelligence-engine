@@ -286,6 +286,44 @@ file and deliberately does **not** report it as a pass or a failure.
 
 ---
 
+## Q8 — "N/M <size>" pack notation: is the first number Units/Case? — OPEN (observed 17 Sep 2026)
+
+**Observed on the T.J. Sheehan 101497 import.** The invoice prints
+`FIREBALL PB-8/6 100ML`. The EDI carried units/case = 8 (the first
+number, read as "8 packs"). PDI showed the product as
+`Fireball cinnamon 3.4oz - 48 C` with Unit per case 8, Unit cost 8.3575,
+Retail 2.59, **Margin −222.68%** — i.e. the store sells the 100 ml
+single, and the case is 8 × 6 = **48** sellable units.
+
+On the same invoice `BUDWEISER B-2/12 12OZ` mapped as 2 was right: the
+store sells the 12-pack, and PDI's retail is a 12-pack price.
+
+**What this establishes.** The form `N/M` followed by a *separate*
+container size means "N packs of M units"; whether Units/Case is N or
+N×M depends on what the store sells, and the invoice cannot say. It is
+NOT the same as `24/12OZ`, where the size is glued to the second number
+and 24 is unambiguously the count.
+
+**What changed in the code (evidence-based, tested).**
+`suggest_units_per_case` / `pack_candidates` now treat `N/M <size>`
+(`8/6 100ML`, `PB-12/10 50ML`, `C-2/12 12OZ`, and the OCR spelling
+`120Z`) as **ambiguous**: both readings `[N, N×M]` are offered and
+neither is prefilled — the operator chooses, and the proposal is
+recorded as `document_ambiguous`. `24/12OZ`, `C-15 25OZ`, `B-12 24OZ`,
+`C-18 12OZ` are unchanged. Test:
+`tests/test_case_mapping.py::TestPrintedCountOutranksDerivedEvidence::test_n_of_m_then_a_size_is_a_choice_not_a_count`.
+
+**What did NOT change.** No existing mapping was touched. The approved
+101497 mappings (Fireball 12 for `PB-12/10`, the 2/12 rows at 2) stand
+until a reviewer proposes otherwise on evidence; the Fireball `PB-8/6`
+row on 101497 was shorted (qty 0) and produced no B record.
+
+**Open.** A rule that prefers N×M when the store's reference retail is
+a single-unit price (2.59 for a 100 ml) and N when it is a pack price
+(18.33 for a 12-pack) is plausible and would use evidence the store
+already holds — but it needs more than one observation before it is
+written. Until then the choice is offered, never made.
+
 ## Summary
 
 | # | Question | Status | Blocks item/qty accuracy? | Formatter-only fix? |

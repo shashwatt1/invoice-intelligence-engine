@@ -46,20 +46,27 @@ def _sorted_items(invoice: Invoice) -> list[InvoiceItem]:
     return sorted(invoice.items, key=lambda item: item.sort_order)
 
 
+# Line types that never become PDI product records: a charge row, and a
+# row a reviewer resolved as the same physical row as another (seen twice
+# across overlapping photos). Both stay on the invoice for audit.
+NON_PDI_LINE_TYPES = frozenset({"charge", "duplicate"})
+
+
 def pdi_items(invoice: Invoice) -> list[InvoiceItem]:
     """
     The line items that become PDI product (B) records, in document order.
 
     Everything else on the invoice is kept for audit and totals but is not
     merchandise PDI should receive: a charge row (delivery, fuel, service
-    fee) is not a product, and a product row with quantity 0 — printed
-    because it was shorted or out of stock — delivered nothing. Selecting
+    fee) is not a product, a row resolved as a cross-photo duplicate was
+    already counted, and a product row with quantity 0 — printed because
+    it was shorted or out of stock — delivered nothing. Selecting
     here, once, keeps the formatter, the export gate and the audit in
     agreement without the formatter learning any of these cases.
     """
     return [
         item for item in _sorted_items(invoice)
-        if (getattr(item, "line_type", None) or "product") != "charge"
+        if (getattr(item, "line_type", None) or "product") not in NON_PDI_LINE_TYPES
         and not (item.quantity is not None and item.quantity <= 0)
     ]
 
@@ -464,6 +471,19 @@ _PACK_IN_DESCRIPTION = re.compile(r"(?<!\d)(\d{1,4})\s*/\s*\d")
 _AMBIGUOUS_PACK = re.compile(
     r"(?<!\d)(\d{1,4})\s*/\s*(\d+)\s*(?:/\s*\d|P(?:K|ACK)\b)", re.IGNORECASE
 )
+# "8/6 100ML", "2/12 12OZ", "PB-12/10 50ML": N/M and THEN a separate container
+# size. Here M is a count, not a size — N packs of M — and the store may
+# sell the pack (N) or the single (N x M). Learned from PDI: "FIREBALL 8/6
+# 100ML" was mapped 8 on the evidence of the first number and PDI showed
+# the product as 48 singles (unit cost 8.36 against a 2.59 retail); on the
+# same invoice "B-2/12 12OZ" was correctly 2, the store selling the
+# 12-pack. The form itself cannot say which, so it is offered as a choice
+# and never prefilled. "24/12OZ" (size glued to the second number) is not
+# this form: 12OZ is the container and 24 is the count.
+_AMBIGUOUS_PACK_THEN_SIZE = re.compile(
+    # "0Z" is how OCR often reads "OZ" (seen on 101497: "120Z").
+    r"(?<!\d)(\d{1,4})\s*/\s*(\d{1,3})\s+\d+(?:\.\d+)?\s*(?:OZ|0Z|ML|LTR?)\b", re.IGNORECASE
+)
 
 SUGGESTION_FROM_PACK_SIZE = "pack_size"
 SUGGESTION_FROM_DESCRIPTION = "description"
@@ -484,7 +504,7 @@ def pack_candidates(description: str | None) -> list[int]:
     the pack size was unreadable, and PDI duly showed "Units Per Case 1"
     for every product on a real invoice.
     """
-    found = _AMBIGUOUS_PACK.search(description or "")
+    found = _AMBIGUOUS_PACK.search(description or "") or _AMBIGUOUS_PACK_THEN_SIZE.search(description or "")
     if not found:
         return []
     outer, inner = int(found.group(1)), int(found.group(2))
@@ -519,7 +539,7 @@ def suggest_units_per_case(
         if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE:
             source = (
                 SUGGESTION_FROM_DESCRIPTION_AMBIGUOUS
-                if _AMBIGUOUS_PACK.search(pack_size or "")
+                if _AMBIGUOUS_PACK.search(pack_size or "") or _AMBIGUOUS_PACK_THEN_SIZE.search(pack_size or "")
                 else SUGGESTION_FROM_PACK_SIZE
             )
             return units, source
@@ -533,7 +553,7 @@ def suggest_units_per_case(
         return None, None
     source = (
         SUGGESTION_FROM_DESCRIPTION_AMBIGUOUS
-        if _AMBIGUOUS_PACK.search(description or "")
+        if _AMBIGUOUS_PACK.search(description or "") or _AMBIGUOUS_PACK_THEN_SIZE.search(description or "")
         else SUGGESTION_FROM_DESCRIPTION
     )
     return units, source

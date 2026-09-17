@@ -23,7 +23,9 @@ import {
 import { useDocumentStatus, useProcessInvoice, useStores } from "@/hooks/use-api";
 
 export function ProcessPage() {
-  const [file, setFile] = useState<File | null>(null);
+  // The photos of ONE invoice, in top-to-bottom order. A long invoice is
+  // photographed in overlapping pieces; the backend reconciles them.
+  const [files, setFiles] = useState<File[]>([]);
   // The store the invoice is received for. The API requires it and has
   // no default; the operator picks it from the stores the system holds
   // data for, every time. Nothing is remembered between uploads.
@@ -44,19 +46,20 @@ export function ProcessPage() {
   const awaiting = status.data?.awaiting_store_confirmation ?? false;
 
   const start = () => {
-    if (!file) return;
+    if (files.length === 0) return;
     setDuplicate(null);
     setSubmittedStore(selected?.label ?? null);
     // The store may be chosen now or after the document has been read:
     // either way a person decides, and the document's own text is checked
     // against the choice before anything is processed under it.
-    processMutation.mutate({ file, storeId: selected?.id ?? null }, {
+    processMutation.mutate({ files, storeId: selected?.id ?? null }, {
       onSuccess: (accepted) => {
         setDocumentId(accepted.document_id);
+        const what = files.length === 1 ? accepted.filename : `${files.length} photos as one invoice`;
         toast.info(
           selected
-            ? `Processing ${accepted.filename} for ${selected.label}`
-            : `Reading ${accepted.filename} — the store will be confirmed once the document is read`,
+            ? `Processing ${what} for ${selected.label}`
+            : `Reading ${what} — the store will be confirmed once the document is read`,
         );
       },
       onError: (error) => {
@@ -72,7 +75,7 @@ export function ProcessPage() {
   };
 
   const reset = () => {
-    setFile(null);
+    setFiles([]);
     setDocumentId(null);
     setDuplicate(null);
     setSubmittedStore(null);
@@ -83,7 +86,7 @@ export function ProcessPage() {
     <>
       <PageHeader
         title="Process Invoice"
-        description="Upload a PDF, PNG, or JPEG and watch every pipeline stage complete live."
+        description="Upload a PDF, a photo, or several overlapping photos of one long invoice, and watch every pipeline stage complete live."
       />
 
       <div className="grid grid-cols-2 items-start gap-5 max-lg:grid-cols-1">
@@ -154,23 +157,23 @@ export function ProcessPage() {
           )}
 
           <UploadDropzone
-            file={file}
-            onFileSelected={(selected) => {
-              setFile(selected);
+            files={files}
+            onFilesChange={(next) => {
+              setFiles(next);
               setDocumentId(null);
               setDuplicate(null);
             }}
-            onClear={reset}
-            disabled={isRunning || processMutation.isPending}
+            disabled={isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
           />
 
           <div className="flex gap-2">
             <Button
               className="flex-1"
               size="lg"
-              disabled={!file || isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
+              disabled={files.length === 0 || isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
               onClick={start}
-              title={!file ? "Choose a file first" : undefined}
+              title={files.length === 0 ? "Add a file or the photos of one invoice first" : undefined}
+              data-testid="process-button"
             >
               <Sparkles className="size-4" />
               {processMutation.isPending
@@ -182,8 +185,8 @@ export function ProcessPage() {
                       ? `Processing for ${submittedStore}…`
                       : "Reading the document…"
                     : selected
-                      ? `Process invoice for ${selected.label}`
-                      : "Read the document, then confirm the store"}
+                      ? `Process ${files.length > 1 ? `${files.length} photos as one invoice` : "invoice"} for ${selected.label}`
+                      : `Read the ${files.length > 1 ? `${files.length} photos` : "document"}, then confirm the store`}
             </Button>
             {(terminal || duplicate || awaiting) && (
               <Button variant="outline" size="lg" onClick={reset}>
@@ -205,8 +208,9 @@ export function ProcessPage() {
                     <div className="text-[0.82rem]">
                       <div className="font-semibold">This document was already processed</div>
                       <p className="mt-0.5 text-muted-foreground">
-                        The platform blocks duplicate content by SHA-256 hash, so the same file
-                        is never billed or stored twice.
+                        The platform blocks duplicate content by SHA-256 hash — the same file, the
+                        same set of photos, or a photo already used in another intake — so nothing
+                        is billed or stored twice.
                       </p>
                       {duplicate.existingId && (
                         <Button asChild variant="link" className="mt-1 h-auto p-0 text-[0.8rem]">

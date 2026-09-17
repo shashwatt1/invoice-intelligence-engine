@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -45,6 +45,106 @@ class InvoiceDeleteResult(BaseModel):
     invoice_id: uuid.UUID
     document_id: uuid.UUID
     deleted: bool = True
+
+
+class DocumentPhoto(BaseModel):
+    """One photo of an intake, with its own OCR outcome."""
+
+    page_number: int
+    filename: str
+    mime_type: str
+    file_size_bytes: int
+    source_type: str | None = None
+    mean_confidence: float | None = None
+    text_chars: int | None = None
+
+
+REVIEW_NONE = "NONE"                    # the invoice raised no proposals
+REVIEW_PENDING = "PENDING"              # at least one proposal awaits a decision
+REVIEW_APPROVED = "APPROVED"            # every proposal decided, at least one approved
+REVIEW_REJECTED = "REJECTED"            # every proposal decided, all rejected
+
+
+class InvoiceReviewProposal(BaseModel):
+    id: uuid.UUID
+    entity_key: str
+    field: str
+    current_value: Any | None = None
+    proposed_value: Any
+    status: str
+    source: str
+    proposed_by: str
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    review_note: str | None = None
+    revised_from: uuid.UUID | None = Field(
+        default=None, description="The proposal this one corrected, when it is a revision."
+    )
+
+
+class InvoiceReviewSummary(BaseModel):
+    """
+    What Data Review holds for ONE invoice, built from its proposal rows —
+    the same rows the review queue and the product history show. This is
+    the invoice's review state; the store's identity status is a
+    different question and is never folded in here.
+    """
+
+    status: str = Field(description="NONE, PENDING, APPROVED or REJECTED (see constants).")
+    pending: int = 0
+    approved: int = 0
+    rejected: int = 0
+    proposals: list[InvoiceReviewProposal] = Field(default_factory=list)
+
+    @classmethod
+    def from_proposals(cls, rows: list[Any]) -> InvoiceReviewSummary:
+        pending = sum(1 for r in rows if r.status == "PENDING")
+        approved = sum(1 for r in rows if r.status == "APPROVED")
+        rejected = sum(1 for r in rows if r.status == "REJECTED")
+        if not rows:
+            status = REVIEW_NONE
+        elif pending:
+            status = REVIEW_PENDING
+        elif approved:
+            status = REVIEW_APPROVED
+        else:
+            status = REVIEW_REJECTED
+        return cls(
+            status=status, pending=pending, approved=approved, rejected=rejected,
+            proposals=[InvoiceReviewProposal(
+                id=r.id, entity_key=r.entity_key, field=r.field, current_value=r.current_value,
+                proposed_value=r.proposed_value, status=r.status, source=r.source,
+                proposed_by=r.proposed_by, reviewed_by=r.reviewed_by, reviewed_at=r.reviewed_at,
+                review_note=r.review_note,
+                revised_from=((r.evidence or {}).get("revised_from") or None),
+            ) for r in rows],
+        )
+
+
+class DuplicateDecision(BaseModel):
+    """Body of POST /invoices/{id}/items/{sort_order}/duplicate-decision."""
+
+    decision: Literal["same_row", "separate_rows"] = Field(
+        description=(
+            "'same_row': the flagged row is the earlier row seen again in an overlapping photo — "
+            "it is kept for audit, typed 'duplicate', and leaves the subtotal and the EDI. "
+            "'separate_rows': two legitimate rows — the flag is cleared, both stay."
+        ),
+    )
+    decided_by: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class DuplicateDecisionResult(BaseModel):
+    sort_order: int
+    of_sort_order: int
+    decision: str
+    line_type: str
+    status: str
+    failed_checks: int
+    review_reasons: list[str]
+    pdi_export_allowed: bool
+    pdi_export_blocked_reason: str | None = None
 
 
 class CaseMappingRow(BaseModel):
@@ -253,6 +353,13 @@ class ProposalRow(BaseModel):
     source_sheet: str | None = None
     source_row: int | None = None
     invoice_id: uuid.UUID | None = None
+    invoice_deleted: bool = Field(
+        default=False,
+        description=(
+            "The invoice this proposal was raised on no longer exists. The proposal is "
+            "immutable history and stays; the mapping it may have written stays too."
+        ),
+    )
     proposed_by: str
     status: str
     reviewed_by: str | None = None
@@ -480,6 +587,7 @@ class DocumentStatusData(BaseModel):
         description="What identification found in the text; empty when nothing matched.",
     )
     invoice_id: uuid.UUID | None = None
+    photos: list[DocumentPhoto] = Field(default_factory=list)
     error: dict[str, Any] | None = Field(
         default=None, description="Failure log payload when status is FAILED."
     )
@@ -514,6 +622,18 @@ class LineItemData(BaseModel):
     line_type: str = Field(
         default="product",
         description="'product' or 'charge' — a charge (delivery/fuel/service) is never a PDI product record.",
+    )
+    source_pages: list[int] = Field(
+        default_factory=list,
+        description="Photo numbers (1-based) this row was read from; empty for single-file intakes.",
+    )
+    duplicate_candidate: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Set when the model could not tell whether this row is the same physical row as "
+            "an earlier one (overlapping photos). {of_sort_order, reason, resolution, "
+            "decided_by, decided_at, note}; resolution null until a reviewer decides."
+        ),
     )
     corrected_fields: list[str] = Field(
         default_factory=list,
@@ -583,6 +703,20 @@ class InvoiceDetailData(BaseModel):
     pdi_export_blocked_reason: str | None = Field(
         default=None, description="Why the export is blocked, when pdi_export_allowed is false."
     )
+    photos: list[DocumentPhoto] = Field(
+        default_factory=list,
+        description="The photos of a multi-photo intake, in operator order; empty for one file.",
+    )
+    duplicate_review_required: bool = Field(
+        default=False,
+        description="An unresolved cross-photo duplicate candidate blocks this invoice.",
+    )
+    review: InvoiceReviewSummary = Field(
+        description=(
+            "This invoice's master-data review, from its proposal rows. Separate from the "
+            "store's identity status and from the validation status."
+        ),
+    )
     case_mappings: list[CaseMappingRow] = Field(
         default_factory=list,
         description=(
@@ -623,6 +757,10 @@ class HistoryRow(BaseModel):
     currency: str | None = None
     composite_confidence: float | None = None
     source_type: str | None = None
+    photo_count: int = Field(default=1, description="Photos in the intake; 1 for a single file.")
+    review: InvoiceReviewSummary | None = Field(
+        default=None, description="Master-data review state for this invoice, when it has one.",
+    )
     created_at: datetime
 
 

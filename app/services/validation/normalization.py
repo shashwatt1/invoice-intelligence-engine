@@ -159,6 +159,9 @@ def normalize_line_item(
         tax_rate=to_decimal(item.tax_rate, RATE_EXP),
         confidence=item.confidence,
         sort_order=index,
+        source_pages=tuple(getattr(item, "source_pages", None) or ()),
+        possible_duplicate_of=getattr(item, "possible_duplicate_of", None),
+        duplicate_reason=clean_text(getattr(item, "duplicate_reason", None)),
         unit_price_derived=unit_price_derived,
         line_total_derived=line_total_derived,
     )

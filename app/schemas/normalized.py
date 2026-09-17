@@ -47,6 +47,11 @@ class NormalizedLineItem(BaseModel):
     tax_rate: Decimal | None = None          # percentage, e.g. 18.00
     confidence: float | None = None
     sort_order: int = 0
+    # Multi-photo provenance and an unresolved cross-photo duplicate flag
+    # (see ExtractedLineItem). Empty / None for single-file intakes.
+    source_pages: tuple[int, ...] = ()
+    possible_duplicate_of: int | None = None
+    duplicate_reason: str | None = None
     unit_price_derived: bool = False
     line_total_derived: bool = False
     # Set when the reconciliation engine replaced a gross (pre-discount)

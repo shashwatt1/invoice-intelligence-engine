@@ -423,4 +423,24 @@ class TestPrintedCountOutranksDerivedEvidence:
         assert suggest_units_per_case("C-15 25OZ") == (15, "pack_size")
         assert suggest_units_per_case("B-12 24OZ") == (12, "pack_size")
         assert suggest_units_per_case("C-18 12OZ") == (18, "pack_size")
-        assert suggest_units_per_case("C-2/12 12OZ") == (2, "pack_size")
+
+    def test_n_of_m_then_a_size_is_a_choice_not_a_count(self):
+        """
+        Learned from PDI on the 101497 import: "FIREBALL PB-8/6 100ML" had
+        been mapped 8 on the strength of the first number, and PDI showed
+        it as 48 singles (unit cost 8.36 against a 2.59 retail). On the
+        same invoice "B-2/12 12OZ" really was 2 — the store sells the
+        12-pack. When N/M is followed by a separate container size, M is a
+        count and the form cannot say whether the store sells the pack (N)
+        or the single (N x M): both are offered, neither is prefilled.
+        "24/12OZ", with the size glued on, stays an unambiguous 24.
+        """
+        from app.services.export_service import pack_candidates, suggest_units_per_case
+
+        for printed, choices in (("PB-8/6 100ML", [8, 48]), ("8/6 100ML", [8, 48]),
+                                 ("C-2/12 12OZ", [2, 24]), ("B-2/12 120Z", [2, 24]),
+                                 ("PB-12/10 50ML", [12, 120])):
+            assert suggest_units_per_case(printed) == (choices[0], "description_ambiguous"), printed
+            assert pack_candidates(printed) == choices, printed
+        assert suggest_units_per_case("24/12OZ") == (24, "pack_size")
+        assert suggest_units_per_case("12/14 CHO") == (12, "pack_size")
