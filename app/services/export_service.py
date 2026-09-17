@@ -812,6 +812,24 @@ def items_missing_cost(invoice: Invoice) -> list[str]:
     ]
 
 
+STORE_PENDING_EXPORT_REASON = "Assign the store this invoice belongs to before it can be exported."
+
+
+def persisted_pdi_export_eligibility(
+    invoice: Invoice, units_by_item_code: Mapping[str, int] | None = None
+) -> PdiExportEligibility:
+    """
+    The gate for a STORED invoice: a STORE_PENDING invoice (store_id NULL —
+    read before its store was known) is blocked before any other rule,
+    because mappings, reference data and the EDI are all the store's.
+    Everything else is pdi_export_eligibility(), unchanged.
+    """
+    if invoice.store_id is None:
+        return PdiExportEligibility(allowed=False, requires_confirmation=False,
+                                    blocked_reason=STORE_PENDING_EXPORT_REASON)
+    return pdi_export_eligibility(invoice, units_by_item_code)
+
+
 def pdi_export_eligibility(
     invoice: Invoice, units_by_item_code: Mapping[str, int] | None = None
 ) -> PdiExportEligibility:

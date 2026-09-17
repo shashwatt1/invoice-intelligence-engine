@@ -10,11 +10,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   approveProposal,
+  assignInvoiceStore,
   bulkApproveProposals,
   bulkRejectProposals,
   decideDuplicate,
+  deferDocumentStore,
   confirmCaseMappings,
   confirmDocumentStore,
+  createStore,
   correctLineItem,
   deleteInvoice,
   getDashboardSummary,
@@ -40,6 +43,7 @@ import type {
   ProposalDecision,
   ProposalListParams,
   ProposalRevision,
+  StoreCreate,
   StoreIdentityUpdate,
 } from "@/api/types";
 
@@ -300,5 +304,42 @@ export function useDecideDuplicate(invoiceId: string) {
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
+  });
+}
+
+/** Read now, assign the store later. */
+export function useDeferDocumentStore(documentId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deferredBy, note }: { deferredBy: string; note: string | null }) =>
+      deferDocumentStore(documentId!, deferredBy, note),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+  });
+}
+
+/** A person names the store of a STORE_PENDING invoice. */
+export function useAssignInvoiceStore(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ storeId, assignedBy, note }: { storeId: string; assignedBy: string; note: string | null }) =>
+      assignInvoiceStore(invoiceId, storeId, assignedBy, note),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      void queryClient.invalidateQueries({ queryKey: ["stores"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+/** Adds a store to the directory. */
+export function useCreateStore() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: StoreCreate) => createStore(body),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["stores"] }),
   });
 }

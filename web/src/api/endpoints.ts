@@ -29,6 +29,8 @@ import type {
   ProposalRevision,
   ProposalRevisionResult,
   ProposalRow,
+  StoreAssignmentResult,
+  StoreCreate,
   StoreDirectoryEntry,
   StoreIdentityUpdate,
 } from "./types";
@@ -245,5 +247,39 @@ export async function decideDuplicate(
     `/invoices/${invoiceId}/items/${sortOrder}/duplicate-decision`,
     decision,
   );
+  return data.data!;
+}
+
+/** Read the document now, assign the store later. The invoice is stored
+ * STORE_PENDING; nothing store-scoped happens until assign-store. */
+export async function deferDocumentStore(
+  documentId: string,
+  deferredBy: string,
+  note: string | null,
+): Promise<DocumentStatusData> {
+  const { data } = await apiClient.post<ApiEnvelope<DocumentStatusData>>(
+    `/documents/${documentId}/defer-store`,
+    { deferred_by: deferredBy, note },
+  );
+  return data.data!;
+}
+
+/** A person names the store of a STORE_PENDING invoice. */
+export async function assignInvoiceStore(
+  invoiceId: string,
+  storeId: string,
+  assignedBy: string,
+  note: string | null,
+): Promise<StoreAssignmentResult> {
+  const { data } = await apiClient.post<ApiEnvelope<StoreAssignmentResult>>(
+    `/invoices/${invoiceId}/assign-store`,
+    { store_id: storeId, assigned_by: assignedBy, note },
+  );
+  return data.data!;
+}
+
+/** Adds a store to the directory. No source code is attached here. */
+export async function createStore(body: StoreCreate): Promise<StoreDirectoryEntry> {
+  const { data } = await apiClient.post<ApiEnvelope<StoreDirectoryEntry>>("/stores", body);
   return data.data!;
 }

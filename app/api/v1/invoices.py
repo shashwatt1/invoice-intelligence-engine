@@ -60,6 +60,7 @@ from app.schemas.processing import (
     LineItemCorrectionResult,
     LineItemData,
     ProcessAccepted,
+    StoreAssignment,
     StoreRef,
     VendorData,
 )
@@ -67,7 +68,7 @@ from app.services.case_mapping_service import (
     build_case_mapping_status,
     invoice_units_by_item_code,
 )
-from app.services.export_service import normalize_item_code, pdi_export_eligibility
+from app.services.export_service import normalize_item_code, persisted_pdi_export_eligibility
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
@@ -304,20 +305,29 @@ async def get_invoice(
     payloads = {log.stage: log.payload for log in logs if log.payload}
     document = invoice.document
     store = invoice.store_id
-    units = await invoice_units_by_item_code(db, invoice)
-    reference = await match_invoice_against_reference(db, invoice)
-    # Queued-but-unreviewed values, so the operator sees what is already
-    # awaiting approval rather than submitting it again.
-    codes = [
-        code for code in (normalize_item_code(i.product_sku) for i in invoice.items) if code
-    ]
-    pending = await pending_by_item_code(db, store, codes)
-    pdi_eligibility = pdi_export_eligibility(invoice, units)
-    case_mappings = [
-        CaseMappingRow(**vars(status))
-        for status in build_case_mapping_status(invoice, units, reference, pending)
-    ]
-    proposals = await ProductDataProposalRepository(db).list(invoice_id=invoice.id, store_id=invoice.store_id)
+    pdi_eligibility_units: dict = {}
+    if store is None:
+        # STORE_PENDING: the invoice is readable and correctable, but nothing
+        # store-scoped is consulted or shown — no reference data, no mapping
+        # rows, no proposals. The gate says why.
+        case_mappings: list[CaseMappingRow] = []
+        proposals = []
+    else:
+        units = await invoice_units_by_item_code(db, invoice)
+        pdi_eligibility_units = units
+        reference = await match_invoice_against_reference(db, invoice)
+        # Queued-but-unreviewed values, so the operator sees what is already
+        # awaiting approval rather than submitting it again.
+        codes = [
+            code for code in (normalize_item_code(i.product_sku) for i in invoice.items) if code
+        ]
+        pending = await pending_by_item_code(db, store, codes)
+        case_mappings = [
+            CaseMappingRow(**vars(status))
+            for status in build_case_mapping_status(invoice, units, reference, pending)
+        ]
+        proposals = await ProductDataProposalRepository(db).list(invoice_id=invoice.id, store_id=store)
+    pdi_eligibility = persisted_pdi_export_eligibility(invoice, pdi_eligibility_units)
     photos = await DocumentRepository(db).pages(document)
 
     data = InvoiceDetailData(
@@ -326,7 +336,8 @@ async def get_invoice(
         filename=document.filename,
         document_status=document.status,
         source_type=document.source_type,
-        store=StoreRef.from_store(await StoreRepository(db).get(invoice.store_id)),
+        store=StoreRef.from_store(await StoreRepository(db).get(store)) if store else None,
+        store_pending=store is None,
         invoice_number=invoice.invoice_number,
         invoice_date=invoice.invoice_date,
         due_date=invoice.due_date,
@@ -495,6 +506,12 @@ async def confirm_case_mappings(
         )
 
     store = invoice.store_id
+    if store is None:
+        raise ValidationError(
+            message="This invoice has no store yet. Assign its store before confirming case mappings — "
+                    "a mapping belongs to a store.",
+            detail={"invoice_id": str(invoice_id), "store_pending": True},
+        )
     units = await invoice_units_by_item_code(db, invoice)
     reference = await match_invoice_against_reference(db, invoice)
     # The review rows tell the system how each value relates to what the
@@ -538,7 +555,7 @@ async def confirm_case_mappings(
 
     # Re-read: mappings are unchanged by design, but the queue is not.
     pending = await pending_by_item_code(db, store, list(review_by_code))
-    eligibility = pdi_export_eligibility(invoice, units)
+    eligibility = persisted_pdi_export_eligibility(invoice, units)
     return APIResponse(
         data=CaseMappingResult(
             saved=submitted,
@@ -613,7 +630,7 @@ async def correct_line_item(
     report = await revalidate_invoice(db, invoice)
 
     units = await invoice_units_by_item_code(db, invoice)
-    eligibility = pdi_export_eligibility(invoice, units)
+    eligibility = persisted_pdi_export_eligibility(invoice, units)
     await db.commit()
 
     return APIResponse(
@@ -708,7 +725,7 @@ async def decide_duplicate(
     invoice = await repository.get_detail(invoice_id)
     report = await revalidate_invoice(db, invoice)
     units = await invoice_units_by_item_code(db, invoice)
-    eligibility = pdi_export_eligibility(invoice, units)
+    eligibility = persisted_pdi_export_eligibility(invoice, units)
     await db.commit()
 
     return APIResponse(data=DuplicateDecisionResult(
@@ -717,3 +734,48 @@ async def decide_duplicate(
         failed_checks=len(report.failed_checks), review_reasons=report.review_reasons,
         pdi_export_allowed=eligibility.allowed, pdi_export_blocked_reason=eligibility.blocked_reason,
     ))
+
+
+@router.post(
+    "/invoices/{invoice_id}/assign-store",
+    response_model=APIResponse[InvoiceDetailData],
+    summary="Assign the store of a STORE_PENDING invoice",
+    description=(
+        "For an invoice read before its store was known. A person names the store; it is "
+        "recorded on the invoice and its document with who assigned it, and from then on the "
+        "store's reference data, case mappings, proposals and EDI apply. Nothing is "
+        "re-extracted or re-validated — validation does not depend on the store. An invoice "
+        "that already has a store is not moved here."
+    ),
+    responses={404: {"description": "Invoice or store not found"},
+               422: {"description": "The invoice already has a store"}},
+)
+async def assign_store(
+    invoice_id: uuid.UUID,
+    body: StoreAssignment,
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[InvoiceDetailData]:
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    if invoice.store_id is not None:
+        raise ValidationError(
+            message="This invoice already has a store; moving an invoice between stores is not done here.",
+            detail={"invoice_id": str(invoice_id), "store_id": str(invoice.store_id)},
+        )
+    store = await StoreRepository(db).get(body.store_id)
+    if store is None:
+        raise RecordNotFoundError(message="Store not found.", detail={"store_id": str(body.store_id)})
+
+    invoice.store_id = store.id
+    invoice.document.store_id = store.id
+    await ProcessingLogRepository(db).add(
+        document_id=invoice.document_id,
+        stage=PipelineStage.STORE_IDENTIFICATION,
+        message=f"Store assigned by {body.assigned_by}: {store.label}.",
+        payload={"event": "store_assigned", "store_id": str(store.id), "store_label": store.label,
+                 "assigned_by": body.assigned_by, "note": body.note},
+    )
+    await db.commit()
+    return await get_invoice(invoice_id, db)

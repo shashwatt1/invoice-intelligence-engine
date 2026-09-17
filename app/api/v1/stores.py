@@ -20,10 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
-from app.models.store import IDENTITY_CONFIRMED, SOURCE_DOCUMENT, Store
+from app.models.store import IDENTITY_CONFIRMED, IDENTITY_UNRESOLVED, SOURCE_DOCUMENT, Store
 from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse
 from app.schemas.processing import (
+    StoreCreate,
     StoreDirectoryEntry,
     StoreIdentifierOut,
     StoreIdentityUpdate,
@@ -68,6 +69,47 @@ async def list_stores(db: AsyncSession = Depends(get_db)) -> APIResponse[list[St
     stores = await repo.list()
     counts = await repo.counts()
     return APIResponse(data=[_entry(s, counts.get(s.id, {})) for s in stores])
+
+
+@router.post(
+    "/stores",
+    response_model=APIResponse[StoreDirectoryEntry],
+    status_code=201,
+    summary="Add a store to the directory",
+    description=(
+        "A person names a store (a location) so invoices can be processed for it. No "
+        "source code is attached: which Item Sales / POS code belongs to it is a separate, "
+        "explicit decision. With `confirm=true` the identity is marked confirmed by "
+        "`created_by`. A display name already in the directory is refused."
+    ),
+    responses={422: {"description": "A store with this name already exists"}},
+)
+async def create_store(body: StoreCreate, db: AsyncSession = Depends(get_db)) -> APIResponse[StoreDirectoryEntry]:
+    repo = StoreRepository(db)
+    name = body.display_name.strip()
+    for existing in await repo.list():
+        if (existing.display_name or "").strip().lower() == name.lower():
+            raise ValidationError(message=f"A store named '{existing.display_name}' already exists.",
+                                  detail={"field": "display_name", "store_id": str(existing.id)})
+    stamp = f"Added by {body.created_by.strip()} on {datetime.now(UTC).date().isoformat()}."
+    notes = f"{body.notes.strip()}\n{stamp}" if body.notes and body.notes.strip() else stamp
+    if body.confirm:
+        notes += f"\nIdentity confirmed by {body.created_by.strip()} on {datetime.now(UTC).date().isoformat()}."
+    store = await repo.create(
+        display_name=name,
+        customer_name=(body.customer_name or "").strip() or None,
+        address_line_1=(body.address_line_1 or "").strip() or None,
+        address_line_2=(body.address_line_2 or "").strip() or None,
+        city=(body.city or "").strip() or None,
+        state=(body.state or "").strip() or None,
+        postal_code=(body.postal_code or "").strip() or None,
+        identity_status=IDENTITY_CONFIRMED if body.confirm else IDENTITY_UNRESOLVED,
+        notes=notes,
+    )
+    await db.commit()
+    await db.refresh(store)
+    counts = (await repo.counts()).get(store.id, {})
+    return APIResponse(data=_entry(store, counts))
 
 
 @router.get("/stores/{store_id}", response_model=APIResponse[StoreDirectoryEntry], summary="One store")

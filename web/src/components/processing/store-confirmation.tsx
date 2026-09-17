@@ -1,4 +1,4 @@
-import { CheckCircle2, MapPin, Search } from "lucide-react";
+import { CheckCircle2, Clock, MapPin, Search } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useConfirmDocumentStore } from "@/hooks/use-api";
+import { useConfirmDocumentStore, useDeferDocumentStore } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
 
 /**
@@ -21,6 +21,11 @@ import { cn } from "@/lib/utils";
  * store the document is for. What identification found is shown with
  * its evidence — a candidate is offered, never applied — and any store
  * from the directory can be chosen instead.
+ *
+ * Or the store is not known yet (its data may not be loaded). Then the
+ * document is read now and stored STORE_PENDING: readable, correctable,
+ * and nothing store-scoped — no reference data, mappings or EDI — until
+ * a person assigns the store on the invoice. No store is invented.
  */
 export function StoreConfirmation({
   status,
@@ -30,6 +35,7 @@ export function StoreConfirmation({
   stores: StoreDirectoryEntry[];
 }) {
   const confirm = useConfirmDocumentStore(status.document_id);
+  const defer = useDeferDocumentStore(status.document_id);
   const candidates = status.store_candidates;
   const chosenUpFront = status.store;
   const [selected, setSelected] = useState<string>(
@@ -39,6 +45,18 @@ export function StoreConfirmation({
 
   const conflict = chosenUpFront && candidates.length > 0 &&
     !candidates.some((c) => c.store_id === chosenUpFront.id);
+
+  const deferNow = () => {
+    if (!confirmedBy.trim()) return;
+    defer.mutate(
+      { deferredBy: confirmedBy.trim(), note: null },
+      {
+        onSuccess: () => toast.success("Reading the document now. Assign its store on the invoice when it is known."),
+        onError: (error) => toast.error(error instanceof Error ? error.message : "Could not continue."),
+      },
+    );
+  };
+  const busy = confirm.isPending || defer.isPending;
 
   const submit = () => {
     if (!selected) return;
@@ -121,7 +139,7 @@ export function StoreConfirmation({
           <label className="text-[0.72rem] font-medium">
             {candidates.length ? "Or choose any store" : "Store"} <span className="text-danger">*</span>
           </label>
-          <Select value={selected} onValueChange={setSelected} disabled={confirm.isPending}>
+          <Select value={selected} onValueChange={setSelected} disabled={busy}>
             <SelectTrigger className="w-full">
               <SelectValue placeholder="Select a store from the directory" />
             </SelectTrigger>
@@ -142,17 +160,29 @@ export function StoreConfirmation({
             value={confirmedBy}
             onChange={(event) => setConfirmedBy(event.target.value)}
             placeholder="your name (recorded on the document)"
-            disabled={confirm.isPending}
+            disabled={busy}
           />
         </div>
       </div>
-      <div className="mt-3 flex items-center gap-2">
-        <Button size="sm" disabled={!selected || confirm.isPending} onClick={submit}>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={!selected || busy} onClick={submit}>
           <Search className="size-3.5" />
           {confirm.isPending ? "Confirming…" : "Confirm store and continue"}
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!confirmedBy.trim() || busy}
+          onClick={deferNow}
+          title={!confirmedBy.trim() ? "Enter your name first — the deferral is recorded" : undefined}
+          data-testid="defer-store"
+        >
+          <Clock className="size-3.5" />
+          {defer.isPending ? "Reading…" : "Store unknown — read now, assign later"}
+        </Button>
         <span className="text-[0.7rem] text-muted-foreground">
-          Recorded on the document. Structuring, validation and persistence run for this store only.
+          Confirming runs structuring, validation and persistence for that store only. Deferring stores the
+          invoice with no store: nothing store-specific until you assign one on the invoice.
         </span>
       </div>
     </div>

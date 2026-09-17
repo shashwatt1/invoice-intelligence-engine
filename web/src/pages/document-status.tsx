@@ -4,12 +4,13 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "@/components/layout/page-header";
 import { StoreChip } from "@/components/shared/store-chip";
 import { ProcessingTimeline } from "@/components/processing/processing-timeline";
+import { StoreConfirmation } from "@/components/processing/store-confirmation";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ErrorState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useDocumentStatus } from "@/hooks/use-api";
+import { useDocumentStatus, useStores } from "@/hooks/use-api";
 import { formatDateTime } from "@/lib/format";
 
 /**
@@ -19,6 +20,7 @@ import { formatDateTime } from "@/lib/format";
 export function DocumentStatusPage() {
   const { documentId } = useParams<{ documentId: string }>();
   const { data, isPending, isError, error, refetch } = useDocumentStatus(documentId);
+  const stores = useStores();
 
   return (
     <>
@@ -75,6 +77,11 @@ export function DocumentStatusPage() {
               </CardHeader>
               <CardContent>
                 <ProcessingTimeline status={data} />
+                {data.awaiting_store_confirmation ? (
+                  <div className="mt-4">
+                    <StoreConfirmation status={data} stores={stores.data ?? []} />
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 

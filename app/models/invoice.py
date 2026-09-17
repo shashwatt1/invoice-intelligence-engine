@@ -55,10 +55,16 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     # The store this invoice was received for. Every reference lookup —
     # pricing, catalogue, case mappings, proposals — is scoped by it; the
-    # system never falls back to a global store for an invoice.
-    store_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False,
+    # system never falls back to a global store for an invoice. NULL is
+    # STORE_PENDING: the invoice was read before its store was known, and
+    # every store-scoped step refuses until a person assigns one.
+    store_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stores.id", ondelete="RESTRICT"), nullable=True,
     )
+
+    @property
+    def store_pending(self) -> bool:
+        return self.store_id is None
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("vendors.id", ondelete="SET NULL"),

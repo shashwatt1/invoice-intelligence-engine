@@ -43,17 +43,25 @@ requires_db = pytest.mark.skipif(
 async def _schema_is_stale(conn, metadata) -> bool:
     """True when any model column is missing from the live test schema."""
     rows = await conn.execute(text(
-        "SELECT table_name, column_name FROM information_schema.columns "
+        "SELECT table_name, column_name, is_nullable FROM information_schema.columns "
         "WHERE table_schema = 'public'"
     ))
     live: dict[str, set[str]] = {}
-    for table, column in rows:
+    live_nullable: dict[tuple[str, str], bool] = {}
+    for table, column, is_nullable in rows:
         live.setdefault(table, set()).add(column)
+        live_nullable[(table, column)] = is_nullable == "YES"
     for table in metadata.sorted_tables:
         if table.name not in live:
             continue                      # create_all will make it
         if {c.name for c in table.columns} - live[table.name]:
             return True
+        # Nullability that changed (0016 made invoices.store_id nullable) is
+        # drift too: create_all never ALTERs, and a stale NOT NULL would fail
+        # a persistence the model allows.
+        for c in table.columns:
+            if (table.name, c.name) in live_nullable and live_nullable[(table.name, c.name)] != bool(c.nullable):
+                return True
     # A unique constraint whose columns changed (0011 added store_number
     # to product_pricing's source-row key) is drift too: create_all never
     # alters, and the old key would make a cross-store test pass or fail

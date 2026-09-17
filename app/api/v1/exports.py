@@ -27,7 +27,7 @@ from app.services.export_service import (
     build_pdi_export,
     build_txt,
     export_basename,
-    pdi_export_eligibility,
+    persisted_pdi_export_eligibility,
     unmapped_item_codes,
 )
 
@@ -92,7 +92,7 @@ async def export_invoice(
         filename = f"{basename}_items.csv"
     elif format == "pdi":
         units = await invoice_units_by_item_code(db, invoice)
-        eligibility = pdi_export_eligibility(invoice, units)
+        eligibility = persisted_pdi_export_eligibility(invoice, units)
         if not eligibility.allowed:
             raise ValidationError(
                 message=eligibility.blocked_reason

@@ -1,15 +1,16 @@
-import { Check, MapPin, Pencil, X } from "lucide-react";
+import { Check, MapPin, Pencil, Plus, X } from "lucide-react";
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
-import type { StoreDirectoryEntry, StoreIdentityUpdate } from "@/api/types";
+import type { StoreCreate, StoreDirectoryEntry, StoreIdentityUpdate } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { useStores, useUpdateStoreIdentity } from "@/hooks/use-api";
+import { useCreateStore, useStores, useUpdateStoreIdentity } from "@/hooks/use-api";
+import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
 import { cn } from "@/lib/utils";
 
 /**
@@ -22,19 +23,26 @@ export function StoresPage() {
   const { data, isPending, isError, error, refetch } = useStores();
   const [search] = useSearchParams();
   const highlight = search.get("store");
+  const [adding, setAdding] = useState(false);
 
   return (
     <>
       <PageHeader
         title="Store Directory"
         description="Each location's confirmed identity — or the source identifier it is known by until a person confirms one — with every system's identifiers for it and what the system holds for it."
+        actions={
+          <Button size="sm" onClick={() => setAdding((v) => !v)} data-testid="add-store-toggle">
+            <Plus className="size-3.5" /> Add store
+          </Button>
+        }
       />
+      {adding ? <AddStoreForm onDone={() => setAdding(false)} /> : null}
       {isError ? (
         <ErrorState error={error} onRetry={() => void refetch()} />
       ) : isPending ? (
         <TableSkeleton rows={3} />
       ) : data.length === 0 ? (
-        <EmptyState icon={MapPin} title="No stores" description="Stores appear here when reference data is imported for them." />
+        <EmptyState icon={MapPin} title="No stores" description="Add a store, or import reference data for one." />
       ) : (
         <div className="space-y-4">
           {data.map((store) => (
@@ -212,5 +220,95 @@ function Field({ label, value, onChange, placeholder }: {
       <label className="text-[0.7rem] font-medium">{label}</label>
       <Input value={value} onChange={onChange} placeholder={placeholder} className="h-8" />
     </div>
+  );
+}
+
+
+/**
+ * A person adds a store — a location with a name — so invoices can be
+ * processed for it before any reference data exists. No source code is
+ * attached here: which POS / Item Sales code belongs to it is a separate,
+ * explicit decision, never read off an invoice.
+ */
+function AddStoreForm({ onDone }: { onDone: () => void }) {
+  const create = useCreateStore();
+  const [form, setForm] = useState<StoreCreate>({
+    display_name: "", customer_name: "", address_line_1: "", city: "", state: "", postal_code: "",
+    created_by: rememberedReviewer(), confirm: true,
+  });
+  const set = (key: keyof StoreCreate) => (event: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((prev) => ({ ...prev, [key]: event.target.value }));
+  const ready = form.display_name.trim() && form.created_by.trim();
+
+  const submit = () => {
+    if (!ready) return;
+    create.mutate(
+      {
+        ...form,
+        display_name: form.display_name.trim(),
+        created_by: form.created_by.trim(),
+        customer_name: form.customer_name || null, address_line_1: form.address_line_1 || null,
+        city: form.city || null, state: form.state || null, postal_code: form.postal_code || null,
+      },
+      {
+        onSuccess: (store) => {
+          rememberReviewer(form.created_by.trim());
+          toast.success(`Added ${store.label}. It can be chosen on Process Invoice now.`);
+          onDone();
+        },
+        onError: (error) => toast.error(error instanceof Error ? error.message : "Could not add the store."),
+      },
+    );
+  };
+
+  return (
+    <Card className="mb-4" data-testid="add-store-form">
+      <CardHeader>
+        <CardTitle className="text-[0.95rem]">Add a store</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-3">
+          <div className="space-y-1 sm:col-span-1">
+            <label htmlFor="new-store-name" className="text-[0.72rem] font-medium">Store name <span className="text-danger">*</span></label>
+            <Input id="new-store-name" value={form.display_name} onChange={set("display_name")} placeholder="e.g. Red Cliff Market" autoFocus />
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="new-store-customer" className="text-[0.72rem] font-medium">Customer / legal name</label>
+            <Input id="new-store-customer" value={form.customer_name ?? ""} onChange={set("customer_name")} placeholder="as printed on invoices" />
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="new-store-by" className="text-[0.72rem] font-medium">Added by <span className="text-danger">*</span></label>
+            <Input id="new-store-by" value={form.created_by} onChange={set("created_by")} placeholder="e.g. data-team:shashwat" autoComplete="off" />
+          </div>
+          <div className="space-y-1 sm:col-span-1">
+            <label htmlFor="new-store-addr" className="text-[0.72rem] font-medium">Address</label>
+            <Input id="new-store-addr" value={form.address_line_1 ?? ""} onChange={set("address_line_1")} />
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="new-store-city" className="text-[0.72rem] font-medium">City</label>
+            <Input id="new-store-city" value={form.city ?? ""} onChange={set("city")} />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label htmlFor="new-store-state" className="text-[0.72rem] font-medium">State</label>
+              <Input id="new-store-state" value={form.state ?? ""} onChange={set("state")} />
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="new-store-zip" className="text-[0.72rem] font-medium">ZIP</label>
+              <Input id="new-store-zip" value={form.postal_code ?? ""} onChange={set("postal_code")} />
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" disabled={!ready || create.isPending} onClick={submit} data-testid="add-store-submit">
+            {create.isPending ? "Adding…" : "Add store"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onDone}>Cancel</Button>
+          <span className="text-[0.7rem] text-muted-foreground">
+            No source code is attached: linking a POS / Item Sales code to this store is a separate decision.
+          </span>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

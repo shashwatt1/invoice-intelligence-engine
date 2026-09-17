@@ -393,13 +393,18 @@ class InvoiceProcessingPipeline:
         )
 
     async def resume_after_store_confirmation(
-        self, session: AsyncSession, document: Document
+        self, session: AsyncSession, document: Document, *, store_deferred: bool = False
     ) -> PipelineResult:
         """
         Finish a run that paused for store confirmation. The text was
         extracted and stored earlier; nothing is re-extracted.
+
+        `store_deferred=True` finishes the run with NO store: the invoice
+        is persisted STORE_PENDING (store_id NULL) so it can be read and
+        corrected now and assigned later. Nothing store-specific happens
+        until then — no reference data, no mappings, no EDI.
         """
-        if not document.store_id:
+        if not document.store_id and not store_deferred:
             raise ValueError("The document has no confirmed store; nothing to resume.")
         if document.raw_ocr_text is None:
             raise ValueError("The document has no extracted text to resume from.")
@@ -485,7 +490,7 @@ class InvoiceProcessingPipeline:
         *,
         ocr_result: OCRResult,
         filename: str,
-        store_id: uuid.UUID,
+        store_id: uuid.UUID | None,
     ) -> PipelineResult:
         documents = DocumentRepository(session)
         logs = ProcessingLogRepository(session)

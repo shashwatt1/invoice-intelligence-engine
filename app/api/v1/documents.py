@@ -33,6 +33,7 @@ from app.schemas.processing import (
     DocumentStatusData,
     StoreCandidateOut,
     StoreConfirmation,
+    StoreDeferral,
     StoreRef,
 )
 from app.services.pipeline_service import InvoiceProcessingPipeline
@@ -164,14 +165,63 @@ async def confirm_store(
     return APIResponse(data=await _status_data(db, document, logs, invoice, None, False))
 
 
-async def _resume_background(pipeline: InvoiceProcessingPipeline, document_id: uuid.UUID) -> None:
+@router.post(
+    "/documents/{document_id}/defer-store",
+    response_model=APIResponse[DocumentStatusData],
+    summary="Read the document now, assign its store later",
+    description=(
+        "Only for a document in `STORE_CONFIRMATION_REQUIRED`. The person says the store is "
+        "not known (or its data is not ready) and processing continues WITHOUT one: "
+        "structuring → validation → persistence run from the text already extracted and the "
+        "invoice is stored STORE_PENDING. No reference data, case mapping, proposal or EDI "
+        "is possible until POST /invoices/{id}/assign-store. No store is invented."
+    ),
+    responses={404: {"description": "Not found"}, 422: {"description": "Not waiting for a store"}},
+)
+async def defer_store(
+    document_id: uuid.UUID,
+    body: StoreDeferral,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    pipeline: InvoiceProcessingPipeline = Depends(get_pipeline),
+) -> APIResponse[DocumentStatusData]:
+    document = await DocumentRepository(db).get(document_id)
+    if document is None:
+        raise RecordNotFoundError(message="Document not found.", detail={"document_id": str(document_id)})
+    if document.status != DocumentStatus.STORE_CONFIRMATION_REQUIRED:
+        raise ValidationError(
+            message=f"Document is {document.status}, not waiting for a store.",
+            detail={"document_id": str(document_id), "status": document.status},
+        )
+    document.store_id = None
+    await DocumentRepository(db).set_status(document, DocumentStatus.OCR_COMPLETED)
+    await ProcessingLogRepository(db).add(
+        document_id=document.id,
+        stage=PipelineStage.STORE_IDENTIFICATION,
+        message=f"Store deferred by {body.deferred_by}: processing continues with no store (STORE_PENDING).",
+        payload={"event": "store_deferred", "deferred_by": body.deferred_by, "note": body.note,
+                 "candidates_offered": sorted({c.get("store_id") for c in (document.store_candidates or [])
+                                               if c.get("store_id")})},
+    )
+    await db.commit()
+    await db.refresh(document)
+    background_tasks.add_task(_resume_background, pipeline, document.id, True)
+
+    logs = await ProcessingLogRepository(db).for_document(document_id)
+    invoice = await InvoiceRepository(db).get_by_document(document_id)
+    return APIResponse(data=await _status_data(db, document, logs, invoice, None, False))
+
+
+async def _resume_background(
+    pipeline: InvoiceProcessingPipeline, document_id: uuid.UUID, store_deferred: bool = False
+) -> None:
     factory = get_session_factory()
     async with factory() as session:
         document = await DocumentRepository(session).get(document_id)
         if document is None:  # pragma: no cover
             return
         try:
-            await pipeline.resume_after_store_confirmation(session, document)
+            await pipeline.resume_after_store_confirmation(session, document, store_deferred=store_deferred)
         except InvoiceBaseException as exc:
             logger.warning("background_resume_failed", document_id=str(document_id),
                            error_code=exc.error_code)

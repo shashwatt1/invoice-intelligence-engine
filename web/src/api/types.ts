@@ -97,6 +97,23 @@ export interface StoreDirectoryEntry extends StoreRef {
   pending_proposals: number;
 }
 
+/** Body of POST /stores — a person adds a store (a location) to the directory. */
+export interface StoreCreate {
+  display_name: string;
+  customer_name?: string | null;
+  address_line_1?: string | null;
+  address_line_2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postal_code?: string | null;
+  notes?: string | null;
+  created_by: string;
+  confirm?: boolean;
+}
+
+/** assign-store returns the full detail; alias kept for readability at call sites. */
+export type StoreAssignmentResult = InvoiceDetail;
+
 export interface StoreIdentityUpdate {
   display_name?: string | null;
   customer_name?: string | null;
@@ -413,7 +430,9 @@ export interface InvoiceDetail {
   source_type: string | null;
   /** The store this invoice was received for. Every reference lookup,
    * case mapping and proposal on this page is that store's own. */
-  store: StoreRef;
+  /** null while STORE_PENDING — read before the store was known. */
+  store: StoreRef | null;
+  store_pending: boolean;
 
   invoice_number: string | null;
   invoice_date: string | null;

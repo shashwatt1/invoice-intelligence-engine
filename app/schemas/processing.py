@@ -556,6 +556,45 @@ class StoreConfirmation(BaseModel):
     confirmed_by: str | None = Field(default=None, max_length=128)
 
 
+class StoreDeferral(BaseModel):
+    """
+    Body of POST /documents/{id}/defer-store — read the document now,
+    assign the store later. The invoice is persisted STORE_PENDING.
+    """
+
+    deferred_by: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class StoreAssignment(BaseModel):
+    """Body of POST /invoices/{id}/assign-store — a person names the store of a pending invoice."""
+
+    store_id: uuid.UUID
+    assigned_by: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class StoreCreate(BaseModel):
+    """
+    Body of POST /stores — a person adds a store to the directory.
+
+    A store is a location a person can name. No source code is attached
+    here: linking an Item Sales / POS code to it is a separate, explicit
+    step, never inferred from an invoice.
+    """
+
+    display_name: str = Field(min_length=1, max_length=128)
+    customer_name: str | None = Field(default=None, max_length=128)
+    address_line_1: str | None = Field(default=None, max_length=128)
+    address_line_2: str | None = Field(default=None, max_length=128)
+    city: str | None = Field(default=None, max_length=64)
+    state: str | None = Field(default=None, max_length=32)
+    postal_code: str | None = Field(default=None, max_length=16)
+    notes: str | None = Field(default=None, max_length=2000)
+    created_by: str = Field(min_length=1, max_length=128)
+    confirm: bool = Field(default=False, description="Mark the identity confirmed by created_by.")
+
+
 class StageEntry(BaseModel):
     """One processing-log entry in the document timeline."""
 
@@ -665,6 +704,7 @@ class DatabaseConfirmation(BaseModel):
 
 
 class InvoiceDetailData(BaseModel):
+    """Full invoice detail. `store` is None while the invoice is STORE_PENDING."""
     """Everything the invoice detail view needs in one request."""
 
     invoice_id: uuid.UUID
@@ -672,8 +712,13 @@ class InvoiceDetailData(BaseModel):
     filename: str
     document_status: str
     source_type: str | None = None
-    store: StoreRef = Field(
-        description="The store this invoice was received for; scopes every reference lookup."
+    store: StoreRef | None = Field(default=None, description="None while STORE_PENDING.")
+    store_pending: bool = Field(
+        default=False,
+        description=(
+            "The invoice was read before its store was known. No reference data, case "
+            "mappings, proposals or EDI until a person assigns the store."
+        ),
     )
 
     invoice_number: str | None = None

@@ -90,6 +90,8 @@ async def invoice_units_by_item_code(
     invoice's own store. Another store's confirmation of the same UPC is
     not consulted: the store is part of the mapping's identity.
     """
+    if invoice.store_id is None:
+        return {}                                   # STORE_PENDING: no store, no mappings
     codes = [
         code
         for code in (normalize_item_code(item.product_sku) for item in invoice.items)

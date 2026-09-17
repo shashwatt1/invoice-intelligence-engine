@@ -307,7 +307,7 @@ async def match_invoice_against_reference(
     """
     store_id = invoice.store_id
     if not store_id:
-        raise ValueError("invoice has no store_id; reference matching needs one.")
+        return {}                                   # STORE_PENDING: nothing to match against
     costs: dict[str, Decimal | None] = {}
     for item in invoice.items:
         code = normalize_item_code(item.product_sku)

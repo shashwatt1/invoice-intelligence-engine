@@ -30,7 +30,7 @@ class InvoiceRepository:
         self,
         *,
         document_id: uuid.UUID,
-        store_id: uuid.UUID,
+        store_id: uuid.UUID | None,
         vendor_id: uuid.UUID | None,
         normalized: NormalizedInvoice,
         decision: ProcessingDecision,

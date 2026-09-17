@@ -11,6 +11,7 @@ import { DatabaseConfirmationCard } from "@/components/invoice/database-confirma
 import { DeveloperPanel } from "@/components/invoice/developer-panel";
 import { DuplicateReviewCard } from "@/components/invoice/duplicate-review-card";
 import { InvoiceReviewCard } from "@/components/invoice/invoice-review-card";
+import { StorePendingCard } from "@/components/invoice/store-pending-card";
 import { PdiExportConfirmDialog } from "@/components/invoice/pdi-export-confirm-dialog";
 import { ValidationReportCard } from "@/components/invoice/validation-report";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -370,11 +371,18 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
       {/* Overlapping photos the model could not reconcile on its own */}
       <DuplicateReviewCard detail={detail} />
 
-      {/* Case → unit mapping: the remaining gate on the PDI download */}
-      <CaseMappingCard invoiceId={detail.invoice_id} store={detail.store} rows={detail.case_mappings} />
+      {detail.store_pending || !detail.store ? (
+        /* No store yet: nothing store-scoped is shown until a person assigns one */
+        <StorePendingCard invoiceId={detail.invoice_id} />
+      ) : (
+        <>
+          {/* Case → unit mapping: the remaining gate on the PDI download */}
+          <CaseMappingCard invoiceId={detail.invoice_id} store={detail.store} rows={detail.case_mappings} />
 
-      {/* What this invoice put forward for review, and what became of it */}
-      <InvoiceReviewCard invoiceId={detail.invoice_id} review={detail.review} />
+          {/* What this invoice put forward for review, and what became of it */}
+          <InvoiceReviewCard invoiceId={detail.invoice_id} review={detail.review} />
+        </>
+      )}
 
       {/* Line items */}
       <Card className="gap-0 p-0">
