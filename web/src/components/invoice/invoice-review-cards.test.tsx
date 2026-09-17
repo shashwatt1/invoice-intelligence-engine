@@ -21,6 +21,7 @@ function line(sort_order: number, over: Partial<LineItem> = {}): LineItem {
   return {
     description: `PRODUCT ${sort_order}`, quantity: 1, unit_price: 10, line_total: 10, tax_rate: null,
     unit_deposit: null, sort_order, line_type: "product", source_pages: [], duplicate_candidate: null,
+    product_code: null, unit_discount: null, entry_source: "extracted", correction_history: [],
     corrected_fields: [], ...over,
   };
 }

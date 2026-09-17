@@ -9,6 +9,7 @@ engine's canonical NormalizedInvoice, wiring in the AI-stage artifacts
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -99,38 +100,128 @@ class InvoiceRepository:
         await self._session.flush()
         return invoice
 
-    async def correct_item(
-        self,
-        invoice_id: uuid.UUID,
-        sort_order: int,
-        updates: dict[str, Decimal],
-    ) -> InvoiceItem | None:
-        """
-        Replace transaction values on one line item with figures a person
-        supplied, recording which fields they touched.
+    @staticmethod
+    def _entry(field: str, old: Any, new: Any, by: str | None, note: str | None) -> dict[str, Any]:
+        def plain(v: Any) -> Any:
+            return float(v) if isinstance(v, Decimal) else v
+        return {"field": field, "old": plain(old), "new": plain(new), "by": by,
+                "at": datetime.now(UTC).isoformat(), "note": note}
 
-        Only the caller-supplied fields change; everything else on the row
-        keeps its extracted value. `corrected_fields` accumulates rather
-        than overwrites, so correcting a price today and a quantity
-        tomorrow leaves both marked. Flushes, never commits.
-        """
+    async def _item(self, invoice_id: uuid.UUID, sort_order: int) -> InvoiceItem | None:
         result = await self._session.execute(
             select(InvoiceItem).where(
                 InvoiceItem.invoice_id == invoice_id,
                 InvoiceItem.sort_order == sort_order,
             )
         )
-        item = result.scalar_one_or_none()
+        return result.scalar_one_or_none()
+
+    async def correct_item(
+        self,
+        invoice_id: uuid.UUID,
+        sort_order: int,
+        updates: dict[str, Any],
+        *,
+        corrected_by: str | None = None,
+        note: str | None = None,
+    ) -> InvoiceItem | None:
+        """
+        Replace values on one line item with figures a person supplied,
+        recording which fields they touched and — per field — what the
+        value was, what it became, who, when and why.
+
+        Only the caller-supplied fields change; everything else on the row
+        keeps its extracted value. `corrected_fields` accumulates rather
+        than overwrites, so correcting a price today and a quantity
+        tomorrow leaves both marked. Flushes, never commits.
+        """
+        item = await self._item(invoice_id, sort_order)
         if item is None:
             return None
 
         from app.schemas.processing import LineItemCorrection
 
+        history = list(item.correction_history or [])
         for field, value in updates.items():
-            setattr(item, LineItemCorrection.COLUMNS.get(field, field), value)
+            column = LineItemCorrection.COLUMNS.get(field, field)
+            history.append(self._entry(field, getattr(item, column), value, corrected_by, note))
+            setattr(item, column, value)
         item.corrected_fields = sorted(set(item.corrected_fields or []) | set(updates))
+        item.correction_history = history
         await self._session.flush()
         return item
+
+    async def add_item(
+        self,
+        invoice: Invoice,
+        *,
+        description: str,
+        product_code: str | None,
+        pack_size: str | None,
+        quantity: Decimal,
+        unit_price: Decimal | None,
+        unit_deposit: Decimal | None,
+        unit_discount: Decimal | None,
+        line_total: Decimal | None,
+        added_by: str,
+        note: str | None,
+    ) -> InvoiceItem:
+        """
+        A row a person adds because the photos missed it. Appended after
+        the last row, typed 'manual', every given value marked as the
+        person's and the addition recorded in the row's history. Nothing
+        here touches master data. Flushes, never commits.
+        """
+        next_order = max((i.sort_order for i in invoice.items), default=-1) + 1
+        given = {k: v for k, v in (("description", description), ("product_code", product_code),
+                                   ("quantity", quantity), ("unit_price", unit_price),
+                                   ("unit_deposit", unit_deposit), ("unit_discount", unit_discount),
+                                   ("line_total", line_total)) if v is not None}
+        item = InvoiceItem(
+            invoice_id=invoice.id, description=description, product_sku=product_code, pack_size=pack_size,
+            quantity=quantity, unit_price=unit_price, deposit=unit_deposit, discount=unit_discount,
+            line_total=line_total, line_type="product", sort_order=next_order,
+            entry_source="manual", corrected_fields=sorted(given),
+            correction_history=[self._entry("row", None, "added", added_by, note)],
+        )
+        self._session.add(item)
+        invoice.items.append(item)
+        await self._session.flush()
+        return item
+
+    async def void_item(
+        self, invoice_id: uuid.UUID, sort_order: int, *, voided_by: str, note: str | None
+    ) -> InvoiceItem | None:
+        """
+        A row a person says is not on the invoice. Kept for audit, typed
+        'voided': out of the subtotal, out of the PDI export. Flushes only.
+        """
+        item = await self._item(invoice_id, sort_order)
+        if item is None:
+            return None
+        history = list(item.correction_history or [])
+        history.append(self._entry("line_type", item.line_type, "voided", voided_by, note))
+        item.line_type = "voided"
+        item.correction_history = history
+        await self._session.flush()
+        return item
+
+    async def correct_totals(
+        self, invoice: Invoice, updates: dict[str, Decimal], *, corrected_by: str, note: str | None
+    ) -> Invoice:
+        """
+        Replace printed header figures with what a person read off the
+        document. Each field's extracted value goes into the history
+        before it is replaced. Flushes only.
+        """
+        history = list(invoice.correction_history or [])
+        for field, value in updates.items():
+            history.append(self._entry(field, getattr(invoice, field), value, corrected_by, note))
+            setattr(invoice, field, value)
+        invoice.corrected_fields = sorted(set(invoice.corrected_fields or []) | set(updates))
+        invoice.correction_history = history
+        await self._session.flush()
+        return invoice
 
     async def get(self, invoice_id: uuid.UUID) -> Invoice | None:
         return await self._session.get(Invoice, invoice_id)

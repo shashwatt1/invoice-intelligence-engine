@@ -7,6 +7,8 @@ import type { InvoiceDetail, LineItem } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
 import { PageHeader } from "@/components/layout/page-header";
 import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
+import { AddRowForm, CorrectingAs, EditableTotal, HistoryNote, VoidRowButton } from "@/components/invoice/corrections";
+import { outcomeToast } from "@/lib/corrections";
 import { DatabaseConfirmationCard } from "@/components/invoice/database-confirmation";
 import { DeveloperPanel } from "@/components/invoice/developer-panel";
 import { DuplicateReviewCard } from "@/components/invoice/duplicate-review-card";
@@ -42,6 +44,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { useCorrectLineItem, useDeleteInvoice, useInvoice } from "@/hooks/use-api";
 import { formatDate, formatDateTime, formatMoney, formatPercent } from "@/lib/format";
+import { rememberedReviewer } from "@/lib/reviewer";
 
 /**
  * Primary product deliverable: the machine-readable PDI EDI file, ready
@@ -166,30 +169,6 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TotalsRow({
-  label,
-  value,
-  emphasized,
-}: {
-  label: string;
-  value: string;
-  emphasized?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between py-1">
-      <span className="text-[0.8rem] text-muted-foreground">{label}</span>
-      <span
-        className={
-          emphasized
-            ? "text-[1.05rem] font-bold tabular-nums"
-            : "text-[0.85rem] font-medium tabular-nums"
-        }
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
 
 /**
  * One editable transaction value on a line item.
@@ -208,11 +187,13 @@ function EditableAmount({
   item,
   field,
   render,
+  by,
 }: {
   invoiceId: string;
   item: LineItem;
-  field: "unit_price" | "quantity" | "line_total" | "unit_deposit";
+  field: "unit_price" | "quantity" | "line_total" | "unit_deposit" | "unit_discount";
   render: (value: number) => string;
+  by: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -225,17 +206,11 @@ function EditableAmount({
     const parsed = Number(draft);
     if (draft.trim() === "" || Number.isNaN(parsed) || parsed < 0) return;
     correct.mutate(
-      { sortOrder: item.sort_order, correction: { [field]: draft } },
+      { sortOrder: item.sort_order, correction: { [field]: draft, corrected_by: by.trim() || null } },
       {
         onSuccess: (result) => {
           setEditing(false);
-          toast.success(
-            result.pdi_export_allowed
-              ? "Corrected. PDI export is now available."
-              : `Corrected — ${result.failed_checks} validation issue${
-                  result.failed_checks === 1 ? "" : "s"
-                } remaining.`,
-          );
+          outcomeToast(result);
         },
         onError: (error) => {
           toast.error(error instanceof Error ? error.message : "Correction failed.");
@@ -317,6 +292,8 @@ function EditableAmount({
 
 function DetailBody({ detail }: { detail: InvoiceDetail }) {
   const vendor = detail.vendor;
+  // One name for every correction made from this page; remembered per browser.
+  const [by, setBy] = useState(rememberedReviewer);
   return (
     <div className="space-y-4">
       {/* Vendor / invoice meta / totals */}
@@ -354,15 +331,13 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
             <CardTitle className="text-[0.9rem]">Totals</CardTitle>
           </CardHeader>
           <CardContent>
-            <TotalsRow label="Subtotal" value={formatMoney(detail.subtotal)} />
-            <TotalsRow label="Tax" value={formatMoney(detail.tax_amount)} />
-            <TotalsRow label="Discount" value={formatMoney(detail.discount_amount)} />
+            <EditableTotal detail={detail} field="subtotal" by={by} />
+            <EditableTotal detail={detail} field="tax_amount" by={by} />
+            <EditableTotal detail={detail} field="discount_amount" by={by} />
+            <EditableTotal detail={detail} field="deposit_total" by={by} />
+            <EditableTotal detail={detail} field="fuel_surcharge" by={by} />
             <div className="mt-1.5 border-t pt-1.5">
-              <TotalsRow
-                label="Grand total"
-                value={formatMoney(detail.grand_total, detail.currency)}
-                emphasized
-              />
+              <EditableTotal detail={detail} field="grand_total" by={by} emphasized />
             </div>
           </CardContent>
         </Card>
@@ -386,7 +361,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
 
       {/* Line items */}
       <Card className="gap-0 p-0">
-        <CardHeader className="px-5 py-4">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 px-5 py-4">
           <CardTitle className="text-[0.95rem]">
             Line items
             <span className="ml-2 text-[0.75rem] font-normal text-muted-foreground">
@@ -394,6 +369,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
               document order
             </span>
           </CardTitle>
+          <CorrectingAs value={by} onChange={setBy} />
         </CardHeader>
         <CardContent className="px-2 pb-2">
           {detail.line_items.length === 0 ? (
@@ -410,7 +386,9 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                   <TableHead className="text-right">Unit price</TableHead>
                   <TableHead className="text-right">Deposit</TableHead>
                   <TableHead className="text-right">Line total</TableHead>
+                  <TableHead className="text-right">Discount</TableHead>
                   <TableHead className="text-right">Tax %</TableHead>
+                  <TableHead className="w-8" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -418,7 +396,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                   <TableRow
                     key={item.sort_order}
                     className={
-                      item.line_type === "duplicate"
+                      item.line_type === "duplicate" || item.line_type === "voided"
                         ? "text-muted-foreground line-through"
                         : item.duplicate_candidate && !item.duplicate_candidate.resolution
                           ? "bg-warning-soft/40"
@@ -427,10 +405,16 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                   >
                     <TableCell className="max-w-80 truncate font-medium">
                       {item.description}
+                      {item.entry_source === "manual" ? (
+                        <span className="ml-1.5 rounded bg-accent px-1 text-[0.65rem] font-medium text-accent-foreground no-underline" title="Added by a person">manual</span>
+                      ) : null}
+                      <span className="ml-1"><HistoryNote history={item.correction_history} /></span>
                       {item.line_type === "charge" ? (
                         <span className="ml-1.5 text-[0.68rem] font-normal text-muted-foreground">charge</span>
                       ) : item.line_type === "duplicate" ? (
                         <span className="ml-1.5 text-[0.68rem] font-normal no-underline">seen twice · counted once</span>
+                      ) : item.line_type === "voided" ? (
+                        <span className="ml-1.5 text-[0.68rem] font-normal no-underline">voided</span>
                       ) : item.duplicate_candidate && !item.duplicate_candidate.resolution ? (
                         <span className="ml-1.5 text-[0.68rem] font-normal text-warning">possible duplicate of row {item.duplicate_candidate.of_sort_order}</span>
                       ) : null}
@@ -446,6 +430,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                         item={item}
                         field="quantity"
                         render={(v) => v.toLocaleString()}
+                        by={by}
                       />
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
@@ -459,6 +444,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                             maximumFractionDigits: 4,
                           })
                         }
+                        by={by}
                       />
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground tabular-nums">
@@ -467,6 +453,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                         item={item}
                         field="unit_deposit"
                         render={(v) => formatMoney(v)}
+                        by={by}
                       />
                     </TableCell>
                     <TableCell className="text-right font-semibold tabular-nums">
@@ -475,16 +462,32 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                         item={item}
                         field="line_total"
                         render={(v) => formatMoney(v)}
+                        by={by}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right text-muted-foreground tabular-nums">
+                      <EditableAmount
+                        invoiceId={detail.invoice_id}
+                        item={item}
+                        field="unit_discount"
+                        render={(v) => formatMoney(v)}
+                        by={by}
                       />
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground tabular-nums">
                       {item.tax_rate !== null ? `${item.tax_rate}%` : "—"}
+                    </TableCell>
+                    <TableCell>
+                      <VoidRowButton invoiceId={detail.invoice_id} item={item} by={by} />
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           )}
+          <div className="px-3 pt-3 pb-1">
+            <AddRowForm invoiceId={detail.invoice_id} by={by} />
+          </div>
         </CardContent>
       </Card>
 

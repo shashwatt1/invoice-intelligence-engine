@@ -20,6 +20,9 @@ import type {
   BulkProposalDecision,
   DuplicateDecision,
   DuplicateDecisionResult,
+  InvoiceTotalsCorrection,
+  InvoiceTotalsCorrectionResult,
+  LineItemCreate,
   ProcessAccepted,
   ProductHistory,
   ProposalDecision,
@@ -281,5 +284,34 @@ export async function assignInvoiceStore(
 /** Adds a store to the directory. No source code is attached here. */
 export async function createStore(body: StoreCreate): Promise<StoreDirectoryEntry> {
   const { data } = await apiClient.post<ApiEnvelope<StoreDirectoryEntry>>("/stores", body);
+  return data.data!;
+}
+
+/** A person adds a row the photos missed — to THIS invoice. Invoice data only. */
+export async function addLineItem(invoiceId: string, body: LineItemCreate): Promise<LineItemCorrectionResult> {
+  const { data } = await apiClient.post<ApiEnvelope<LineItemCorrectionResult>>(`/invoices/${invoiceId}/items`, body);
+  return data.data!;
+}
+
+/** Voids a row (kept for audit, typed 'voided', out of totals and PDI). */
+export async function voidLineItem(
+  invoiceId: string,
+  sortOrder: number,
+  voidedBy: string,
+  note: string | null,
+): Promise<LineItemCorrectionResult> {
+  const { data } = await apiClient.delete<ApiEnvelope<LineItemCorrectionResult>>(
+    `/invoices/${invoiceId}/items/${sortOrder}`,
+    { data: { voided_by: voidedBy, note } },
+  );
+  return data.data!;
+}
+
+/** Corrects printed header totals; the extracted values stay in the history. */
+export async function correctTotals(
+  invoiceId: string,
+  body: InvoiceTotalsCorrection,
+): Promise<InvoiceTotalsCorrectionResult> {
+  const { data } = await apiClient.patch<ApiEnvelope<InvoiceTotalsCorrectionResult>>(`/invoices/${invoiceId}/totals`, body);
   return data.data!;
 }

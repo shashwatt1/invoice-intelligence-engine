@@ -9,6 +9,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  addLineItem,
   approveProposal,
   assignInvoiceStore,
   bulkApproveProposals,
@@ -19,6 +20,7 @@ import {
   confirmDocumentStore,
   createStore,
   correctLineItem,
+  correctTotals,
   deleteInvoice,
   getDashboardSummary,
   getDocumentStatus,
@@ -32,6 +34,7 @@ import {
   processInvoice,
   rejectProposal,
   reviseProposal,
+  voidLineItem,
   updateStoreIdentity,
 } from "@/api/endpoints";
 import type {
@@ -40,6 +43,8 @@ import type {
   LineItemCorrection,
   BulkProposalDecision,
   DuplicateDecision,
+  InvoiceTotalsCorrection,
+  LineItemCreate,
   ProposalDecision,
   ProposalListParams,
   ProposalRevision,
@@ -341,5 +346,36 @@ export function useCreateStore() {
   return useMutation({
     mutationFn: (body: StoreCreate) => createStore(body),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["stores"] }),
+  });
+}
+
+function invalidateInvoice(queryClient: ReturnType<typeof useQueryClient>, invoiceId: string) {
+  void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+  void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+  void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+}
+
+export function useAddLineItem(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LineItemCreate) => addLineItem(invoiceId, body),
+    onSuccess: () => invalidateInvoice(queryClient, invoiceId),
+  });
+}
+
+export function useVoidLineItem(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sortOrder, voidedBy, note }: { sortOrder: number; voidedBy: string; note: string | null }) =>
+      voidLineItem(invoiceId, sortOrder, voidedBy, note),
+    onSuccess: () => invalidateInvoice(queryClient, invoiceId),
+  });
+}
+
+export function useCorrectTotals(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: InvoiceTotalsCorrection) => correctTotals(invoiceId, body),
+    onSuccess: () => invalidateInvoice(queryClient, invoiceId),
   });
 }

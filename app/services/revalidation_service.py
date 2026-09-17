@@ -195,7 +195,7 @@ async def revalidate_invoice(session: AsyncSession, invoice: Invoice) -> Validat
         document_id=invoice.document_id,
         stage=PipelineStage.VALIDATION,
         status=LogStatus.SUCCESS,
-        message="Revalidated after a manual line-item correction.",
+        message="Revalidated after a manual correction.",
         payload=report.to_dict(),
         duration_ms=report.duration_ms,
     )

@@ -23,7 +23,8 @@ export type PipelineStage =
   | "STORE_IDENTIFICATION"
   | "AI_STRUCTURING"
   | "VALIDATION"
-  | "PERSISTENCE";
+  | "PERSISTENCE"
+  | "MANUAL_CORRECTION";
 
 export type CheckStatus = "PASSED" | "FAILED" | "WARNING" | "SKIPPED";
 
@@ -259,8 +260,13 @@ export interface LineItem {
    * includes it. */
   unit_deposit: number | null;
   sort_order: number;
-  /** "product", "charge", or "duplicate" (a row a reviewer resolved as seen twice). */
+  /** "product", "charge", "duplicate" (resolved as seen twice) or "voided" (a person removed it). */
   line_type: string;
+  product_code: string | null;
+  unit_discount: number | null;
+  /** "extracted" or "manual" (a person added the row). */
+  entry_source: string;
+  correction_history: CorrectionEntry[];
   /** Photo numbers (1-based) this row was read from; empty for a single file. */
   source_pages: number[];
   /** Set when the model could not tell whether this row is the same physical
@@ -387,6 +393,63 @@ export interface LineItemCorrection {
   quantity?: string;
   line_total?: string;
   unit_deposit?: string;
+  unit_discount?: string;
+  description?: string;
+  product_code?: string;
+  /** Who and why — recorded on the row's history. */
+  corrected_by?: string | null;
+  note?: string | null;
+}
+
+/** One manual change in a row's or the invoice's history. */
+export interface CorrectionEntry {
+  field: string;
+  old: unknown | null;
+  new: unknown | null;
+  by: string | null;
+  at: string;
+  note: string | null;
+}
+
+export interface LineItemCreate {
+  description: string;
+  product_code?: string | null;
+  pack_size?: string | null;
+  quantity: string;
+  unit_price?: string | null;
+  unit_deposit?: string | null;
+  unit_discount?: string | null;
+  line_total?: string | null;
+  added_by: string;
+  note?: string | null;
+}
+
+export interface InvoiceTotalsCorrection {
+  subtotal?: string;
+  tax_amount?: string;
+  discount_amount?: string;
+  deposit_total?: string;
+  fuel_surcharge?: string;
+  grand_total?: string;
+  corrected_by: string;
+  note?: string | null;
+}
+
+export interface InvoiceTotalsCorrectionResult {
+  subtotal: number | null;
+  tax_amount: number | null;
+  discount_amount: number | null;
+  deposit_total: number | null;
+  fuel_surcharge: number | null;
+  grand_total: number | null;
+  corrected_fields: string[];
+  correction_history: CorrectionEntry[];
+  status: string;
+  composite_confidence: number;
+  failed_checks: number;
+  review_reasons: string[];
+  pdi_export_allowed: boolean;
+  pdi_export_blocked_reason: string | null;
 }
 
 export interface LineItemCorrectionResult {
@@ -441,6 +504,11 @@ export interface InvoiceDetail {
   subtotal: number | null;
   tax_amount: number | null;
   discount_amount: number | null;
+  deposit_total: number | null;
+  fuel_surcharge: number | null;
+  /** Header fields a person replaced; the extracted value is in the history. */
+  corrected_fields: string[];
+  correction_history: CorrectionEntry[];
   grand_total: number | null;
 
   status: InvoiceDecision;

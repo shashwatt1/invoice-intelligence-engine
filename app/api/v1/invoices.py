@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,9 +57,13 @@ from app.schemas.processing import (
     InvoiceDeleteResult,
     InvoiceDetailData,
     InvoiceReviewSummary,
+    InvoiceTotalsCorrection,
+    InvoiceTotalsCorrectionResult,
     LineItemCorrection,
     LineItemCorrectionResult,
+    LineItemCreate,
     LineItemData,
+    LineItemVoid,
     ProcessAccepted,
     StoreAssignment,
     StoreRef,
@@ -348,6 +353,10 @@ async def get_invoice(
         if invoice.discount_amount is not None
         else None,
         grand_total=float(invoice.grand_total) if invoice.grand_total is not None else None,
+        deposit_total=float(invoice.deposit_total) if invoice.deposit_total is not None else None,
+        fuel_surcharge=float(invoice.fuel_surcharge) if invoice.fuel_surcharge is not None else None,
+        corrected_fields=invoice.corrected_fields or [],
+        correction_history=invoice.correction_history or [],
         status=invoice.status,
         composite_confidence=float(invoice.composite_confidence)
         if invoice.composite_confidence is not None
@@ -382,6 +391,10 @@ async def get_invoice(
                 unit_deposit=float(item.deposit) if item.deposit is not None else None,
                 line_type=item.line_type,
                 sort_order=item.sort_order,
+                product_code=item.product_sku,
+                unit_discount=float(item.discount) if item.discount is not None else None,
+                entry_source=item.entry_source or "extracted",
+                correction_history=item.correction_history or [],
                 source_pages=item.source_pages or [],
                 duplicate_candidate=item.duplicate_candidate,
                 corrected_fields=item.corrected_fields or [],
@@ -602,10 +615,12 @@ async def correct_line_item(
     updates = payload.updates()
     if not updates:
         raise ValidationError(
-            message="Provide at least one of unit_price, quantity or line_total.",
+            message="Provide at least one field to correct (unit_price, quantity, line_total, "
+                    "unit_deposit, unit_discount, description, product_code).",
             detail={"invoice_id": str(invoice_id), "sort_order": sort_order},
         )
-    negative = sorted(field for field, value in updates.items() if value < 0)
+    negative = sorted(field for field, value in updates.items()
+                      if field in LineItemCorrection.NUMERIC and value < 0)
     if negative:
         raise ValidationError(
             message=f"{', '.join(negative)} must not be negative.",
@@ -619,14 +634,17 @@ async def correct_line_item(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
 
-    item = await repository.correct_item(invoice_id, sort_order, updates)
+    item = await repository.correct_item(
+        invoice_id, sort_order, updates, corrected_by=payload.corrected_by, note=payload.note,
+    )
     if item is None:
         raise RecordNotFoundError(
             message="Line item not found on this invoice.",
             detail={"invoice_id": str(invoice_id), "sort_order": sort_order},
         )
-
     invoice = await repository.get_detail(invoice_id)
+    await _log_correction(db, invoice, "line_item_corrected", payload.corrected_by, payload.note,
+                          sort_order=sort_order, changes=(item.correction_history or [])[-len(updates):])
     report = await revalidate_invoice(db, invoice)
 
     units = await invoice_units_by_item_code(db, invoice)
@@ -635,15 +653,7 @@ async def correct_line_item(
 
     return APIResponse(
         data=LineItemCorrectionResult(
-            item=CorrectedLineItem(
-                sort_order=item.sort_order,
-                description=item.description,
-                quantity=float(item.quantity),
-                unit_price=float(item.unit_price) if item.unit_price is not None else None,
-                line_total=float(item.line_total) if item.line_total is not None else None,
-                unit_deposit=float(item.deposit) if item.deposit is not None else None,
-                corrected_fields=item.corrected_fields or [],
-            ),
+            item=_corrected_line(item),
             status=report.decision.value,
             composite_confidence=report.confidence.composite,
             failed_checks=len(report.failed_checks),
@@ -714,7 +724,7 @@ async def decide_duplicate(
 
     await ProcessingLogRepository(db).add(
         document_id=invoice.document_id,
-        stage=PipelineStage.VALIDATION,
+        stage=PipelineStage.MANUAL_CORRECTION,
         message=(f"Row {sort_order} decided '{body.decision}' against row "
                  f"{candidate['of_sort_order']} by {body.decided_by}."),
         payload={"event": "duplicate_decision", "sort_order": sort_order,
@@ -779,3 +789,180 @@ async def assign_store(
     )
     await db.commit()
     return await get_invoice(invoice_id, db)
+
+
+def _corrected_line(item) -> CorrectedLineItem:
+    return CorrectedLineItem(
+        sort_order=item.sort_order,
+        description=item.description,
+        product_code=item.product_sku,
+        quantity=float(item.quantity),
+        unit_price=float(item.unit_price) if item.unit_price is not None else None,
+        line_total=float(item.line_total) if item.line_total is not None else None,
+        unit_deposit=float(item.deposit) if item.deposit is not None else None,
+        unit_discount=float(item.discount) if item.discount is not None else None,
+        line_type=item.line_type,
+        entry_source=item.entry_source or "extracted",
+        corrected_fields=item.corrected_fields or [],
+        correction_history=item.correction_history or [],
+    )
+
+
+async def _log_correction(db, invoice, event: str, by: str | None, note: str | None, **facts) -> None:
+    """One processing-log entry per manual change: the invoice's audit trail, in order."""
+    await ProcessingLogRepository(db).add(
+        document_id=invoice.document_id,
+        stage=PipelineStage.MANUAL_CORRECTION,
+        message=f"Manual correction ({event.replace('_', ' ')}) by {by or 'unattributed'}.",
+        payload={"event": event, "by": by, "note": note, **facts},
+    )
+
+
+async def _revalidated(db, invoice_id: uuid.UUID):
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    report = await revalidate_invoice(db, invoice)
+    units = await invoice_units_by_item_code(db, invoice)
+    return invoice, report, persisted_pdi_export_eligibility(invoice, units)
+
+
+@router.post(
+    "/invoices/{invoice_id}/items",
+    response_model=APIResponse[LineItemCorrectionResult],
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a line the photos missed",
+    description=(
+        "A person adds a row to THIS invoice — the same invoice, never a second one. The row is "
+        "typed 'manual', every value on it is recorded as the person's, and the addition is in "
+        "the row's history and the processing log. Validation then runs again on the corrected "
+        "invoice. Invoice-scoped only: nothing here becomes master data (a case mapping for the "
+        "product still goes through Data Review)."
+    ),
+    responses={404: {"description": "Invoice not found"}, 422: {"description": "A negative value"}},
+)
+async def add_line_item(
+    invoice_id: uuid.UUID, payload: LineItemCreate, db: AsyncSession = Depends(get_db),
+) -> APIResponse[LineItemCorrectionResult]:
+    negative = sorted(f for f in ("quantity", "unit_price", "unit_deposit", "unit_discount", "line_total")
+                      if getattr(payload, f) is not None and getattr(payload, f) < 0)
+    if negative:
+        raise ValidationError(message=f"{', '.join(negative)} must not be negative.",
+                              detail={"invoice_id": str(invoice_id), "fields": negative})
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    line_total = payload.line_total
+    derived = False
+    if line_total is None and payload.unit_price is not None:
+        # The same rule normalization applies to an extracted row that
+        # prints no extended total: quantity x unit price, recorded as derived.
+        line_total = (payload.quantity * payload.unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        derived = True
+    item = await repository.add_item(
+        invoice, description=payload.description.strip(),
+        product_code=(payload.product_code or "").strip() or None,
+        pack_size=(payload.pack_size or "").strip() or None,
+        quantity=payload.quantity, unit_price=payload.unit_price, unit_deposit=payload.unit_deposit,
+        unit_discount=payload.unit_discount, line_total=line_total,
+        added_by=payload.added_by, note=payload.note,
+    )
+    if derived:
+        item.correction_history = [*(item.correction_history or []),
+                                   {"field": "line_total", "old": None, "new": float(line_total), "by": None,
+                                    "at": datetime.now(UTC).isoformat(),
+                                    "note": "derived: quantity x unit_price (no extended total given)"}]
+    await _log_correction(db, invoice, "line_item_added", payload.added_by, payload.note,
+                          sort_order=item.sort_order, description=item.description,
+                          product_code=item.product_sku, quantity=float(item.quantity),
+                          unit_price=float(item.unit_price) if item.unit_price is not None else None)
+    invoice, report, eligibility = await _revalidated(db, invoice_id)
+    await db.commit()
+    return APIResponse(data=LineItemCorrectionResult(
+        item=_corrected_line(item), status=report.decision.value,
+        composite_confidence=report.confidence.composite, failed_checks=len(report.failed_checks),
+        review_reasons=report.review_reasons, pdi_export_allowed=eligibility.allowed,
+        pdi_export_blocked_reason=eligibility.blocked_reason,
+    ))
+
+
+@router.delete(
+    "/invoices/{invoice_id}/items/{sort_order}",
+    response_model=APIResponse[LineItemCorrectionResult],
+    summary="Void a line that is not on the invoice",
+    description=(
+        "The row is kept for audit and typed 'voided': it leaves the subtotal and the PDI "
+        "export. Recorded with who and why; validation runs again."
+    ),
+    responses={404: {"description": "Invoice or line not found"}, 422: {"description": "Already voided"}},
+)
+async def void_line_item(
+    invoice_id: uuid.UUID, sort_order: int, payload: LineItemVoid, db: AsyncSession = Depends(get_db),
+) -> APIResponse[LineItemCorrectionResult]:
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    current = next((i for i in invoice.items if i.sort_order == sort_order), None)
+    if current is None:
+        raise RecordNotFoundError(message="Line item not found on this invoice.",
+                                  detail={"invoice_id": str(invoice_id), "sort_order": sort_order})
+    if current.line_type == "voided":
+        raise ValidationError(message="This line is already voided.",
+                              detail={"invoice_id": str(invoice_id), "sort_order": sort_order})
+    item = await repository.void_item(invoice_id, sort_order, voided_by=payload.voided_by, note=payload.note)
+    await _log_correction(db, invoice, "line_item_voided", payload.voided_by, payload.note,
+                          sort_order=sort_order, description=item.description, product_code=item.product_sku)
+    invoice, report, eligibility = await _revalidated(db, invoice_id)
+    await db.commit()
+    return APIResponse(data=LineItemCorrectionResult(
+        item=_corrected_line(item), status=report.decision.value,
+        composite_confidence=report.confidence.composite, failed_checks=len(report.failed_checks),
+        review_reasons=report.review_reasons, pdi_export_allowed=eligibility.allowed,
+        pdi_export_blocked_reason=eligibility.blocked_reason,
+    ))
+
+
+@router.patch(
+    "/invoices/{invoice_id}/totals",
+    response_model=APIResponse[InvoiceTotalsCorrectionResult],
+    summary="Correct printed header totals (grand total included)",
+    description=(
+        "Replaces subtotal, tax, discount, deposit total, fuel surcharge and/or grand total with "
+        "figures a person read off the document. Each extracted value is kept in the invoice's "
+        "correction history (old, new, who, when, why) and the field is listed in "
+        "corrected_fields, so a typed figure never reads as extracted data. Validation runs "
+        "again with the pipeline's own rules; no line is altered to make the totals fit."
+    ),
+    responses={404: {"description": "Invoice not found"}, 422: {"description": "No fields, or a negative value"}},
+)
+async def correct_totals(
+    invoice_id: uuid.UUID, payload: InvoiceTotalsCorrection, db: AsyncSession = Depends(get_db),
+) -> APIResponse[InvoiceTotalsCorrectionResult]:
+    updates = payload.updates()
+    if not updates:
+        raise ValidationError(message="Provide at least one total to correct.",
+                              detail={"invoice_id": str(invoice_id)})
+    negative = sorted(f for f, v in updates.items() if v < 0)
+    if negative:
+        raise ValidationError(message=f"{', '.join(negative)} must not be negative.",
+                              detail={"invoice_id": str(invoice_id), "fields": negative})
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    await repository.correct_totals(invoice, updates, corrected_by=payload.corrected_by, note=payload.note)
+    await _log_correction(db, invoice, "totals_corrected", payload.corrected_by, payload.note,
+                          changes=(invoice.correction_history or [])[-len(updates):])
+    invoice, report, eligibility = await _revalidated(db, invoice_id)
+    await db.commit()
+    money = lambda v: float(v) if v is not None else None  # noqa: E731
+    return APIResponse(data=InvoiceTotalsCorrectionResult(
+        subtotal=money(invoice.subtotal), tax_amount=money(invoice.tax_amount),
+        discount_amount=money(invoice.discount_amount), deposit_total=money(invoice.deposit_total),
+        fuel_surcharge=money(invoice.fuel_surcharge), grand_total=money(invoice.grand_total),
+        corrected_fields=invoice.corrected_fields or [], correction_history=invoice.correction_history or [],
+        status=report.decision.value, composite_confidence=report.confidence.composite,
+        failed_checks=len(report.failed_checks), review_reasons=report.review_reasons,
+        pdi_export_allowed=eligibility.allowed, pdi_export_blocked_reason=eligibility.blocked_reason,
+    ))

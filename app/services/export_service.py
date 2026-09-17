@@ -46,10 +46,11 @@ def _sorted_items(invoice: Invoice) -> list[InvoiceItem]:
     return sorted(invoice.items, key=lambda item: item.sort_order)
 
 
-# Line types that never become PDI product records: a charge row, and a
-# row a reviewer resolved as the same physical row as another (seen twice
-# across overlapping photos). Both stay on the invoice for audit.
-NON_PDI_LINE_TYPES = frozenset({"charge", "duplicate"})
+# Line types that never become PDI product records: a charge row, a row a
+# reviewer resolved as the same physical row as another (seen twice across
+# overlapping photos), and a row a person voided. All stay on the invoice
+# for audit.
+NON_PDI_LINE_TYPES = frozenset({"charge", "duplicate", "voided"})
 
 
 def pdi_items(invoice: Invoice) -> list[InvoiceItem]:

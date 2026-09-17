@@ -282,6 +282,19 @@ class LineItemCorrection(BaseModel):
         ),
     )
 
+    unit_discount: Decimal | None = Field(
+        default=None, description="Per-unit discount, as printed. Must not be negative."
+    )
+    description: str | None = Field(default=None, min_length=1, max_length=500)
+    product_code: str | None = Field(
+        default=None, max_length=64, description="UPC / item code as printed. Empty string clears it."
+    )
+    # Who and why. Optional so the single-value correction path that predates
+    # attribution keeps working; the UI always sends them and the history
+    # entry records whatever was given.
+    corrected_by: str | None = Field(default=None, max_length=128)
+    note: str | None = Field(default=None, max_length=500)
+
     # API field name -> ORM column. The column predates the extraction
     # schema's `unit_deposit` naming; the API uses the clearer name and
     # records that name in corrected_fields, so provenance reads the way
@@ -291,19 +304,34 @@ class LineItemCorrection(BaseModel):
         "quantity": "quantity",
         "line_total": "line_total",
         "unit_deposit": "deposit",
+        "unit_discount": "discount",
+        "description": "description",
+        "product_code": "product_sku",
     }
+    NUMERIC: ClassVar[tuple[str, ...]] = ("unit_price", "quantity", "line_total", "unit_deposit", "unit_discount")
 
-    def updates(self) -> dict[str, Decimal]:
-        return {
-            field: value
-            for field, value in (
-                ("unit_price", self.unit_price),
-                ("quantity", self.quantity),
-                ("line_total", self.line_total),
-                ("unit_deposit", self.unit_deposit),
-            )
-            if value is not None
-        }
+    def updates(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for field in self.NUMERIC:
+            value = getattr(self, field)
+            if value is not None:
+                out[field] = value
+        if self.description is not None:
+            out["description"] = self.description.strip()
+        if self.product_code is not None:
+            out["product_code"] = self.product_code.strip() or None
+        return out
+
+
+class CorrectionEntry(BaseModel):
+    """One manual change, as recorded in a row's or the invoice's history."""
+
+    field: str
+    old: Any | None = None
+    new: Any | None = None
+    by: str | None = None
+    at: datetime
+    note: str | None = None
 
 
 class CorrectedLineItem(BaseModel):
@@ -311,14 +339,86 @@ class CorrectedLineItem(BaseModel):
 
     sort_order: int
     description: str
+    product_code: str | None = None
     quantity: float
     unit_price: float | None = None
     line_total: float | None = None
     unit_deposit: float | None = None
+    unit_discount: float | None = None
+    line_type: str = "product"
+    entry_source: str = "extracted"
     corrected_fields: list[str] = Field(
         default_factory=list,
         description="Fields on this line replaced by a person, never by extraction.",
     )
+    correction_history: list[CorrectionEntry] = Field(default_factory=list)
+
+
+class LineItemCreate(BaseModel):
+    """
+    Body of POST /invoices/{id}/items — a person adds a row the photos
+    missed. Invoice-scoped data only: it never becomes master data.
+    """
+
+    description: str = Field(min_length=1, max_length=500)
+    product_code: str | None = Field(default=None, max_length=64)
+    pack_size: str | None = Field(default=None, max_length=64)
+    quantity: Decimal
+    unit_price: Decimal | None = None
+    unit_deposit: Decimal | None = None
+    unit_discount: Decimal | None = None
+    line_total: Decimal | None = None
+    added_by: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class LineItemVoid(BaseModel):
+    """Body of DELETE /invoices/{id}/items/{sort_order} — the row is kept, typed 'voided'."""
+
+    voided_by: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class InvoiceTotalsCorrection(BaseModel):
+    """
+    Body of PATCH /invoices/{id}/totals — a person corrects printed header
+    figures the extraction misread. Every field optional; at least one.
+    The extracted value is kept in the history entry, never overwritten
+    silently.
+    """
+
+    subtotal: Decimal | None = None
+    tax_amount: Decimal | None = None
+    discount_amount: Decimal | None = None
+    deposit_total: Decimal | None = None
+    fuel_surcharge: Decimal | None = None
+    grand_total: Decimal | None = None
+    corrected_by: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=500)
+
+    FIELDS: ClassVar[tuple[str, ...]] = (
+        "subtotal", "tax_amount", "discount_amount", "deposit_total", "fuel_surcharge", "grand_total",
+    )
+
+    def updates(self) -> dict[str, Decimal]:
+        return {f: getattr(self, f) for f in self.FIELDS if getattr(self, f) is not None}
+
+
+class InvoiceTotalsCorrectionResult(BaseModel):
+    subtotal: float | None = None
+    tax_amount: float | None = None
+    discount_amount: float | None = None
+    deposit_total: float | None = None
+    fuel_surcharge: float | None = None
+    grand_total: float | None = None
+    corrected_fields: list[str] = Field(default_factory=list)
+    correction_history: list[CorrectionEntry] = Field(default_factory=list)
+    status: str
+    composite_confidence: float
+    failed_checks: int
+    review_reasons: list[str] = Field(default_factory=list)
+    pdi_export_allowed: bool
+    pdi_export_blocked_reason: str | None = None
 
 
 class LineItemCorrectionResult(BaseModel):
@@ -662,6 +762,10 @@ class LineItemData(BaseModel):
         default="product",
         description="'product' or 'charge' — a charge (delivery/fuel/service) is never a PDI product record.",
     )
+    product_code: str | None = None
+    unit_discount: float | None = None
+    entry_source: str = Field(default="extracted", description="'extracted' or 'manual'.")
+    correction_history: list[CorrectionEntry] = Field(default_factory=list)
     source_pages: list[int] = Field(
         default_factory=list,
         description="Photo numbers (1-based) this row was read from; empty for single-file intakes.",
@@ -728,6 +832,12 @@ class InvoiceDetailData(BaseModel):
     subtotal: float | None = None
     tax_amount: float | None = None
     discount_amount: float | None = None
+    deposit_total: float | None = None
+    fuel_surcharge: float | None = None
+    corrected_fields: list[str] = Field(
+        default_factory=list, description="Header fields a person replaced; the extracted value is in the history."
+    )
+    correction_history: list[CorrectionEntry] = Field(default_factory=list)
     grand_total: float | None = None
 
     status: str = Field(description="Invoice decision status: VALIDATED or REVIEW_REQUIRED.")

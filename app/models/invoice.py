@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     Date,
@@ -118,6 +119,12 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     # Processing metadata
+    # Header fields a person replaced (e.g. ["grand_total"]) and the
+    # append-only audit of those changes: {field, old, new, by, at, note}.
+    # The extracted values survive in raw_extraction_json and in `old`.
+    corrected_fields: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    correction_history: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+
     status: Mapped[str] = mapped_column(
         String(50),
         nullable=False,

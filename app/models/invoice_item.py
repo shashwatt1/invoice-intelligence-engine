@@ -120,6 +120,17 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
         doc="Possible cross-photo duplicate of another row, and how a reviewer resolved it.",
     )
 
+    # 'extracted' (the model read it) or 'manual' (a person added the row).
+    # A manual row is invoice-scoped data, never master data.
+    entry_source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="extracted", server_default="extracted",
+        doc="'extracted' or 'manual'.",
+    )
+    # Every change a person made to this row, oldest first:
+    # {field, old, new, by, at, note}. Appended, never rewritten.
+    correction_history: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True, doc="Append-only audit of manual changes to this row.",
+    )
     corrected_fields: Mapped[list[str] | None] = mapped_column(
         JSONB,
         nullable=True,

@@ -38,6 +38,11 @@ class PipelineStage(StrEnum):
     AI_STRUCTURING = "AI_STRUCTURING"
     VALIDATION = "VALIDATION"
     PERSISTENCE = "PERSISTENCE"
+    # After the run: a person's decisions on the stored invoice (a corrected
+    # value, an added or voided line, a duplicate decision, a store
+    # assignment). Its own stage so the audit trail never displaces the
+    # latest VALIDATION report the detail view reads.
+    MANUAL_CORRECTION = "MANUAL_CORRECTION"
 
 
 class LogStatus(StrEnum):
