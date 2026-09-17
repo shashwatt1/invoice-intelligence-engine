@@ -82,11 +82,17 @@ async def _invoice_exists(db: AsyncSession, invoice_id: uuid.UUID | None, cache:
     return cache[key]
 
 
+def _product_name(p: ProductDataProposal) -> str | None:
+    evidence = p.evidence or {}
+    return evidence.get("invoice_description") or evidence.get("reference_description") or evidence.get("description")
+
+
 async def _row(db: AsyncSession, p: ProductDataProposal, cache: dict) -> ProposalRow:
     return ProposalRow(store=await _store_ref(db, p.store_id, cache),
                        invoice_deleted=not await _invoice_exists(db, p.invoice_id, cache),
+                       description=_product_name(p),
                        **{k: getattr(p, k) for k in ProposalRow.model_fields
-                          if k not in ("store", "invoice_deleted")})
+                          if k not in ("store", "invoice_deleted", "description")})
 
 
 async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
@@ -101,9 +107,10 @@ async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
         )
     detail = ProposalDetail(store=store,
                             invoice_deleted=not await _invoice_exists(db, p.invoice_id, {}),
+                            description=_product_name(p),
                             **{k: getattr(p, k) for k in ProposalDetail.model_fields
                                if k not in ("store", "resulting_mapping", "current_master_value",
-                                            "invoice_deleted")})
+                                            "invoice_deleted", "description")})
     detail.resulting_mapping = resulting
     detail.current_master_value = mapping.units_per_case if mapping else None
     return detail

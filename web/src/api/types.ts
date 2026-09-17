@@ -581,6 +581,8 @@ export interface ProposalRow {
   source_sheet: string | null;
   source_row: number | null;
   invoice_id: string | null;
+  /** The product as the evidence names it. */
+  description: string | null;
   /** The invoice this was raised on has since been deleted; the proposal
    * is immutable history and stays. */
   invoice_deleted: boolean;

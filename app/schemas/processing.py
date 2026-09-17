@@ -453,6 +453,10 @@ class ProposalRow(BaseModel):
     source_sheet: str | None = None
     source_row: int | None = None
     invoice_id: uuid.UUID | None = None
+    description: str | None = Field(
+        default=None,
+        description="The product as the evidence names it (invoice description, else reference description).",
+    )
     invoice_deleted: bool = Field(
         default=False,
         description=(

@@ -18,7 +18,7 @@ const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/process", label: "Process Invoice", icon: UploadCloud },
   { to: "/invoices", label: "Invoice History", icon: FileClock },
-  { to: "/data-review", label: "Data Review", icon: ClipboardCheck },
+  { to: "/data-review", label: "Master Data Review", icon: ClipboardCheck },
   { to: "/stores", label: "Stores", icon: MapPin },
   { to: "/settings", label: "Settings", icon: Settings },
 ];

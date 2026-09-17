@@ -98,7 +98,7 @@ export function ProposalDetailPage() {
       <div className="mb-1">
         <Button asChild variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
           <Link to="/data-review">
-            <ArrowLeft className="size-3.5" /> Data Review
+            <ArrowLeft className="size-3.5" /> Master Data Review
           </Link>
         </Button>
       </div>

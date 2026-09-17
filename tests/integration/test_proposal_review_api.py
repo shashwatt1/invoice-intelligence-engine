@@ -68,8 +68,11 @@ class TestTheQueue:
         row = body["items"][0]
         for col in ("entity_key", "field", "proposed_value", "current_value", "source",
                     "source_file", "source_sheet", "source_row", "invoice_id", "proposed_by",
-                    "status", "reviewed_by", "reviewed_at", "review_note", "created_at"):
+                    "status", "reviewed_by", "reviewed_at", "review_note", "created_at",
+                    "description", "invoice_deleted"):
             assert col in row, col
+        assert row["description"] == "BUSCH 4/6/160Z CAN"      # the product, from the evidence
+        assert row["invoice_deleted"] is False
 
     async def test_filters(self, api_client, db_session):  # noqa: F811
         a = await _pending(db_session, 4, source=SOURCE_REFERENCE_DERIVED)

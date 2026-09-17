@@ -117,7 +117,7 @@ describe("the invoice's own Data Review", () => {
   it("says nothing is pending when the invoice raised no proposals", () => {
     wrap(<InvoiceReviewCard invoiceId="inv-1" review={{ status: "NONE", pending: 0, approved: 0, rejected: 0, proposals: [] }} />);
     expect(screen.getByTestId("invoice-review-status")).toHaveTextContent("No master-data review raised");
-    expect(screen.queryByRole("link", { name: /open data review/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open master data review/i })).not.toBeInTheDocument();
   });
 
   it("lists pending items with a link into Data Review filtered to this invoice", () => {
@@ -127,7 +127,7 @@ describe("the invoice's own Data Review", () => {
     }} />);
     expect(screen.getByTestId("invoice-review-status")).toHaveTextContent("2 items pending review");
     expect(screen.getAllByTestId("invoice-review-row")).toHaveLength(2);
-    expect(screen.getByRole("link", { name: /open data review/i })).toHaveAttribute("href", "/data-review?status=ALL&invoice=inv-1");
+    expect(screen.getByRole("link", { name: /open master data review/i })).toHaveAttribute("href", "/data-review?status=ALL&invoice=inv-1");
   });
 
   it("shows the outcome, the reviewer, the note and the revision trail", () => {

@@ -1,6 +1,6 @@
 import { Check, ClipboardCheck, Pencil, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import type { ProposalListParams, ProposalSource, ProposalStatus } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
@@ -164,8 +164,8 @@ export function DataReviewPage() {
   return (
     <>
       <PageHeader
-        title="Data Review"
-        description="Proposed master-data values awaiting a reviewer, and the immutable record of every decision. Only an approval here (or via the review CLI) writes the mapping an EDI uses."
+        title="Master Data Review"
+        description="Values proposed to become permanent master data — case mappings today — awaiting a reviewer, and the immutable record of every decision. Separate from correcting an invoice: only an approval here (or via the review CLI) writes the mapping every future invoice for the store uses."
         actions={
           pendingCount.isSuccess ? (
             <span className="text-warning bg-warning-soft inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[0.78rem] font-semibold">
@@ -313,6 +313,7 @@ export function DataReviewPage() {
                         />
                       </TableHead>
                       <TableHead>Store</TableHead>
+                      <TableHead>Product</TableHead>
                       <TableHead>UPC</TableHead>
                       <TableHead>Field</TableHead>
                       <TableHead className="text-right">Current</TableHead>
@@ -344,6 +345,9 @@ export function DataReviewPage() {
                           />
                         </TableCell>
                         <TableCell><StoreChip store={row.store} link={false} compact /></TableCell>
+                        <TableCell className="max-w-48 truncate text-[0.78rem]" title={row.description ?? undefined}>
+                          {row.description ?? <span className="text-muted-foreground">—</span>}
+                        </TableCell>
                         <TableCell className="font-mono text-[0.8rem] font-medium">{row.entity_key}</TableCell>
                         <TableCell className="text-[0.78rem] whitespace-nowrap text-muted-foreground">{row.field.replace(/_/g, " ")}</TableCell>
                         <TableCell className="text-right tabular-nums text-muted-foreground">
@@ -368,7 +372,18 @@ export function DataReviewPage() {
                             </span>
                           ) : row.invoice_id ? (
                             <span title={row.invoice_id}>
-                              invoice {row.invoice_id.slice(0, 8)}…
+                              {row.invoice_deleted ? (
+                                <>invoice {row.invoice_id.slice(0, 8)}…</>
+                              ) : (
+                                <Link
+                                  to={`/invoices/${row.invoice_id}`}
+                                  className="hover:underline"
+                                  onClick={(event) => event.stopPropagation()}
+                                  data-testid="related-invoice"
+                                >
+                                  invoice {row.invoice_id.slice(0, 8)}…
+                                </Link>
+                              )}
                               {row.invoice_deleted ? (
                                 <span
                                   className="ml-1 rounded bg-muted px-1 text-[0.65rem] font-medium text-muted-foreground"

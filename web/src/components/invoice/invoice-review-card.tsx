@@ -20,7 +20,7 @@ export function InvoiceReviewCard({ invoiceId, review }: { invoiceId: string; re
     <Card data-testid="invoice-review">
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
         <CardTitle className="flex items-center gap-2 text-[0.95rem]">
-          <ClipboardCheck className="size-4" /> Data Review
+          <ClipboardCheck className="size-4" /> Master Data Review
           <Badge
             variant="secondary"
             className={
@@ -38,7 +38,7 @@ export function InvoiceReviewCard({ invoiceId, review }: { invoiceId: string; re
         {review.proposals.length ? (
           <Button asChild variant="outline" size="sm">
             <Link to={`/data-review?status=ALL&invoice=${invoiceId}`}>
-              Open Data Review <ArrowRight className="size-3.5" />
+              Open Master Data Review <ArrowRight className="size-3.5" />
             </Link>
           </Button>
         ) : null}
