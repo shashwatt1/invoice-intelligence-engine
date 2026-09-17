@@ -1,7 +1,10 @@
 # Staging deployment plan — PROPOSAL, nothing deployed
 
-Status: **awaiting review**. Written 17 Sep 2026 against commit `36677c7`.
-Nothing in this document has been provisioned, built or deployed.
+Status: **awaiting review**. Written 17 Sep 2026 against commit `36677c7`;
+re-checked 18 Sep 2026 against `82e90f5` (migrations now `0017`; store-pending
+invoices, manual corrections and `POST /stores` exist — none of it changes the
+deployment shape). Nothing in this document has been provisioned, built or
+deployed.
 
 ## 0. What the application actually is (inspected, not assumed)
 
@@ -125,6 +128,29 @@ data model is required for staging.
    compare sha `88516117…`, process one sample photo end to end.
 9. Hand the URL and logins to the team; note the banner.
 10. Nightly backup cron verified by a test restore into a scratch container.
+
+## 4a. The eighteen questions, answered in one place
+
+| # | Question | Answer (see the section referenced) |
+|---|---|---|
+| 1 | Hosting option | One small VM (Hetzner CX22 / DO 2 GB) — §1.1 |
+| 2 | VM vs managed platform | VM: the app stores files on local disk and runs background work in-process; a PaaS needs the S3 backend first — §1.1, Option B |
+| 3 | Docker/Compose architecture | Caddy + api (existing Dockerfile) + db, one `compose.staging.yml` — §1, §2 |
+| 4 | PostgreSQL strategy | `postgres:16` container on a named volume, port not published; managed Postgres is a drop-in later — §1.4 |
+| 5 | Persistent upload storage | Docker volume at `/app/uploads`, `STORAGE_BACKEND=local` unchanged, in the nightly backup — §1.5 |
+| 6 | HTTPS/domain | `staging.<domain>` on Caddy with automatic Let's Encrypt — §1.10 |
+| 7 | Authentication/access control | Cloudflare Access (per-person, free ≤ 50) or Caddy basic-auth; app code unchanged — §1.8 |
+| 8 | Backup strategy | Nightly `pg_dump` + uploads to an encrypted private bucket, 7-day retention, test restore — §1.17, §4.10 |
+| 9 | Secrets management | `/srv/invoice/.env`, `chmod 600`, deploy user only, never in git; `.env.example` is the checklist — §1.7 |
+| 10 | Google Vision credentials | `GOOGLE_VISION_API_KEY` in the VM `.env` only; quota set in the Google console; never in the SPA — §1.7, §3 |
+| 11 | OpenAI credentials | `OPENAI_API_KEY` in the VM `.env` only; project spend cap; never in the SPA — §1.7, §3 |
+| 12 | Logging | structlog JSON on stdout (`docker compose logs`) + rotating file on a volume; request ids on every line — §1.14 |
+| 13 | Monitoring | container HEALTHCHECK + external uptime ping on `/api/v1/health`; FAILED documents visible in History; optional Sentry — §1.15 |
+| 14 | Database migrations | `docker compose run --rm api alembic upgrade head` as an explicit deploy step; the migration/model drift test (`test_migrations_match_models.py`) runs in CI/before deploy — §1.11, §22 of the brief |
+| 15 | Deployment/rollback | `deploy.sh` (pull → build → pg_dump → migrate → up → smoke); rollback = previous tag + `alembic downgrade` or restore the pre-deploy dump — §1.16–1.17 |
+| 16 | Approximate monthly cost | ≈ $10–20 fixed + usage (Vision ≈ $1.50/1,000 photos; gpt-4o ≈ $0.03–0.08/invoice) — §1.18 |
+| 17 | How team members access it | Browser → `https://staging.<domain>` → edge login (their email via Cloudflare Access, or their basic-auth user) → the SPA; the API is reachable only through that same origin; no VPN, no ports — §1.8 |
+| 18 | Test data isolation from production | There is no production yet. Staging is its own VM, database, bucket and provider keys (separate OpenAI project / Vision key so usage is attributable); the UI banner says STAGING — TEAM TESTING; when production exists it gets its own VM + DB and staging never shares credentials or a database with it — §2.4, §3 |
 
 ## 5. Decisions required before anything is provisioned
 
