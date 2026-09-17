@@ -27,6 +27,12 @@ const STORE: StoreDirectoryEntry = {
   identifiers: [], invoices: 0, pricing_rows: 0, identities: 0, catalogue_rows: 0, case_mappings: 0, pending_proposals: 0,
 };
 
+/** RCM as the directory lists it: unresolved, no source code — the same shape as any store. */
+const RCM: StoreDirectoryEntry = {
+  ...STORE, id: "rcm-1", label: "RCM (identity unconfirmed)", identity_status: "unresolved", display_name: "RCM",
+  address: "1409 E St George Blvd, St George, UT 84790", status: "active",
+};
+
 const PAUSED: DocumentStatusData = {
   document_id: "d-1", filename: "inv.jpg", status: "STORE_CONFIRMATION_REQUIRED", is_terminal: false,
   source_type: "ocr", store: null, awaiting_store_confirmation: true, store_candidates: [],
@@ -41,7 +47,26 @@ function wrap(node: React.ReactNode) {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  vi.mocked(api.listStores).mockResolvedValue([STORE]);
+  vi.mocked(api.listStores).mockResolvedValue([STORE, RCM]);
+});
+
+describe("RCM is offered wherever a store is chosen, through the existing pickers", () => {
+  it("in the store confirmation and in the pending-invoice assignment", async () => {
+    const user = userEvent.setup();
+    wrap(<StoreConfirmation status={PAUSED} stores={[STORE, RCM]} />);
+    await user.click(screen.getByRole("combobox"));
+    expect(await screen.findByRole("option", { name: /RCM \(identity unconfirmed\)/ })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    vi.mocked(api.assignInvoiceStore).mockResolvedValue({ store: RCM } as never);
+    wrap(<StorePendingCard invoiceId="inv-9" />);
+    const [, pendingCombo] = screen.getAllByRole("combobox");
+    await user.click(pendingCombo);
+    await user.click(await screen.findByRole("option", { name: /RCM \(identity unconfirmed\)/ }));
+    await user.type(screen.getByLabelText(/assigned by/i), "data-team:shashwat");
+    await user.click(screen.getByTestId("assign-store"));
+    await waitFor(() => expect(api.assignInvoiceStore).toHaveBeenCalledWith("inv-9", "rcm-1", "data-team:shashwat", null));
+  });
 });
 
 describe("store confirmation: confirm, or read now and assign later", () => {
