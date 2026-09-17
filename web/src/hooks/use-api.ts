@@ -8,6 +8,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { apiClient } from "@/api/client";
+
 import {
   addLineItem,
   approveProposal,
@@ -173,6 +175,23 @@ export function useProposals(params: ProposalListParams) {
     queryKey: ["proposals", params],
     queryFn: () => listProposals(params),
     placeholderData: (previous) => previous,
+  });
+}
+
+/** Queue totals by status, plus how many pending rows rest on ambiguous document notation. */
+export function useProposalCounts() {
+  return useQuery({
+    queryKey: ["proposals", "counts"],
+    queryFn: async () => {
+      const [pending, approved, rejected, ambiguous] = await Promise.all([
+        listProposals({ status: "PENDING", page_size: 1 }),
+        listProposals({ status: "APPROVED", page_size: 1 }),
+        listProposals({ status: "REJECTED", page_size: 1 }),
+        listProposals({ status: "PENDING", source: "document_ambiguous", page_size: 1 }),
+      ]);
+      return { PENDING: pending.total, APPROVED: approved.total, REJECTED: rejected.total, ambiguous: ambiguous.total };
+    },
+    staleTime: 10_000,
   });
 }
 
@@ -377,5 +396,18 @@ export function useCorrectTotals(invoiceId: string) {
   return useMutation({
     mutationFn: (body: InvoiceTotalsCorrection) => correctTotals(invoiceId, body),
     onSuccess: () => invalidateInvoice(queryClient, invoiceId),
+  });
+}
+
+/** Backend reachability, polled — the shell's status light and the dashboard's health strip. */
+export function useApiHealth() {
+  return useQuery({
+    queryKey: ["health"],
+    queryFn: async () => {
+      await apiClient.get("/health", { timeout: 3_000 });
+      return true;
+    },
+    refetchInterval: 30_000,
+    retry: false,
   });
 }

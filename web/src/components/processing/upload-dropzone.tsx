@@ -100,10 +100,10 @@ export function UploadDropzone({
   const remove = (index: number) => onFilesChange(files.filter((_, i) => i !== index));
 
   const dropzoneClass = cn(
-    "flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-card text-center transition-all",
+    "flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card text-center transition-all duration-200",
     isDragging
-      ? "border-primary bg-accent/60 scale-[1.01]"
-      : "border-border hover:border-primary/50 hover:bg-secondary/40",
+      ? "border-primary bg-accent/60 ring-4 ring-primary/10"
+      : "border-input hover:border-primary/50 hover:bg-surface-2",
     disabled && "pointer-events-none opacity-60",
   );
 
@@ -138,7 +138,7 @@ export function UploadDropzone({
             {files.map((file, index) => (
               <li
                 key={`${file.name}-${file.size}-${file.lastModified}`}
-                className="flex items-center gap-3 rounded-xl border bg-card p-2.5"
+                className="surface flex items-center gap-3 p-2.5"
                 data-testid="photo-row"
               >
                 <span className="w-5 text-center font-mono text-[0.78rem] font-semibold text-muted-foreground">
@@ -214,32 +214,32 @@ export function UploadDropzone({
           }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
-          className={cn(dropzoneClass, "px-6 py-14")}
+          className={cn(dropzoneClass, "px-6 py-16")}
           data-testid="dropzone"
         >
           <div
             className={cn(
-              "flex size-12 items-center justify-center rounded-full bg-accent transition-transform",
+              "flex size-11 items-center justify-center rounded-md bg-surface-2 ring-1 ring-foreground/8 transition-transform",
               isDragging && "scale-110",
             )}
           >
             <UploadCloud className="size-6 text-accent-foreground" />
           </div>
           <div>
-            <div className="text-[0.9rem] font-semibold">
-              {isDragging ? "Drop to upload" : "Drag & drop an invoice — one file, or several photos of it"}
+            <div className="text-[0.95rem] font-semibold tracking-tight">
+              {isDragging ? "Drop to upload" : "Upload an invoice"}
             </div>
             <div className="mt-0.5 text-[0.78rem] text-muted-foreground">
-              or <span className="font-medium text-primary">browse files</span> · up to{" "}
-              {MAX_SIZE_MB} MB each · overlapping photos of a long invoice are reconciled into one
+              Drag documents here or <span className="font-medium text-primary">browse</span> · one file, or several overlapping photos of one invoice
             </div>
           </div>
-          <div className="flex gap-1.5">
+          <div className="flex items-center gap-1.5">
             {["PDF", "PNG", "JPEG"].map((format) => (
-              <Badge key={format} variant="secondary" className="text-[0.68rem]">
+              <Badge key={format} variant="outline" className="text-[0.66rem]">
                 {format}
               </Badge>
             ))}
+            <span className="t-meta ml-1">up to {MAX_SIZE_MB} MB each</span>
           </div>
         </button>
       )}

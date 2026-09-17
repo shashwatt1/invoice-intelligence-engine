@@ -1,4 +1,5 @@
 import { Check, MapPin, Pencil, Plus, X } from "lucide-react";
+import { StatusPill } from "@/components/shared/status-badge";
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -29,7 +30,7 @@ export function StoresPage() {
     <>
       <PageHeader
         title="Store Directory"
-        description="Each location's confirmed identity — or the source identifier it is known by until a person confirms one — with every system's identifiers for it and what the system holds for it."
+        description="Every location the system processes invoices for: its confirmed identity — or the identifier it is known by until a person confirms one — and what the system holds for it."
         actions={
           <Button size="sm" onClick={() => setAdding((v) => !v)} data-testid="add-store-toggle">
             <Plus className="size-3.5" /> Add store
@@ -57,49 +58,56 @@ export function StoresPage() {
 function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlighted: boolean }) {
   const unresolved = store.identity_status !== "confirmed";
   const [editing, setEditing] = useState(false);
+  const hasReference = store.pricing_rows + store.catalogue_rows + store.identities > 0;
   return (
-    <Card className={cn("gap-0 p-0", highlighted && "border-primary/50 ring-2 ring-primary/20")} id={store.id}>
-      <CardHeader className="px-5 py-4">
-        <CardTitle className="flex flex-wrap items-center gap-2 text-[0.95rem]">
-          <MapPin className={cn("size-4", unresolved ? "text-warning" : "text-success")} />
-          <span className={cn(unresolved && !store.display_name && "font-mono")}>{store.label}</span>
-          <span
-            className={cn(
-              "rounded-full px-2.5 py-0.5 text-[0.7rem] font-semibold",
-              unresolved ? "bg-warning-soft text-warning" : "bg-success-soft text-success",
-            )}
-          >
-            {unresolved ? "identity unresolved" : "identity confirmed"}
-          </span>
-          <span className="ml-auto font-mono text-[0.7rem] font-normal text-muted-foreground" title="Internal store id">
-            {store.id.slice(0, 8)}…
-          </span>
-        </CardTitle>
-        <p className="text-[0.78rem] text-muted-foreground">
-          {store.address ?? (unresolved ? "No confirmed address." : "No address recorded.")}
-          {store.customer_name ? <> · billed as <span className="font-medium text-foreground">{store.customer_name}</span></> : null}
-        </p>
-      </CardHeader>
-      <CardContent className="grid gap-4 px-5 pb-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+    <div className={cn("surface overflow-hidden", highlighted && "ring-2 ring-primary/40")} id={store.id} data-testid="store-card">
+      <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn("text-[1rem] font-semibold tracking-tight", unresolved && !store.display_name && "font-mono")}>{store.label.replace(" (identity unconfirmed)", "").replace(" (location not yet confirmed)", "")}</span>
+            <StatusPill size="xs" tone={unresolved ? "warning" : "success"}
+                        label={unresolved ? "Identity needs confirmation" : "Identity confirmed"}
+                        meaning={unresolved ? "Known by a source identifier or by what documents say; a person has not confirmed the location." : "A person confirmed this store's name and address."} />
+            {store.source_codes.length ? <span className="t-mono text-muted-foreground">#{store.source_codes.join(", ")}</span> : null}
+          </div>
+          <div className="t-meta mt-1">
+            {store.address ?? (unresolved ? "No confirmed address." : "No address recorded.")}
+            {store.customer_name ? <> · billed as <span className="font-medium text-foreground">{store.customer_name}</span></> : null}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {editing ? null : (
+            <Button size="sm" variant={unresolved ? "default" : "outline"} onClick={() => setEditing(true)}>
+              <Pencil className="size-3.5" /> {unresolved ? "Confirm identity" : "Correct identity"}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Operational state */}
+      <div className="grid grid-cols-6 divide-x border-t bg-surface-2 max-lg:grid-cols-3">
+        <Stat label="Invoices" value={store.invoices} />
+        <Stat label="Approved mappings" value={store.case_mappings} tone={store.case_mappings ? "success" : undefined} />
+        <Stat label="Pending proposals" value={store.pending_proposals} tone={store.pending_proposals ? "warning" : undefined} />
+        <Stat label="Pricing rows" value={store.pricing_rows} />
+        <Stat label="Catalogue rows" value={store.catalogue_rows} />
+        <Stat label="Product identities" value={store.identities} />
+      </div>
+
+      <div className="grid gap-5 border-t px-5 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <div className="space-y-3">
           <div>
-            <div className="mb-1 text-[0.7rem] font-semibold tracking-wide text-muted-foreground uppercase">
-              Identifiers
-            </div>
+            <div className="t-eyebrow mb-1.5">Identifiers</div>
             {store.identifiers.length === 0 ? (
-              <p className="text-[0.78rem] text-muted-foreground">None recorded.</p>
+              <p className="t-meta">None recorded.</p>
             ) : (
               <ul className="space-y-1 text-[0.78rem]">
                 {store.identifiers.map((i) => (
                   <li key={`${i.source_system}:${i.identifier_type}:${i.identifier_value}`} className="flex flex-wrap items-center gap-2">
-                    <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[0.7rem]">{i.source_system}</span>
+                    <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[0.66rem]">{i.source_system}</span>
                     <span className="text-muted-foreground">{i.identifier_type.replace(/_/g, " ")}</span>
                     <span className="font-mono font-medium">{i.identifier_value}</span>
-                    {!i.verified ? (
-                      <span className="text-warning text-[0.68rem] font-medium" title="Observed on documents; no person has verified it">
-                        unverified
-                      </span>
-                    ) : null}
+                    {!i.verified ? <span className="text-[0.66rem] font-medium text-warning" title="Observed on documents; no person has verified it">unverified</span> : null}
                   </li>
                 ))}
               </ul>
@@ -107,41 +115,37 @@ function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlig
           </div>
           {store.notes ? (
             <div>
-              <div className="mb-1 text-[0.7rem] font-semibold tracking-wide text-muted-foreground uppercase">Notes</div>
-              <p className="text-[0.78rem] whitespace-pre-line text-muted-foreground">{store.notes}</p>
+              <div className="t-eyebrow mb-1.5">Notes</div>
+              <p className="t-meta whitespace-pre-line leading-relaxed">{store.notes}</p>
             </div>
           ) : null}
         </div>
         <div className="space-y-3">
           <div>
-            <div className="mb-1 text-[0.7rem] font-semibold tracking-wide text-muted-foreground uppercase">Data held</div>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[0.78rem] tabular-nums sm:grid-cols-3">
-              <Stat label="Invoices" value={store.invoices} />
-              <Stat label="Pricing rows" value={store.pricing_rows} />
-              <Stat label="Catalogue rows" value={store.catalogue_rows} />
-              <Stat label="Identities" value={store.identities} />
-              <Stat label="Approved mappings" value={store.case_mappings} />
-              <Stat label="Pending proposals" value={store.pending_proposals} tone={store.pending_proposals ? "warning" : undefined} />
-            </dl>
+            <div className="t-eyebrow mb-1.5">Reference data</div>
+            {hasReference ? (
+              <StatusPill size="xs" tone="success" label="Reference corpus loaded" meaning="Item Sales / Beer Inventory data imported for this store" />
+            ) : (
+              <div>
+                <StatusPill size="xs" tone="neutral" label="No reference data" meaning="Nothing imported for this store yet" />
+                <p className="t-meta mt-1.5 leading-relaxed">Invoices for this store still process; products match nothing until an Item Sales export is imported for it, or a source code is linked by a person.</p>
+              </div>
+            )}
           </div>
-          {editing ? (
-            <IdentityForm store={store} onDone={() => setEditing(false)} />
-          ) : (
-            <Button size="sm" variant={unresolved ? "default" : "outline"} onClick={() => setEditing(true)}>
-              <Pencil className="size-3.5" /> {unresolved ? "Confirm identity" : "Correct identity"}
-            </Button>
-          )}
+          {editing ? <IdentityForm store={store} onDone={() => setEditing(false)} /> : null}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: number; tone?: "warning" }) {
+function Stat({ label, value, tone }: { label: string; value: number; tone?: "warning" | "success" }) {
   return (
-    <div>
-      <dt className="text-[0.68rem] text-muted-foreground">{label}</dt>
-      <dd className={cn("font-semibold", tone === "warning" && "text-warning")}>{value.toLocaleString()}</dd>
+    <div className="px-4 py-2.5">
+      <div className="t-eyebrow">{label}</div>
+      <div className={cn("mt-0.5 text-[1.05rem] font-semibold tabular-nums", tone === "warning" && "text-warning", tone === "success" && "text-success", !tone && value === 0 && "text-muted-foreground")}>
+        {value.toLocaleString()}
+      </div>
     </div>
   );
 }

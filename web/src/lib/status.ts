@@ -3,6 +3,9 @@
  * labels and visual tone, shared by badges, charts, and the timeline.
  */
 
+import { AlertTriangle, CheckCircle2, CircleDashed, Info, XCircle } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
 import type {
   CheckStatus,
   DocumentStatus,
@@ -13,16 +16,30 @@ import type {
 
 export type Tone = "success" | "warning" | "danger" | "info" | "neutral";
 
-export const STATUS_META: Record<DocumentStatus, { label: string; tone: Tone }> = {
-  UPLOADED: { label: "Uploaded", tone: "info" },
-  OCR_IN_PROGRESS: { label: "Extracting text", tone: "info" },
-  OCR_COMPLETED: { label: "Text extracted", tone: "info" },
-  AI_PROCESSING: { label: "AI structuring", tone: "info" },
-  VALIDATED: { label: "Validated", tone: "success" },
-  REVIEW_REQUIRED: { label: "Review required", tone: "warning" },
-  STORE_CONFIRMATION_REQUIRED: { label: "Confirm store", tone: "warning" },
-  COMPLETED: { label: "Completed", tone: "success" },
-  FAILED: { label: "Failed", tone: "danger" },
+/** The icon that accompanies every tone, so colour is never the only signal. */
+export const TONE_ICON: Record<Tone, LucideIcon> = {
+  success: CheckCircle2,
+  warning: AlertTriangle,
+  danger: XCircle,
+  info: Info,
+  neutral: CircleDashed,
+};
+
+/**
+ * Every status is shown as icon + word + tone, never colour alone, with a
+ * `meaning` available for a tooltip. The same vocabulary drives the
+ * badges, the pipeline strips, the dashboard and the tables.
+ */
+export const STATUS_META: Record<DocumentStatus, { label: string; tone: Tone; meaning: string; active?: boolean }> = {
+  UPLOADED: { label: "Uploaded", tone: "neutral", meaning: "Received and stored; text extraction is next.", active: true },
+  OCR_IN_PROGRESS: { label: "Reading", tone: "info", meaning: "Extracting text from the document.", active: true },
+  OCR_COMPLETED: { label: "Text extracted", tone: "info", meaning: "Text is extracted; structuring is next.", active: true },
+  AI_PROCESSING: { label: "Extracting", tone: "info", meaning: "The model is structuring the invoice.", active: true },
+  VALIDATED: { label: "Validated", tone: "success", meaning: "Every deterministic check passed." },
+  REVIEW_REQUIRED: { label: "Needs review", tone: "warning", meaning: "A check failed or confidence is low; a person decides." },
+  STORE_CONFIRMATION_REQUIRED: { label: "Confirm store", tone: "warning", meaning: "Waiting for a person to say which store this is for." },
+  COMPLETED: { label: "Validated", tone: "success", meaning: "Persisted with every check passed." },
+  FAILED: { label: "Failed", tone: "danger", meaning: "A stage failed; the document and its log were kept." },
 };
 
 /** Proposal lifecycle. The labels say what each state MEANS for the EDI,

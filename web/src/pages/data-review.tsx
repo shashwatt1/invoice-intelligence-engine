@@ -1,9 +1,11 @@
-import { Check, ClipboardCheck, Pencil, Search, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Check, ClipboardCheck, Pencil, X } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import type { ProposalListParams, ProposalSource, ProposalStatus } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
+import { ActiveFilters, FilterBar, SearchInput } from "@/components/shared/filter-bar";
+import { MetricCard } from "@/components/shared/metric-card";
 import { type BulkAction, BulkDecisionDialog } from "@/components/review/bulk-decision-dialog";
 import { BulkEditDialog } from "@/components/review/bulk-edit-dialog";
 import { ProposalSourceBadge, ProposalStatusBadge } from "@/components/review/proposal-badges";
@@ -12,9 +14,7 @@ import { StoreChip } from "@/components/shared/store-chip";
 import { Pagination } from "@/components/shared/pagination";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -30,10 +30,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { usePendingProposalCount, useProposals, useStores } from "@/hooks/use-api";
-import { formatDateTime } from "@/lib/format";
+import { useProposalCounts, useProposals, useStores } from "@/hooks/use-api";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { isEditable } from "@/lib/proposals";
 import { PROPOSAL_SOURCE_META, PROPOSAL_STATUS_META } from "@/lib/status";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
 
@@ -117,7 +118,7 @@ export function DataReviewPage() {
   );
 
   const { data, isPending, isError, error, refetch, isPlaceholderData } = useProposals(params);
-  const pendingCount = usePendingProposalCount();
+  const counts = useProposalCounts();
   const stores = useStores();
   const hasFilters = source !== "ALL" || store !== "ALL" || Boolean(upc) || Boolean(invoice);
 
@@ -161,79 +162,55 @@ export function DataReviewPage() {
     });
   }, []);
 
+  const chips = [
+    ...(store !== "ALL" ? [{ key: "store", label: stores.data?.find((x) => x.id === store)?.label ?? "store", onRemove: () => setStore("ALL") }] : []),
+    ...(source !== "ALL" ? [{ key: "source", label: PROPOSAL_SOURCE_META[source].label, onRemove: () => setSource("ALL") }] : []),
+    ...(upc ? [{ key: "upc", label: `UPC ${upc}`, onRemove: () => setUpcInput("") }] : []),
+    ...(invoice ? [{ key: "invoice", label: `invoice ${invoice.slice(0, 8)}…`, onRemove: () => setInvoiceInput("") }] : []),
+  ];
+
   return (
     <>
       <PageHeader
         title="Master Data Review"
-        description="Values proposed to become permanent master data — case mappings today — awaiting a reviewer, and the immutable record of every decision. Separate from correcting an invoice: only an approval here (or via the review CLI) writes the mapping every future invoice for the store uses."
-        actions={
-          pendingCount.isSuccess ? (
-            <span className="text-warning bg-warning-soft inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[0.78rem] font-semibold">
-              <ClipboardCheck className="size-3.5" />
-              {pendingCount.data} pending
-            </span>
-          ) : null
-        }
+        description="Values proposed to become permanent master data — case mappings today. A person approves each one here; only that approval writes the mapping every future invoice for the store uses. Correcting an invoice never changes master data."
       />
 
-      <div className="mb-4 flex flex-wrap items-center gap-2.5">
+      {/* Decision summary — real counts from the queue */}
+      <div className="mb-4 grid grid-cols-4 gap-3 max-md:grid-cols-2">
+        <MetricCard index={0} label="Pending decisions" value={counts.data?.PENDING ?? "—"} tone={counts.data?.PENDING ? "warning" : "neutral"} hint="awaiting a reviewer" onClick={() => setStatus("PENDING")} />
+        <MetricCard index={1} label="Approved" value={counts.data?.APPROVED ?? "—"} tone="success" hint="wrote authoritative mappings" onClick={() => setStatus("APPROVED")} />
+        <MetricCard index={2} label="Rejected" value={counts.data?.REJECTED ?? "—"} hint="master data untouched" onClick={() => setStatus("REJECTED")} />
+        <MetricCard index={3} label="Needs evidence" value={counts.data ? counts.data.ambiguous : "—"} tone={counts.data?.ambiguous ? "warning" : "neutral"} hint="pending, document notation ambiguous"
+                    onClick={() => { setStatus("PENDING"); setSource("document_ambiguous"); }} />
+      </div>
+
+      <FilterBar summary={data ? `${data.total} proposal${data.total === 1 ? "" : "s"}` : null}>
         <Select value={status} onValueChange={(value) => setStatus(value as ProposalStatus | "ALL")}>
-          <SelectTrigger className="w-44">
-            <SelectValue />
-          </SelectTrigger>
+          <SelectTrigger className="h-8 w-40 text-[0.8rem]" aria-label="Status filter"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {STATUS_FILTERS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
+            {STATUS_FILTERS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={store} onValueChange={setStore}>
-          <SelectTrigger className="w-40 font-mono">
-            <SelectValue />
-          </SelectTrigger>
+          <SelectTrigger className={cn("h-8 w-44 text-[0.8rem]", store !== "ALL" && "border-primary/40 bg-accent/40")} aria-label="Store filter"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All stores</SelectItem>
-            {(stores.data ?? []).map((s) => (
-              <SelectItem key={s.id} value={s.id}>
-                {s.label}
-              </SelectItem>
-            ))}
+            {(stores.data ?? []).map((s) => <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={source} onValueChange={(value) => setSource(value as ProposalSource | "ALL")}>
-          <SelectTrigger className="w-48">
-            <SelectValue />
-          </SelectTrigger>
+          <SelectTrigger className={cn("h-8 w-48 text-[0.8rem]", source !== "ALL" && "border-primary/40 bg-accent/40")} aria-label="Evidence filter"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {SOURCE_FILTERS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
+            {SOURCE_FILTERS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
           </SelectContent>
         </Select>
-        <div className="relative w-48">
-          <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={upcInput}
-            onChange={(event) => setUpcInput(event.target.value)}
-            placeholder="UPC / item code"
-            className="pl-8 font-mono"
-            inputMode="numeric"
-          />
-        </div>
-        <Input
-          value={invoiceInput}
-          onChange={(event) => setInvoiceInput(event.target.value)}
-          placeholder="Invoice ID"
-          className="w-72 font-mono"
-          title="The invoice UUID the proposal was raised on (paste from the invoice page URL)"
-        />
-      </div>
+        <SearchInput value={upcInput} onChange={setUpcInput} placeholder="UPC / item code" className="w-44" inputMode="numeric" mono />
+        <SearchInput value={invoiceInput} onChange={setInvoiceInput} placeholder="Invoice ID" className="w-56" mono ariaLabel="Invoice ID" />
+        <ActiveFilters chips={chips} onClear={() => { setStore("ALL"); setSource("ALL"); setUpcInput(""); setInvoiceInput(""); }} />
+      </FilterBar>
 
-      <p className="mb-3 text-[0.75rem] text-muted-foreground">
+      <p className="t-meta mb-3">
         {status === "ALL"
           ? "Every proposal ever made — pending, approved and rejected. Decisions are permanent; a changed value is a new proposal."
           : PROPOSAL_STATUS_META[status].meaning}
@@ -261,7 +238,7 @@ export function DataReviewPage() {
         <div className="space-y-3">
           {selectedRows.length > 0 ? (
             <div
-              className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
+              className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-accent/50 px-3 py-2 shadow-sm"
               data-testid="bulk-toolbar"
             >
               <span className="text-[0.82rem] font-semibold" data-testid="selected-count">
@@ -291,15 +268,12 @@ export function DataReviewPage() {
               </div>
             </div>
           ) : null}
-          <Card className="gap-0 p-0">
-            <CardContent
-              className={isPlaceholderData ? "px-2 pb-2 opacity-60 transition-opacity" : "px-2 pb-2"}
-            >
+          <div className={cn("surface overflow-hidden transition-opacity", isPlaceholderData && "opacity-60")}>
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-8">
+                    <TableRow className="bg-surface-2 hover:bg-surface-2">
+                      <TableHead className="w-8 pl-3">
                         <Checkbox
                           aria-label={
                             allSelected
@@ -327,15 +301,22 @@ export function DataReviewPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.items.map((row) => (
+                    {data.items.map((row, index) => (
+                      <Fragment key={row.id}>
+                      {status === "PENDING" && source === "ALL" && (index === 0 || data.items[index - 1].source !== row.source) ? (
+                        <TableRow className="bg-surface-2/60 hover:bg-surface-2/60" data-testid="source-group">
+                          <TableCell colSpan={13} className="t-eyebrow py-1.5 pl-3">
+                            {PROPOSAL_SOURCE_META[row.source].label} · {PROPOSAL_SOURCE_META[row.source].blurb}
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
                       <TableRow
-                        key={row.id}
-                        className="cursor-pointer"
+                        className="cursor-pointer row-hover"
                         onClick={() => navigate(`/data-review/proposals/${row.id}`)}
                         data-testid="proposal-row"
                         data-state={selected.has(row.id) ? "selected" : undefined}
                       >
-                        <TableCell onClick={(event) => event.stopPropagation()}>
+                        <TableCell className="pl-3" onClick={(event) => event.stopPropagation()}>
                           <Checkbox
                             aria-label={`Select ${row.entity_key}`}
                             checked={selected.has(row.id)}
@@ -345,14 +326,14 @@ export function DataReviewPage() {
                           />
                         </TableCell>
                         <TableCell><StoreChip store={row.store} link={false} compact /></TableCell>
-                        <TableCell className="max-w-48 truncate text-[0.78rem]" title={row.description ?? undefined}>
-                          {row.description ?? <span className="text-muted-foreground">—</span>}
+                        <TableCell className="max-w-56" title={row.description ?? undefined}>
+                          <div className="truncate text-[0.82rem] font-medium">{row.description ?? <span className="text-muted-foreground">unnamed product</span>}</div>
                         </TableCell>
-                        <TableCell className="font-mono text-[0.8rem] font-medium">{row.entity_key}</TableCell>
+                        <TableCell className="t-mono font-medium">{row.entity_key}</TableCell>
                         <TableCell className="text-[0.78rem] whitespace-nowrap text-muted-foreground">{row.field.replace(/_/g, " ")}</TableCell>
                         <TableCell className="text-right tabular-nums text-muted-foreground">
                           {row.current_value === null || row.current_value === undefined
-                            ? "—"
+                            ? <span title="No authoritative value yet">none</span>
                             : String(row.current_value)}
                         </TableCell>
                         <TableCell className="text-right">
@@ -364,7 +345,7 @@ export function DataReviewPage() {
                         <TableCell>
                           <ProposalSourceBadge source={row.source} />
                         </TableCell>
-                        <TableCell className="max-w-56 truncate text-[0.75rem] text-muted-foreground">
+                        <TableCell className="max-w-40 truncate text-[0.74rem] text-muted-foreground">
                           {row.source_file ? (
                             <span title={`${row.source_file}${row.source_sheet ? ` · ${row.source_sheet}` : ""}${row.source_row !== null ? ` · row ${row.source_row}` : ""}`}>
                               {row.source_sheet ?? row.source_file}
@@ -398,29 +379,29 @@ export function DataReviewPage() {
                             "—"
                           )}
                         </TableCell>
-                        <TableCell className="max-w-32 truncate font-mono text-[0.72rem] text-muted-foreground" title={row.proposed_by}>
+                        <TableCell className="max-w-28 truncate font-mono text-[0.68rem] text-muted-foreground" title={row.proposed_by}>
                           {row.proposed_by}
                         </TableCell>
-                        <TableCell className="text-[0.75rem] whitespace-nowrap text-muted-foreground">
-                          {formatDateTime(row.created_at)}
+                        <TableCell className="t-meta whitespace-nowrap" title={formatDateTime(row.created_at)}>
+                          {formatDate(row.created_at)}
                         </TableCell>
                         <TableCell className="text-[0.75rem] whitespace-nowrap text-muted-foreground">
                           {row.reviewed_at ? (
-                            <span title={row.review_note ?? undefined}>
-                              {formatDateTime(row.reviewed_at)}
-                              <span className="block font-mono text-[0.68rem]">{row.reviewed_by}</span>
+                            <span title={`${formatDateTime(row.reviewed_at)}${row.review_note ? ` — ${row.review_note}` : ""}`}>
+                              {formatDate(row.reviewed_at)}
+                              <span className="block max-w-28 truncate font-mono text-[0.66rem]">{row.reviewed_by}</span>
                             </span>
                           ) : (
                             "—"
                           )}
                         </TableCell>
                       </TableRow>
+                      </Fragment>
                     ))}
                   </TableBody>
                 </Table>
               </div>
-            </CardContent>
-          </Card>
+          </div>
           <Pagination page={page} pageSize={PAGE_SIZE} total={data.total} onPageChange={setPage} />
         </div>
       )}

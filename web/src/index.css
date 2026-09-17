@@ -1,3 +1,4 @@
+@import "@fontsource-variable/geist";
 @import "@fontsource-variable/inter";
 @import "tailwindcss";
 @import "tw-animate-css";
@@ -6,62 +7,73 @@
 /*
  * Invoice Intelligence design tokens.
  *
- * One neutral, data-dense enterprise palette (Stripe/Linear-inspired):
- * near-white canvas, zinc text ramp, a single restrained indigo accent,
- * and muted semantic status colors. shadcn/ui components consume the
- * --color-* variables below.
+ * One restrained, data-dense enterprise system: a cool off-white canvas,
+ * white surfaces separated by hairline borders rather than shadows, a
+ * near-black ink ramp, a single deep-indigo accent used sparingly, and
+ * muted semantic tones that are always paired with an icon and a word.
+ * Numbers are tabular everywhere they are compared.
  */
 
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: oklch(0.985 0.002 247);
-  --foreground: oklch(0.21 0.02 262);
+  --background: oklch(0.978 0.003 250);
+  --foreground: oklch(0.19 0.018 262);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.02 262);
+  --card-foreground: oklch(0.19 0.018 262);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.02 262);
-  --primary: oklch(0.51 0.23 277);
+  --popover-foreground: oklch(0.19 0.018 262);
+  --primary: oklch(0.46 0.2 275);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.962 0.004 253);
+  --secondary: oklch(0.958 0.005 253);
   --secondary-foreground: oklch(0.3 0.02 262);
-  --muted: oklch(0.962 0.004 253);
-  --muted-foreground: oklch(0.552 0.016 262);
-  --accent: oklch(0.945 0.02 272);
-  --accent-foreground: oklch(0.42 0.2 277);
-  --destructive: oklch(0.505 0.19 27);
+  --muted: oklch(0.958 0.005 253);
+  --muted-foreground: oklch(0.52 0.018 262);
+  --accent: oklch(0.945 0.025 275);
+  --accent-foreground: oklch(0.4 0.19 275);
+  --destructive: oklch(0.5 0.19 27);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.917 0.006 253);
-  --input: oklch(0.917 0.006 253);
-  --ring: oklch(0.51 0.23 277);
-  --radius: 0.55rem;
+  --border: oklch(0.905 0.007 253);
+  --input: oklch(0.885 0.008 253);
+  --ring: oklch(0.46 0.2 275);
+  --radius: 0.5rem;
+
+  /* second-level surface: table headers, rails, footers */
+  --surface-2: oklch(0.968 0.004 253);
+  --surface-3: oklch(0.95 0.005 253);
 
   --success: oklch(0.5 0.12 160);
-  --success-soft: oklch(0.965 0.028 165);
-  --warning: oklch(0.55 0.13 65);
-  --warning-soft: oklch(0.972 0.03 85);
-  --danger: oklch(0.505 0.19 27);
-  --danger-soft: oklch(0.965 0.02 20);
-  --info: oklch(0.5 0.17 262);
-  --info-soft: oklch(0.962 0.02 255);
+  --success-soft: oklch(0.962 0.03 165);
+  --warning: oklch(0.56 0.13 65);
+  --warning-soft: oklch(0.97 0.032 85);
+  --danger: oklch(0.5 0.19 27);
+  --danger-soft: oklch(0.962 0.022 20);
+  --info: oklch(0.48 0.17 262);
+  --info-soft: oklch(0.958 0.022 255);
 
-  --chart-1: oklch(0.51 0.23 277);
+  --chart-1: oklch(0.46 0.2 275);
   --chart-2: oklch(0.5 0.12 160);
-  --chart-3: oklch(0.55 0.13 65);
-  --chart-4: oklch(0.505 0.19 27);
-  --chart-5: oklch(0.552 0.016 262);
-  --sidebar: oklch(1 0 0);
+  --chart-3: oklch(0.56 0.13 65);
+  --chart-4: oklch(0.5 0.19 27);
+  --chart-5: oklch(0.6 0.02 262);
+
+  --sidebar: oklch(0.99 0.002 250);
   --sidebar-foreground: oklch(0.3 0.02 262);
-  --sidebar-primary: oklch(0.51 0.23 277);
+  --sidebar-primary: oklch(0.46 0.2 275);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.945 0.02 272);
-  --sidebar-accent-foreground: oklch(0.42 0.2 277);
-  --sidebar-border: oklch(0.917 0.006 253);
-  --sidebar-ring: oklch(0.51 0.23 277);
+  --sidebar-accent: oklch(0.94 0.02 275);
+  --sidebar-accent-foreground: oklch(0.36 0.18 275);
+  --sidebar-border: oklch(0.905 0.007 253);
+  --sidebar-ring: oklch(0.46 0.2 275);
+
+  --shadow-sm: 0 1px 2px oklch(0.19 0.018 262 / 0.06), 0 1px 1px oklch(0.19 0.018 262 / 0.03);
+  --shadow-md: 0 4px 12px -2px oklch(0.19 0.018 262 / 0.08), 0 2px 4px oklch(0.19 0.018 262 / 0.04);
+  --shadow-lg: 0 16px 40px -12px oklch(0.19 0.018 262 / 0.18), 0 4px 12px oklch(0.19 0.018 262 / 0.06);
 }
 
 @theme inline {
-  --font-sans: "Inter Variable", "Inter", -apple-system, "Segoe UI", sans-serif;
+  --font-sans: "Geist Variable", "Inter Variable", "Inter", -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -82,6 +94,8 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
 
   --color-success: var(--success);
   --color-success-soft: var(--success-soft);
@@ -114,6 +128,10 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
 }
 
 @layer base {
@@ -123,10 +141,12 @@
   html {
     font-size: 15px;
     @apply font-sans;
+    scrollbar-gutter: stable;
   }
   body {
     @apply font-sans antialiased bg-background text-foreground;
-    font-feature-settings: "cv02", "cv03", "cv04";
+    font-feature-settings: "cv02", "cv03", "cv04", "ss01";
+    text-rendering: optimizeLegibility;
   }
   h1,
   h2,
@@ -134,12 +154,74 @@
   h4 {
     @apply tracking-tight;
   }
+  /* Every compared number lines up. */
+  .tabular-nums,
+  table,
+  [data-slot="table"] {
+    font-variant-numeric: tabular-nums;
+  }
+  ::selection {
+    background: var(--accent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-/*
- ---break---
- */
+@layer components {
+  /* Typography scale — one vocabulary for every page. */
+  .t-page-title {
+    @apply text-[1.35rem] leading-tight font-semibold tracking-tight text-foreground;
+  }
+  .t-section {
+    @apply text-[0.92rem] leading-snug font-semibold text-foreground;
+  }
+  .t-eyebrow {
+    @apply text-[0.66rem] font-semibold tracking-[0.08em] text-muted-foreground uppercase;
+  }
+  .t-label {
+    @apply text-[0.74rem] font-medium text-muted-foreground;
+  }
+  .t-meta {
+    @apply text-[0.72rem] text-muted-foreground;
+  }
+  .t-metric {
+    @apply text-[1.6rem] leading-none font-semibold tracking-tight tabular-nums text-foreground;
+  }
+  .t-money {
+    @apply font-medium tabular-nums;
+  }
+  .t-mono {
+    @apply font-mono text-[0.78rem] tracking-tight;
+  }
 
+  /* Surfaces: hairline ring, no drop shadow unless it lifts on hover. */
+  .surface {
+    @apply rounded-lg bg-card ring-1 ring-foreground/8;
+  }
+  .surface-hover {
+    @apply transition-[box-shadow,transform,ring-color] duration-200 ease-out hover:shadow-md hover:ring-foreground/12;
+  }
+  .row-hover {
+    @apply transition-colors duration-150 hover:bg-surface-2;
+  }
+  .kbd {
+    @apply inline-flex h-5 min-w-5 items-center justify-center rounded border border-border bg-surface-2 px-1 font-mono text-[0.66rem] font-medium text-muted-foreground;
+  }
+}
+
+/* Dark scheme retained from the base kit (not the focus of this pass). */
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
@@ -159,6 +241,8 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  --surface-2: oklch(0.23 0 0);
+  --surface-3: oklch(0.26 0 0);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);

@@ -88,11 +88,12 @@ export function ProcessPage() {
   return (
     <>
       <PageHeader
-        title="Process Invoice"
-        description="Upload a PDF, a photo, or several overlapping photos of one long invoice, and watch every pipeline stage complete live."
+        eyebrow="Intake"
+        title="Process an invoice"
+        description="A PDF, a photo, or several overlapping photos of one long invoice. Each stage — OCR, extraction, store, validation — reports live as the backend commits it."
       />
 
-      <div className="grid grid-cols-2 items-start gap-5 max-lg:grid-cols-1">
+      <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start gap-5 max-lg:grid-cols-1">
         {/* Left: upload */}
         <div className="space-y-4">
           <div className="space-y-1">
@@ -231,15 +232,15 @@ export function ProcessPage() {
         </div>
 
         {/* Right: live timeline */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-[0.95rem]">
-              Processing timeline
+        <Card className="gap-0 py-0">
+          <CardHeader className="flex flex-row items-center justify-between border-b px-5 py-3.5">
+            <CardTitle className="flex items-center gap-2">
+              Processing
               {status.data?.store ? <StoreChip store={status.data.store} link={false} /> : null}
             </CardTitle>
             {status.data && <StatusBadge status={status.data.status} />}
           </CardHeader>
-          <CardContent>
+          <CardContent className="px-5 py-4">
             {status.data ? (
               <>
                 <ProcessingTimeline status={status.data} />
@@ -293,10 +294,15 @@ export function ProcessPage() {
                 </AnimatePresence>
               </>
             ) : (
-              <div className="py-6 text-center text-[0.8rem] text-muted-foreground">
-                The five pipeline stages appear here and update in real time as the backend
-                commits each transition.
-              </div>
+              <ol className="space-y-3 py-2" aria-label="What happens next">
+                {["Upload — validated, hashed and stored", "Text extraction — OCR per photo, or the PDF's own text", "Store identification — the document is matched to a store; you confirm", "AI structuring — one canonical invoice from the combined text", "Validation — deterministic math and reconciliation", "Persistence — vendor, invoice and lines saved"].map((step, i) => (
+                  <li key={step} className="flex items-start gap-3 text-[0.78rem] text-muted-foreground">
+                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[0.66rem] font-semibold">{i + 1}</span>
+                    <span>{step}</span>
+                  </li>
+                ))}
+                <li className="t-meta pl-8">Stages fill in here live as the backend commits each one.</li>
+              </ol>
             )}
           </CardContent>
         </Card>

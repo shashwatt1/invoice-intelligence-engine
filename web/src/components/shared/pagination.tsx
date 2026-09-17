@@ -15,30 +15,23 @@ export function Pagination({
 }) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   if (totalPages <= 1) return null;
+  const first = (page - 1) * pageSize + 1;
+  const last = Math.min(page * pageSize, total);
 
   return (
-    <div className="flex items-center justify-between pt-1">
-      <span className="text-[0.78rem] text-muted-foreground">
-        Page {page} of {totalPages} · {total} record{total === 1 ? "" : "s"}
+    <nav className="flex items-center justify-between pt-1" aria-label="Pagination">
+      <span className="t-meta tabular-nums">
+        {first}–{last} of {total}
       </span>
-      <div className="flex gap-1.5">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={page <= 1}
-          onClick={() => onPageChange(page - 1)}
-        >
-          <ChevronLeft className="size-3.5" /> Previous
+      <div className="flex items-center gap-1">
+        <Button variant="outline" size="icon-sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)} aria-label="Previous page">
+          <ChevronLeft className="size-3.5" />
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={page >= totalPages}
-          onClick={() => onPageChange(page + 1)}
-        >
-          Next <ChevronRight className="size-3.5" />
+        <span className="t-meta px-2 tabular-nums">{page} / {totalPages}</span>
+        <Button variant="outline" size="icon-sm" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)} aria-label="Next page">
+          <ChevronRight className="size-3.5" />
         </Button>
       </div>
-    </div>
+    </nav>
   );
 }
