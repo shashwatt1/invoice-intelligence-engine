@@ -15,13 +15,31 @@ export class ApiError extends Error {
   readonly errorCode: string;
   readonly statusCode: number;
   readonly detail: unknown;
+  /** The backend's request id — the one thing support needs to find the log line. */
+  readonly requestId: string | null;
 
-  constructor(statusCode: number, errorDetail: ApiErrorDetail | null) {
+  constructor(statusCode: number, errorDetail: ApiErrorDetail | null, requestId: string | null = null) {
     super(errorDetail?.message ?? "Unexpected API error.");
     this.name = "ApiError";
     this.statusCode = statusCode;
     this.errorCode = errorDetail?.error_code ?? "ERR_UNKNOWN";
     this.detail = errorDetail?.detail ?? null;
+    this.requestId = requestId;
+  }
+
+  /** A message safe to show a person: what failed and where, plus a reference. */
+  get userMessage(): string {
+    const stage =
+      this.detail && typeof this.detail === "object" && "stage" in this.detail
+        ? String((this.detail as { stage: unknown }).stage)
+        : null;
+    const what =
+      this.errorCode === "ERR_INTERNAL"
+        ? "Invoice processing failed unexpectedly. Nothing was changed; please try again."
+        : this.message;
+    const where = stage && !what.toLowerCase().includes(stage) ? ` (stage: ${stage})` : "";
+    const ref = this.requestId ? ` Reference ${this.requestId.slice(0, 8)}.` : "";
+    return `${what}${where}${ref}`;
   }
 }
 
@@ -32,9 +50,13 @@ export const apiClient = axios.create({
 
 apiClient.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<{ error?: ApiErrorDetail }>) => {
+  (error: AxiosError<{ error?: ApiErrorDetail; request_id?: string }>) => {
     if (error.response) {
-      throw new ApiError(error.response.status, error.response.data?.error ?? null);
+      const requestId =
+        error.response.data?.request_id ??
+        (error.response.headers?.["x-request-id"] as string | undefined) ??
+        null;
+      throw new ApiError(error.response.status, error.response.data?.error ?? null, requestId);
     }
     throw new ApiError(0, {
       error_code: "ERR_NETWORK",

@@ -378,7 +378,8 @@ class TestInvoiceDeletionLeavesHistoryAndMasterData:
             "mappings": [{"item_code": codes[0], "units_per_case": 12},
                          {"item_code": codes[1], "units_per_case": 6}]})
         proposals = await ProductDataProposalRepository(db_session).list(invoice_id=uuid.UUID(invoice_id))
-        approved_id, pending_id = (str(p.id) for p in proposals)
+        by_code = {p.entity_key: str(p.id) for p in proposals}      # same created_at: never rely on order
+        approved_id, pending_id = by_code[codes[0]], by_code[codes[1]]
         await api_client.post(f"/api/v1/proposals/{approved_id}/approve", json={"reviewed_by": "rev"})
 
         r = await api_client.delete(f"/api/v1/invoices/{invoice_id}")

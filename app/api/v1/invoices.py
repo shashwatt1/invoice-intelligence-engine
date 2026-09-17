@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.mappers import to_history_row
 from app.api.v1.upload import get_upload_service
 from app.core.exceptions import (
+    DatabaseError,
     InvoiceBaseException,
     RecordNotFoundError,
     StorageError,
@@ -200,7 +201,29 @@ async def process_invoice(
             file_hash=upload.file_hash, content=contents,
         ))
 
-    document = await pipeline.intake_pages(db, pages, store_id=chosen)
+    try:
+        document = await pipeline.intake_pages(db, pages, store_id=chosen)
+    except InvoiceBaseException:
+        raise                                   # duplicate etc. — already a safe, typed error
+    except Exception as exc:
+        # Intake is the one synchronous stage: a failure here (the schema, the
+        # database, the disk) must reach the operator as "nothing was
+        # processed, try again" with a reference, never as a bare 500. The
+        # traceback goes to the log under the same request id.
+        await db.rollback()
+        logger.exception("intake_failed", filenames=[p.filename for p in pages])
+        for page in pages:                      # the files were stored before intake; do not leave orphans
+            try:
+                await get_storage_service().delete(page.file_path)
+            except StorageError:
+                logger.warning("intake_failed_file_cleanup_failed", file_path=page.file_path)
+        raise DatabaseError(
+            message=(
+                "Invoice processing failed while recording the upload. Nothing was "
+                "processed; the files can be uploaded again."
+            ),
+            detail={"stage": "intake", "photo_count": len(pages)},
+        ) from exc
     background_tasks.add_task(_run_pipeline_background, pipeline, document.id, pages, chosen)
     return APIResponse(
         data=ProcessAccepted(

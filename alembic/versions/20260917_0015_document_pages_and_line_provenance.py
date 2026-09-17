@@ -28,7 +28,10 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "document_pages",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        # Generated server-side like every other table (UUIDPrimaryKeyMixin):
+        # the ORM sends no id and relies on this default.
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True,
+                  server_default=sa.text("gen_random_uuid()")),
         sa.Column("document_id", postgresql.UUID(as_uuid=True),
                   sa.ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
         sa.Column("page_number", sa.Integer(), nullable=False),

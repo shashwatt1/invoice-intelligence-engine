@@ -67,6 +67,9 @@ export function ProcessPage() {
           const detail = error.detail as { existing_document_id?: string } | null;
           setDuplicate({ existingId: detail?.existing_document_id ?? null });
           toast.warning("Duplicate document detected");
+        } else if (error instanceof ApiError) {
+          // What failed and where, with the request reference — never the traceback.
+          toast.error(error.userMessage, { duration: 10_000 });
         } else {
           toast.error(error.message);
         }
