@@ -38,6 +38,7 @@ affects.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -164,15 +165,63 @@ def build_report(
     )
 
 
+RULE_D_ACTOR = "rule:D"
+RULE_D_NOTE = (
+    "Container deposit removed from the extracted unit price, proved by the invoice totals: "
+    "Σ unit_price x qty = subtotal + deposits and Σ (unit_price - deposit) x qty = subtotal."
+)
+
+
+async def _persist_proven_reconciliation(session: AsyncSession, invoice: Invoice, tolerance: Decimal) -> int:
+    """
+    Write back what Rule D proves on the STORED rows.
+
+    On a fresh run the pipeline persists the reconciled invoice, so a
+    deposit folded into the unit price never reaches the EDI. On
+    revalidation the same proof used to live only in the report: the
+    stored unit_price stayed deposit-inclusive and the EDI would have
+    carried it as the case cost. Now a proven correction is written to
+    the row with an audit entry naming the rule — never a person's
+    correction, never applied on a half-proof. Returns rows changed.
+    """
+    normalized, _ = reconcile_invoice(normalized_from_persisted(invoice), tolerance)
+    by_order = {item.sort_order: item for item in invoice.items}
+    changed = 0
+    for line in normalized.line_items:
+        if not line.unit_price_reconciled or line.unit_price is None:
+            continue
+        row = by_order.get(line.sort_order)
+        if row is None or row.unit_price is None or row.unit_price == line.unit_price:
+            continue
+        row.correction_history = [*(row.correction_history or []), {
+            "field": "unit_price", "old": float(row.unit_price), "new": float(line.unit_price),
+            "by": RULE_D_ACTOR, "at": datetime.now(UTC).isoformat(), "note": RULE_D_NOTE,
+        }]
+        row.unit_price = line.unit_price
+        changed += 1
+    if changed:
+        await session.flush()
+        await ProcessingLogRepository(session).add(
+            document_id=invoice.document_id,
+            stage=PipelineStage.MANUAL_CORRECTION,
+            message=f"Rule D applied on revalidation: deposit removed from the unit price on {changed} row(s).",
+            payload={"event": "rule_d_applied", "by": RULE_D_ACTOR, "rows": changed, "note": RULE_D_NOTE},
+        )
+    return changed
+
+
 async def revalidate_invoice(session: AsyncSession, invoice: Invoice) -> ValidationReport:
     """
     Re-judge a corrected invoice and record the result.
 
-    Updates the invoice's status and composite confidence, and appends a
-    VALIDATION log entry. The detail endpoint reads the latest entry per
-    stage, so the new report replaces the old one in the UI without any
-    change there. Flushes; the caller owns the transaction.
+    First writes back any reconciliation the corrected totals now prove
+    (Rule D), then judges the stored invoice. Updates the invoice's
+    status and composite confidence, and appends a VALIDATION log entry.
+    The detail endpoint reads the latest entry per stage, so the new
+    report replaces the old one in the UI without any change there.
+    Flushes; the caller owns the transaction.
     """
+    await _persist_proven_reconciliation(session, invoice, ValidationService()._tolerance)
     logs = ProcessingLogRepository(session)
     previous = [
         log.payload

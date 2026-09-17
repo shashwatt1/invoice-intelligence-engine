@@ -202,3 +202,72 @@ class TestTotals:
         assert (await api_client.patch(f"/api/v1/invoices/{invoice_id}/totals",
                                        json={"grand_total": -1, "corrected_by": WHO})).status_code == 422
         assert (await api_client.patch(f"/api/v1/invoices/{invoice_id}/totals", json={"grand_total": 1})).status_code == 422
+
+
+class TestRuleDOnRevalidation:
+    """
+    RCM 1012818: a layout whose NET column is PRICE + DEP was extracted with
+    unit_price = NET and line_total = EXT, and the printed deposit total was
+    misread (deposit + delivery fee). Rule D could not prove anything at
+    run time, so the deposit-inclusive prices were persisted. Correcting
+    the totals must make the proof hold AND write the goods price back to
+    the stored rows — otherwise validation passes while the EDI carries
+    the deposit in every case cost.
+    """
+
+    async def test_correcting_the_totals_writes_the_proven_goods_price_back(self, api_client, app, db_session):  # noqa: F811
+        # NET prices, EXT line totals, deposit total misread as deposit + fee
+        items = [
+            ExtractedLineItem(description="KEYSTONE LIGHT 4/6/16 CAN", product_code="071990480080", quantity=4,
+                              unit_price=17.70, unit_deposit=1.20, line_total=70.80),
+            ExtractedLineItem(description="ANGRY ORCHARD 12/19.2 CRISP", product_code="087692023777", quantity=1,
+                              unit_price=23.20, unit_deposit=0.0, line_total=23.20),
+        ]
+        invoice_id = await process(api_client, app, items, "ruled.pdf",
+                                   subtotal=89.20, deposit_total=14.80, fuel_surcharge=10.0, grand_total=104.00)
+        before = await detail(api_client, invoice_id)
+        assert before["status"] == "REVIEW_REQUIRED"
+        assert before["line_items"][0]["unit_price"] == 17.7                       # persisted as extracted (NET)
+        names = {c["name"] for c in before["validation_report"]["checks"] if c["status"] == "FAILED"}
+        assert "UNIT_PRICE_MAY_INCLUDE_DEPOSIT" in names                           # half-proof only
+
+        r = await api_client.patch(f"/api/v1/invoices/{invoice_id}/totals",
+                                   json={"deposit_total": 4.80, "corrected_by": WHO, "note": "printed Total Deposit"})
+        assert r.status_code == 200, r.text
+        assert r.json()["data"]["status"] == "VALIDATED", r.json()["data"]["review_reasons"]
+
+        after = await detail(api_client, invoice_id)
+        keystone, orchard = after["line_items"]
+        assert keystone["unit_price"] == 16.5                                       # goods price, persisted
+        assert keystone["line_total"] == 70.8                                       # printed EXT untouched
+        assert keystone["unit_deposit"] == 1.2
+        assert orchard["unit_price"] == 23.2                                        # no deposit: untouched
+        entry = keystone["correction_history"][-1]
+        assert (entry["field"], entry["old"], entry["new"], entry["by"]) == ("unit_price", 17.7, 16.5, "rule:D")
+        assert "proved by the invoice totals" in entry["note"]
+        assert keystone["corrected_fields"] == []                                   # not a person's correction
+        events = [e["event"] for e in await audit(api_client, invoice_id)]
+        assert events == ["totals_corrected", "rule_d_applied"]
+        # merchandise and deposits stay separate concepts
+        merchandise = sum(i["unit_price"] * i["quantity"] for i in after["line_items"])
+        deposits = sum((i["unit_deposit"] or 0) * i["quantity"] for i in after["line_items"])
+        assert (round(merchandise, 2), round(deposits, 2)) == (89.20, 4.80)
+        assert sum(i["line_total"] for i in after["line_items"]) == 94.0            # Σ EXT = merchandise + deposits
+        # revalidating again is a no-op: nothing else to prove, no second history entry
+        r = await api_client.patch(f"/api/v1/invoices/{invoice_id}/totals",
+                                   json={"fuel_surcharge": 10.0, "corrected_by": WHO})
+        assert r.json()["data"]["status"] == "VALIDATED"
+        again = await detail(api_client, invoice_id)
+        assert [h["by"] for h in again["line_items"][0]["correction_history"]] == ["rule:D"]
+
+    async def test_a_half_proof_never_writes_anything(self, api_client, app):  # noqa: F811
+        items = [ExtractedLineItem(description="KEYSTONE LIGHT 4/6/16 CAN", product_code="071990480080", quantity=4,
+                                   unit_price=17.70, unit_deposit=1.20, line_total=70.80)]
+        invoice_id = await process(api_client, app, items, "half.pdf",
+                                   subtotal=66.00, deposit_total=9.99, grand_total=75.99)   # deposit total wrong
+        r = await api_client.patch(f"/api/v1/invoices/{invoice_id}/items/0", json={"quantity": 4, "corrected_by": WHO})
+        assert r.status_code == 200
+        after = await detail(api_client, invoice_id)
+        assert after["status"] == "REVIEW_REQUIRED"
+        assert after["line_items"][0]["unit_price"] == 17.7                        # left as extracted
+        assert all(h["by"] != "rule:D" for h in after["line_items"][0]["correction_history"])
