@@ -8,6 +8,11 @@ lists, shows, and forwards decisions. It has no path to
 product_case_mappings of its own — approve() is the only writer, and it
 is the same function the review CLI calls.
 
+The bulk endpoints are the review table's fast path: the same approve()
+per row, one reviewer name typed once, all-or-nothing like the CLI's
+approve-batch. `revise` is how a reviewer corrects a pending value from
+the table without editing history — a new proposal, the old one frozen.
+
 No authentication yet. `reviewed_by` is recorded as given, the same
 contract as the CLI's --by; it is a name on the record, not a proof of
 identity, and the UI says so.
@@ -36,16 +41,22 @@ from app.repositories.product_data_proposal_repository import (
 from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import (
+    BulkDecisionOutcome,
+    BulkDecisionResult,
+    BulkProposalDecision,
     ProductHistory,
     ProposalDecision,
     ProposalDecisionResult,
     ProposalDetail,
+    ProposalRevision,
+    ProposalRevisionResult,
     ProposalRow,
     ResultingMapping,
     StoreRef,
 )
 from app.services import proposal_service
 from app.services.export_service import normalize_item_code
+from app.services.proposal_service import BatchRefusedError
 
 router = APIRouter(tags=["Master data review"])
 
@@ -152,6 +163,98 @@ async def _decide(db: AsyncSession, proposal_id: uuid.UUID, body: ProposalDecisi
         raise ValidationError(message=str(exc), detail={"id": str(proposal_id), "status": p.status}) from exc
     await db.commit()
     return APIResponse(data=ProposalDecisionResult(proposal=await _detail(db, p), applied_to=applied))
+
+
+async def _decide_bulk(db: AsyncSession, body: BulkProposalDecision, approve: bool):
+    repo = ProductDataProposalRepository(db)
+    ids = list(dict.fromkeys(body.proposal_ids))          # de-duplicate, keep order
+    found = [await repo.get(i) for i in ids]
+    missing = {str(i): "not found" for i, p in zip(ids, found, strict=True) if p is None}
+    if missing:
+        raise ValidationError(
+            message=f"{len(missing)} proposal(s) not found; nothing was decided.",
+            detail={"failures": missing},
+        )
+    try:
+        outcomes = await proposal_service.decide_many(
+            db, [p for p in found if p is not None],
+            approve_them=approve, reviewed_by=body.reviewed_by, note=body.note,
+        )
+    except BatchRefusedError as exc:
+        await db.rollback()
+        raise ValidationError(
+            message=f"{len(exc.failures)} proposal(s) already decided; nothing was changed.",
+            detail={"failures": exc.failures},
+        ) from exc
+    await db.commit()
+    return APIResponse(data=BulkDecisionResult(
+        reviewed_by=body.reviewed_by,
+        decided=[BulkDecisionOutcome(id=o.proposal.id, entity_key=o.proposal.entity_key,
+                                     status=o.proposal.status, applied_to=o.applied_to)
+                 for o in outcomes],
+    ))
+
+
+@router.post(
+    "/proposals/bulk-approve",
+    response_model=APIResponse[BulkDecisionResult],
+    summary="Approve several proposals in one transaction",
+    description=(
+        "Each proposal goes through the same approve() as a single decision and "
+        "writes its own authoritative row. All-or-nothing: if any selected proposal "
+        "is missing or already decided, nothing is written and `detail.failures` "
+        "names each offending id."
+    ),
+    responses={422: {"description": "A selected proposal is missing or already decided"}},
+)
+async def bulk_approve_proposals(
+    body: BulkProposalDecision, db: AsyncSession = Depends(get_db)
+) -> APIResponse[BulkDecisionResult]:
+    return await _decide_bulk(db, body, approve=True)
+
+
+@router.post(
+    "/proposals/bulk-reject",
+    response_model=APIResponse[BulkDecisionResult],
+    summary="Reject several proposals in one transaction — master data untouched",
+    responses={422: {"description": "A selected proposal is missing or already decided"}},
+)
+async def bulk_reject_proposals(
+    body: BulkProposalDecision, db: AsyncSession = Depends(get_db)
+) -> APIResponse[BulkDecisionResult]:
+    return await _decide_bulk(db, body, approve=False)
+
+
+@router.post(
+    "/proposals/{proposal_id}/revise",
+    response_model=APIResponse[ProposalRevisionResult],
+    summary="Correct a pending proposal's value — a new proposal, the old one frozen",
+    description=(
+        "A proposal is immutable, so a correction is a NEW pending proposal "
+        "(source operator_entered, evidence annotated with `revised_from`) and "
+        "the original is frozen as REJECTED with a note naming its successor, in "
+        "one transaction. Master data is not touched; the revision must still be "
+        "approved."
+    ),
+    responses={404: {"description": "Not found"},
+               422: {"description": "Already reviewed, or the value is unchanged"}},
+)
+async def revise_proposal(
+    proposal_id: uuid.UUID, body: ProposalRevision, db: AsyncSession = Depends(get_db)
+) -> APIResponse[ProposalRevisionResult]:
+    p = await ProductDataProposalRepository(db).get(proposal_id)
+    if p is None:
+        raise RecordNotFoundError(message="Proposal not found.", detail={"id": str(proposal_id)})
+    try:
+        revised = await proposal_service.revise(
+            db, p, proposed_value=body.proposed_value, proposed_by=body.proposed_by, note=body.note,
+        )
+    except (ProposalImmutableError, ValueError) as exc:
+        raise ValidationError(message=str(exc), detail={"id": str(proposal_id), "status": p.status}) from exc
+    await db.commit()
+    return APIResponse(data=ProposalRevisionResult(
+        proposal=await _detail(db, revised), superseded=await _detail(db, p),
+    ))
 
 
 @router.post(

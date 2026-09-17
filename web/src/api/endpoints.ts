@@ -16,12 +16,16 @@ import type {
   InvoiceDetail,
   InvoiceListParams,
   Paginated,
+  BulkDecisionResult,
+  BulkProposalDecision,
   ProcessAccepted,
   ProductHistory,
   ProposalDecision,
   ProposalDecisionResult,
   ProposalDetail,
   ProposalListParams,
+  ProposalRevision,
+  ProposalRevisionResult,
   ProposalRow,
   StoreDirectoryEntry,
   StoreIdentityUpdate,
@@ -156,6 +160,34 @@ export async function rejectProposal(
   const { data } = await apiClient.post<ApiEnvelope<ProposalDecisionResult>>(
     `/proposals/${proposalId}/reject`,
     decision,
+  );
+  return data.data!;
+}
+
+/** Approves every selected proposal through the same backend approve() as a
+ * single decision, in one transaction. A missing or already-decided id
+ * refuses the whole batch (422 with `detail.failures`). */
+export async function bulkApproveProposals(body: BulkProposalDecision): Promise<BulkDecisionResult> {
+  const { data } = await apiClient.post<ApiEnvelope<BulkDecisionResult>>("/proposals/bulk-approve", body);
+  return data.data!;
+}
+
+/** Rejects every selected proposal in one transaction. Master data untouched. */
+export async function bulkRejectProposals(body: BulkProposalDecision): Promise<BulkDecisionResult> {
+  const { data } = await apiClient.post<ApiEnvelope<BulkDecisionResult>>("/proposals/bulk-reject", body);
+  return data.data!;
+}
+
+/** Corrects a pending proposal's value. The backend records a NEW pending
+ * proposal (evidence annotated with `revised_from`) and freezes the original
+ * as superseded; nothing authoritative changes until the revision is approved. */
+export async function reviseProposal(
+  proposalId: string,
+  revision: ProposalRevision,
+): Promise<ProposalRevisionResult> {
+  const { data } = await apiClient.post<ApiEnvelope<ProposalRevisionResult>>(
+    `/proposals/${proposalId}/revise`,
+    revision,
   );
   return data.data!;
 }

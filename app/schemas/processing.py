@@ -303,6 +303,52 @@ class ProposalDecisionResult(BaseModel):
     )
 
 
+class BulkProposalDecision(BaseModel):
+    """Body of POST /proposals/bulk-approve and /bulk-reject — the review table's fast path."""
+
+    proposal_ids: list[uuid.UUID] = Field(
+        min_length=1, max_length=200,
+        description="The selected proposals. Decided all-or-nothing: one stale row refuses the batch.",
+    )
+    reviewed_by: str = Field(min_length=1, max_length=128, description="Entered once, recorded on every row.")
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class BulkDecisionOutcome(BaseModel):
+    id: uuid.UUID
+    entity_key: str
+    status: str
+    applied_to: str | None = None
+
+
+class BulkDecisionResult(BaseModel):
+    reviewed_by: str
+    decided: list[BulkDecisionOutcome]
+
+    @property
+    def count(self) -> int:
+        return len(self.decided)
+
+
+class ProposalRevision(BaseModel):
+    """
+    Body of POST /proposals/{id}/revise — a reviewer correcting a pending value.
+
+    Units-per-case is the only revisable field today, hence the integer.
+    The proposal is not edited: a new pending proposal is created and the
+    original is frozen as superseded. Approval is a separate, governed step.
+    """
+
+    proposed_value: int = Field(ge=1, le=9999)
+    proposed_by: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ProposalRevisionResult(BaseModel):
+    proposal: ProposalDetail = Field(description="The new PENDING proposal carrying the corrected value.")
+    superseded: ProposalDetail = Field(description="The original, now REJECTED with a note naming its successor.")
+
+
 class ProductHistory(BaseModel):
     """Everything that ever happened to one product's reusable data, in one store."""
 

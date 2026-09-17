@@ -16,16 +16,7 @@ import {
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useDecideProposal } from "@/hooks/use-api";
-
-const REVIEWER_KEY = "data-review.reviewer";
-
-function rememberedReviewer(): string {
-  try {
-    return localStorage.getItem(REVIEWER_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
+import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
 
 /**
  * Approve / Reject for one PENDING proposal.
@@ -53,11 +44,7 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
       { proposalId: proposal.id, action, decision: { reviewed_by: name, note: note.trim() || null } },
       {
         onSuccess: (result) => {
-          try {
-            localStorage.setItem(REVIEWER_KEY, name);
-          } catch {
-            /* per-browser convenience only */
-          }
+          rememberReviewer(name);
           setConfirming(null);
           toast.success(
             action === "approve"

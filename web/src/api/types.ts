@@ -455,6 +455,41 @@ export interface ProposalDecisionResult {
   applied_to: string | null;
 }
 
+/** Body of POST /proposals/bulk-approve and /bulk-reject — the table's
+ * fast path. Decided all-or-nothing: one stale row refuses the batch. */
+export interface BulkProposalDecision {
+  proposal_ids: string[];
+  reviewed_by: string;
+  note?: string | null;
+}
+
+export interface BulkDecisionOutcome {
+  id: string;
+  entity_key: string;
+  status: ProposalStatus;
+  applied_to: string | null;
+}
+
+export interface BulkDecisionResult {
+  reviewed_by: string;
+  decided: BulkDecisionOutcome[];
+}
+
+/** A reviewer's correction of a pending value. Not an edit: the backend
+ * creates a new pending proposal and freezes the original as superseded. */
+export interface ProposalRevision {
+  proposed_value: number;
+  proposed_by: string;
+  note?: string | null;
+}
+
+export interface ProposalRevisionResult {
+  /** The new PENDING proposal carrying the corrected value. */
+  proposal: ProposalDetail;
+  /** The original, now REJECTED with a note naming its successor. */
+  superseded: ProposalDetail;
+}
+
 export interface ProductHistory {
   /** A UPC's history is one store's history. */
   store: StoreRef;

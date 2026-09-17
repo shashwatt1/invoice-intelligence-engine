@@ -10,6 +10,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   approveProposal,
+  bulkApproveProposals,
+  bulkRejectProposals,
   confirmCaseMappings,
   confirmDocumentStore,
   correctLineItem,
@@ -25,14 +27,17 @@ import {
   listStores,
   processInvoice,
   rejectProposal,
+  reviseProposal,
   updateStoreIdentity,
 } from "@/api/endpoints";
 import type {
   CaseMappingConfirmation,
   InvoiceListParams,
   LineItemCorrection,
+  BulkProposalDecision,
   ProposalDecision,
   ProposalListParams,
+  ProposalRevision,
   StoreIdentityUpdate,
 } from "@/api/types";
 
@@ -235,6 +240,45 @@ export function useDecideProposal() {
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["proposals"] });
       void queryClient.invalidateQueries({ queryKey: ["proposal", result.proposal.id] });
+      void queryClient.invalidateQueries({
+        queryKey: ["product-history", result.proposal.store.id, result.proposal.entity_key],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["invoice"] });
+    },
+  });
+}
+
+/**
+ * Decide a batch from the review table. One request, one transaction; the
+ * same invalidation as a single decision, for every affected product.
+ */
+export function useBulkDecideProposals() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ action, decision }: { action: "approve" | "reject"; decision: BulkProposalDecision }) =>
+      action === "approve" ? bulkApproveProposals(decision) : bulkRejectProposals(decision),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["proposals"] });
+      void queryClient.invalidateQueries({ queryKey: ["proposal"] });
+      void queryClient.invalidateQueries({ queryKey: ["product-history"] });
+      void queryClient.invalidateQueries({ queryKey: ["invoice"] });
+    },
+  });
+}
+
+/**
+ * Correct a pending value from the table. The result carries the NEW
+ * proposal (pending) and the superseded original; the queue is refetched
+ * so the row is replaced rather than mutated in place.
+ */
+export function useReviseProposal() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ proposalId, revision }: { proposalId: string; revision: ProposalRevision }) =>
+      reviseProposal(proposalId, revision),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["proposals"] });
+      void queryClient.invalidateQueries({ queryKey: ["proposal", result.superseded.id] });
       void queryClient.invalidateQueries({
         queryKey: ["product-history", result.proposal.store.id, result.proposal.entity_key],
       });

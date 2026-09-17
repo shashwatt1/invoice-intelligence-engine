@@ -1,14 +1,19 @@
-import { ClipboardCheck, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Check, ClipboardCheck, Pencil, Search, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import type { ProposalListParams, ProposalSource, ProposalStatus } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
+import { type BulkAction, BulkDecisionDialog } from "@/components/review/bulk-decision-dialog";
+import { BulkEditDialog } from "@/components/review/bulk-edit-dialog";
 import { ProposalSourceBadge, ProposalStatusBadge } from "@/components/review/proposal-badges";
+import { ProposedValueCell } from "@/components/review/proposed-value-cell";
 import { StoreChip } from "@/components/shared/store-chip";
 import { Pagination } from "@/components/shared/pagination";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -27,6 +32,7 @@ import {
 } from "@/components/ui/table";
 import { usePendingProposalCount, useProposals, useStores } from "@/hooks/use-api";
 import { formatDateTime } from "@/lib/format";
+import { isEditable } from "@/lib/proposals";
 import { PROPOSAL_SOURCE_META, PROPOSAL_STATUS_META } from "@/lib/status";
 
 const PAGE_SIZE = 25;
@@ -62,6 +68,12 @@ function useDebounced<T>(value: T, delayMs = 300): T {
  * PUT FORWARD. It is not master data until a reviewer approves it here
  * (or through the CLI). The default filter is PENDING because that is the
  * work; the other statuses are the immutable audit history.
+ *
+ * Two ways to review. The table is the fast path: tick the obvious rows,
+ * correct a value inline if needed, approve or reject them together with
+ * one reviewer name. The proposal page is the deep path — evidence,
+ * history, a note — for the rows that need it. Both end in the same
+ * backend approve(); the table is only quicker.
  */
 export function DataReviewPage() {
   const navigate = useNavigate();
@@ -108,6 +120,46 @@ export function DataReviewPage() {
   const pendingCount = usePendingProposalCount();
   const stores = useStores();
   const hasFilters = source !== "ALL" || store !== "ALL" || Boolean(upc) || Boolean(invoice);
+
+  // Selection is always a subset of the rows on screen: when filters or the
+  // page change, rows that scrolled out of view are dropped, so "12 selected"
+  // never counts something the reviewer cannot see.
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [bulkAction, setBulkAction] = useState<BulkAction | null>(null);
+  const [editing, setEditing] = useState(false);
+  const rows = useMemo(() => data?.items ?? [], [data]);
+  const selectable = useMemo(() => rows.filter((row) => row.status === "PENDING"), [rows]);
+  useEffect(() => {
+    setSelected((prev) => {
+      const visible = new Set(selectable.map((row) => row.id));
+      const next = new Set([...prev].filter((id) => visible.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [selectable]);
+
+  const selectedRows = useMemo(() => selectable.filter((row) => selected.has(row.id)), [selectable, selected]);
+  const allSelected = selectable.length > 0 && selectedRows.length === selectable.length;
+  const someSelected = selectedRows.length > 0 && !allSelected;
+  const toggleAll = () =>
+    setSelected(allSelected ? new Set() : new Set(selectable.map((row) => row.id)));
+  const toggleOne = (id: string, on: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  // A revision replaces a row with a new proposal id; keep it selected so the
+  // reviewer can go straight on to approving what they just corrected.
+  const onRevised = useCallback((supersededId: string, revisionId: string) => {
+    setSelected((prev) => {
+      if (!prev.has(supersededId)) return prev;
+      const next = new Set(prev);
+      next.delete(supersededId);
+      next.add(revisionId);
+      return next;
+    });
+  }, []);
 
   return (
     <>
@@ -207,6 +259,38 @@ export function DataReviewPage() {
         />
       ) : (
         <div className="space-y-3">
+          {selectedRows.length > 0 ? (
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
+              data-testid="bulk-toolbar"
+            >
+              <span className="text-[0.82rem] font-semibold" data-testid="selected-count">
+                {selectedRows.length} selected
+              </span>
+              <span className="text-[0.72rem] text-muted-foreground">
+                of {selectable.length} pending on this page
+              </span>
+              <div className="ml-auto flex flex-wrap gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!selectedRows.some(isEditable)}
+                  onClick={() => setEditing(true)}
+                >
+                  <Pencil /> Edit selected
+                </Button>
+                <Button size="sm" onClick={() => setBulkAction("approve")}>
+                  <Check strokeWidth={3} /> Approve selected
+                </Button>
+                <Button size="sm" variant="destructive" onClick={() => setBulkAction("reject")}>
+                  <X /> Reject selected
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                  Clear
+                </Button>
+              </div>
+            </div>
+          ) : null}
           <Card className="gap-0 p-0">
             <CardContent
               className={isPlaceholderData ? "px-2 pb-2 opacity-60 transition-opacity" : "px-2 pb-2"}
@@ -215,6 +299,19 @@ export function DataReviewPage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
+                      <TableHead className="w-8">
+                        <Checkbox
+                          aria-label={
+                            allSelected
+                              ? "Deselect all pending rows on this page"
+                              : `Select all ${selectable.length} pending rows on this page`
+                          }
+                          checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                          disabled={selectable.length === 0}
+                          onCheckedChange={toggleAll}
+                          data-testid="select-all"
+                        />
+                      </TableHead>
                       <TableHead>Store</TableHead>
                       <TableHead>UPC</TableHead>
                       <TableHead>Field</TableHead>
@@ -235,7 +332,17 @@ export function DataReviewPage() {
                         className="cursor-pointer"
                         onClick={() => navigate(`/data-review/proposals/${row.id}`)}
                         data-testid="proposal-row"
+                        data-state={selected.has(row.id) ? "selected" : undefined}
                       >
+                        <TableCell onClick={(event) => event.stopPropagation()}>
+                          <Checkbox
+                            aria-label={`Select ${row.entity_key}`}
+                            checked={selected.has(row.id)}
+                            disabled={row.status !== "PENDING"}
+                            onCheckedChange={(on) => toggleOne(row.id, on === true)}
+                            data-testid="row-checkbox"
+                          />
+                        </TableCell>
                         <TableCell><StoreChip store={row.store} link={false} compact /></TableCell>
                         <TableCell className="font-mono text-[0.8rem] font-medium">{row.entity_key}</TableCell>
                         <TableCell className="text-[0.78rem] whitespace-nowrap text-muted-foreground">{row.field.replace(/_/g, " ")}</TableCell>
@@ -244,8 +351,8 @@ export function DataReviewPage() {
                             ? "—"
                             : String(row.current_value)}
                         </TableCell>
-                        <TableCell className="text-right font-semibold tabular-nums">
-                          {String(row.proposed_value)}
+                        <TableCell className="text-right">
+                          <ProposedValueCell row={row} onRevised={onRevised} />
                         </TableCell>
                         <TableCell>
                           <ProposalStatusBadge status={row.status} />
@@ -291,6 +398,23 @@ export function DataReviewPage() {
           <Pagination page={page} pageSize={PAGE_SIZE} total={data.total} onPageChange={setPage} />
         </div>
       )}
+
+      <BulkDecisionDialog
+        action={bulkAction}
+        rows={selectedRows}
+        onOpenChange={(open) => !open && setBulkAction(null)}
+        onDone={(decidedIds) =>
+          setSelected((prev) => new Set([...prev].filter((id) => !decidedIds.includes(id))))
+        }
+      />
+      <BulkEditDialog
+        open={editing}
+        rows={selectedRows}
+        onOpenChange={setEditing}
+        onDone={(replaced) => {
+          for (const [supersededId, revisionId] of Object.entries(replaced)) onRevised(supersededId, revisionId);
+        }}
+      />
     </>
   );
 }

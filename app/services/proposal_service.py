@@ -18,6 +18,18 @@ And one for the front end:
                is told "reference_derived" or "operator_entered" by the
                system rather than by whoever clicked.
 
+And two for the review table's fast path:
+
+  decide_many() — approve() or reject() over a batch, all-or-nothing:
+               every row is checked to be PENDING before the first one
+               is touched, so a stale selection refuses cleanly instead
+               of half-landing.
+  revise()   — a reviewer's correction of a pending value. A proposal is
+               immutable, so this is a NEW pending proposal that records
+               which one it revised, and the original is frozen as
+               rejected/superseded in the same transaction. Master data
+               is not touched; the revision still has to be approved.
+
 Nothing here has a path that writes product_case_mappings without an
 APPROVED proposal id in hand. That is the point of the module.
 """
@@ -46,6 +58,7 @@ from app.models.product_data_proposal import (
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.repositories.product_data_proposal_repository import (
     ProductDataProposalRepository,
+    ProposalImmutableError,
 )
 from app.services.case_mapping_service import (
     REFERENCE_SUGGESTION_SOURCES,
@@ -66,6 +79,27 @@ class ApprovalResult:
     proposal: ProductDataProposal
     applied_to: str          # e.g. "product_case_mappings:06206738062"
     previous_value: Any | None
+
+
+@dataclass(frozen=True)
+class DecisionOutcome:
+    proposal: ProductDataProposal
+    applied_to: str | None   # None on rejection
+
+
+class BatchRefusedError(ValueError):
+    """
+    Raised by decide_many() before anything is written: at least one
+    proposal in the batch is not PENDING. `failures` maps proposal id
+    (str) to the reason, so the caller can say exactly which rows.
+    """
+
+    def __init__(self, failures: dict[str, str]) -> None:
+        self.failures = failures
+        super().__init__(
+            f"{len(failures)} proposal(s) cannot be decided: "
+            + "; ".join(f"{k[:8]} {v}" for k, v in failures.items())
+        )
 
 
 def _classify(status: CaseMappingStatus | None, value: int) -> tuple[str, dict[str, Any]]:
@@ -181,6 +215,103 @@ async def reject(
     return await ProductDataProposalRepository(session).mark_rejected(
         proposal, reviewed_by=reviewed_by, note=note
     )
+
+
+async def decide_many(
+    session: AsyncSession,
+    proposals: list[ProductDataProposal],
+    *,
+    approve_them: bool,
+    reviewed_by: str,
+    note: str | None = None,
+) -> list[DecisionOutcome]:
+    """
+    Approve or reject a batch, all-or-nothing.
+
+    Each row goes through the same approve()/reject() as a single
+    decision — same reviewer, same timestamp precision, its own row and
+    its own written mapping. What the batch adds is only the pre-check:
+    if any row is already decided, nothing is written and the caller
+    hears which ones. The caller owns the commit.
+    """
+    failures = {str(p.id): f"already {p.status}" for p in proposals if not p.is_pending}
+    if failures:
+        raise BatchRefusedError(failures)
+    outcomes: list[DecisionOutcome] = []
+    for p in proposals:
+        if approve_them:
+            result = await approve(session, p, reviewed_by=reviewed_by, note=note)
+            outcomes.append(DecisionOutcome(proposal=p, applied_to=result.applied_to))
+        else:
+            await reject(session, p, reviewed_by=reviewed_by, note=note)
+            outcomes.append(DecisionOutcome(proposal=p, applied_to=None))
+    return outcomes
+
+
+async def revise(
+    session: AsyncSession,
+    original: ProductDataProposal,
+    *,
+    proposed_value: Any,
+    proposed_by: str,
+    note: str | None = None,
+) -> ProductDataProposal:
+    """
+    Replace a pending proposal's value with a reviewer's correction.
+
+    The original is never edited. A new PENDING proposal is created with
+    the corrected value, source operator_entered (it is the reviewer's
+    number now, whatever the original's evidence said), the original's
+    evidence kept and annotated with `revised_from`, and the original is
+    frozen as REJECTED with a note naming its successor. Both land in one
+    flush. The new proposal is approved — or not — exactly like any other.
+    """
+    proposals = ProductDataProposalRepository(session)
+    if not original.is_pending:
+        raise ProposalImmutableError(
+            f"Proposal {original.id} is {original.status} and cannot be revised. "
+            "Submit a new proposal instead."
+        )
+    if proposed_value == original.proposed_value:
+        raise ValueError("The revised value is the same as the proposed value; nothing to revise.")
+
+    current = None
+    if original.entity_type == ENTITY_CASE_MAPPING:
+        mapping = await ProductCaseMappingRepository(session).get(original.store_id, original.entity_key)
+        current = mapping.units_per_case if mapping else None
+
+    evidence = dict(original.evidence or {})
+    evidence["revised_from"] = str(original.id)
+    evidence["revised_from_value"] = original.proposed_value
+    evidence["revised_from_source"] = original.source
+    if note:
+        evidence["revision_note"] = note
+    revised = await proposals.create(
+        store_id=original.store_id,
+        entity_type=original.entity_type,
+        entity_key=original.entity_key,
+        field=original.field,
+        proposed_value=proposed_value,
+        current_value=current,
+        source=SOURCE_OPERATOR_ENTERED,
+        proposed_by=proposed_by,
+        invoice_id=original.invoice_id,
+        evidence=evidence,
+        reason=(
+            f"Revised from proposal {original.id} "
+            f"({original.proposed_value!r} -> {proposed_value!r}) in the review table."
+            + (f" {note}" if note else "")
+        ),
+        source_file=original.source_file,
+        source_sheet=original.source_sheet,
+        source_row=original.source_row,
+    )
+    await proposals.mark_rejected(
+        original, reviewed_by=proposed_by,
+        note=f"Superseded by revised proposal {revised.id}: "
+             f"{original.proposed_value!r} -> {proposed_value!r}." + (f" {note}" if note else ""),
+    )
+    return revised
 
 
 async def pending_by_item_code(
