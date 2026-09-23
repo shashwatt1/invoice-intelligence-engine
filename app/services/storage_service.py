@@ -61,6 +61,7 @@ class StorageService(ABC):
         document_uuid: str,
         original_filename: str,
         organization_id: str = "default",
+        content_type: str | None = None,
     ) -> str:
         """
         Persist raw file bytes and return the storage path/URL.
@@ -70,6 +71,9 @@ class StorageService(ABC):
             document_uuid: Unique identifier for this document (used in the path).
             original_filename: Original filename, used to determine the extension.
             organization_id: Tenant identifier for path namespacing.
+            content_type: The uploaded file's MIME type, if known. Backends
+                that send a Content-Type over HTTP (e.g. Supabase) use this;
+                backends that don't need one (e.g. local disk) ignore it.
 
         Returns:
             Opaque string reference (local path or cloud URL) suitable for
@@ -146,8 +150,13 @@ class LocalStorageService(StorageService):
         document_uuid: str,
         original_filename: str,
         organization_id: str = "default",
+        content_type: str | None = None,
     ) -> str:
-        """Write file bytes to local disk and return the relative path."""
+        """Write file bytes to local disk and return the relative path.
+
+        content_type is unused here — a filesystem path carries no
+        Content-Type header, unlike the Supabase backend.
+        """
         file_path = self._base / _object_key(document_uuid, original_filename, organization_id)
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -239,10 +248,29 @@ class SupabaseStorageService(StorageService):
         logger.info("supabase_storage_initialized", bucket=self._bucket)
 
     def _headers(self, content_type: str | None = None) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {self._key}"}
+        # Supabase's API gateway requires BOTH `apikey` and `Authorization:
+        # Bearer` on Storage REST requests — Authorization alone is rejected
+        # (confirmed live: 400 "Invalid Compact JWS"/AccessDenied without
+        # apikey; 200 with it present, same key).
+        headers = {"Authorization": f"Bearer {self._key}", "apikey": self._key}
         if content_type:
             headers["Content-Type"] = content_type
         return headers
+
+    @staticmethod
+    def _log_http_error(event: str, exc: httpx.HTTPError, **fields: object) -> None:
+        """Log a Storage HTTP failure, including Supabase's response body
+        when one was received — never the request headers (which carry the
+        API key), so the log can never contain credentials."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            logger.error(
+                event,
+                status=exc.response.status_code,
+                response_body=exc.response.text,
+                **fields,
+            )
+        else:
+            logger.error(event, error=str(exc), **fields)
 
     async def save(
         self,
@@ -250,6 +278,7 @@ class SupabaseStorageService(StorageService):
         document_uuid: str,
         original_filename: str,
         organization_id: str = "default",
+        content_type: str | None = None,
     ) -> str:
         """Upload file bytes to the bucket and return the object key."""
         key = _object_key(document_uuid, original_filename, organization_id)
@@ -257,11 +286,14 @@ class SupabaseStorageService(StorageService):
             response = await self._client.post(
                 f"{self._object_base}/{key}",
                 content=content,
-                headers={**self._headers("application/octet-stream"), "x-upsert": "true"},
+                headers={
+                    **self._headers(content_type or "application/octet-stream"),
+                    "x-upsert": "true",
+                },
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.error("supabase_storage_write_failed", key=key, error=str(exc))
+            self._log_http_error("supabase_storage_write_failed", exc, key=key)
             raise StorageError(
                 message="Failed to write file to Supabase storage.",
                 detail={"key": key, "error": str(exc)},
@@ -276,7 +308,7 @@ class SupabaseStorageService(StorageService):
             response = await self._client.get(f"{self._object_base}/{file_path}", headers=self._headers())
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.error("supabase_storage_read_failed", path=file_path, error=str(exc))
+            self._log_http_error("supabase_storage_read_failed", exc, path=file_path)
             raise StorageError(
                 message="Failed to read the stored file.",
                 detail={"path": file_path, "error": str(exc)},
@@ -292,6 +324,7 @@ class SupabaseStorageService(StorageService):
             if response.status_code not in (200, 404):
                 response.raise_for_status()
         except httpx.HTTPError as exc:
+            self._log_http_error("supabase_storage_delete_failed", exc, path=file_path)
             raise StorageError(
                 message="Failed to delete file from Supabase storage.",
                 detail={"path": file_path, "error": str(exc)},

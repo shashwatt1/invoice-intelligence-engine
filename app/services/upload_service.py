@@ -130,6 +130,7 @@ class UploadService:
             content=contents,
             document_uuid=document_uuid,
             original_filename=original_filename,
+            content_type=file.content_type,
         )
 
         result = UploadResult(

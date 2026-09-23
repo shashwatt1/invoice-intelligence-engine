@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+import app.services.storage_service as storage_service_module
 from app.core.exceptions import StorageError
 from app.services.storage_service import (
     LocalStorageService,
@@ -106,6 +107,7 @@ class TestSupabaseStorageServiceRequestShape:
         assert seen["method"] == "POST"
         assert seen["url"] == f"https://project.supabase.co/storage/v1/object/invoice-sources/{key}"
         assert seen["headers"]["authorization"] == "Bearer service-role-key"
+        assert seen["headers"]["apikey"] == "service-role-key"
         assert seen["headers"]["x-upsert"] == "true"
         assert seen["body"] == b"pdf bytes"
         assert key.startswith("pilot/")
@@ -115,6 +117,7 @@ class TestSupabaseStorageServiceRequestShape:
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.method == "GET"
             assert request.headers["authorization"] == "Bearer service-role-key"
+            assert request.headers["apikey"] == "service-role-key"
             return httpx.Response(200, content=b"stored bytes")
 
         service = self._service(handler)
@@ -125,6 +128,8 @@ class TestSupabaseStorageServiceRequestShape:
 
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.method == "DELETE"
+            assert request.headers["authorization"] == "Bearer service-role-key"
+            assert request.headers["apikey"] == "service-role-key"
             calls.append(1)
             return httpx.Response(404 if len(calls) > 1 else 200)
 
@@ -148,10 +153,122 @@ class TestSupabaseStorageServiceRequestShape:
         with pytest.raises(StorageError):
             await service.read("pilot/missing.pdf")
 
+    @pytest.mark.parametrize(
+        ("content_type", "expected_header"),
+        [
+            ("image/jpeg", "image/jpeg"),
+            ("application/pdf", "application/pdf"),
+            (None, "application/octet-stream"),
+        ],
+    )
+    async def test_save_sends_the_given_content_type_or_falls_back_to_octet_stream(
+        self, content_type, expected_header
+    ):
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["content_type"] = request.headers["content-type"]
+            return httpx.Response(200, json={"Key": "ok"})
+
+        service = self._service(handler)
+        await service.save(b"bytes", "doc-1", "invoice.bin", content_type=content_type)
+
+        assert seen["content_type"] == expected_header
+
+    async def test_a_failed_upload_logs_the_status_and_response_body_without_the_key(self, monkeypatch):
+        error_body = {
+            "statusCode": "403",
+            "error": "Unauthorized",
+            "message": "Invalid Compact JWS",
+            "code": "AccessDenied",
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json=error_body)
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            storage_service_module.logger,
+            "error",
+            lambda event, **kwargs: calls.append({"event": event, **kwargs}),
+        )
+
+        service = self._service(handler)
+        with pytest.raises(StorageError):
+            await service.save(b"x", "doc-1", "invoice.pdf")
+
+        assert len(calls) == 1
+        logged = calls[0]
+        assert logged["status"] == 400
+        assert "Invalid Compact JWS" in logged["response_body"]
+        assert "AccessDenied" in logged["response_body"]
+        # The response body must be logged, but never the secret key used to
+        # authenticate the request that produced it, and never the raw headers.
+        assert "service-role-key" not in str(logged)
+        assert "headers" not in logged
+
+
+class TestUploadServiceForwardsContentType:
+    """UploadService.handle_upload() must pass the uploaded file's real
+    MIME type through to StorageService.save(), so Supabase stops
+    receiving a hardcoded application/octet-stream for every file."""
+
+    class _RecordingStorage:
+        def __init__(self):
+            self.save_kwargs: dict | None = None
+
+        async def save(self, content, document_uuid, original_filename, organization_id="default", content_type=None):
+            self.save_kwargs = {"content_type": content_type}
+            return "irrelevant/path"
+
+    @pytest.mark.parametrize("content_type", ["image/jpeg", "application/pdf"])
+    async def test_handle_upload_forwards_the_uploaded_files_content_type(self, content_type):
+        # Only allowed MIME types reach storage.save() at all — _validate_mime_type
+        # rejects anything else (including a missing Content-Type) earlier in the
+        # pipeline. The octet-stream fallback for an unknown type is a storage-layer
+        # concern, covered separately in TestSupabaseStorageServiceRequestShape.
+        import io
+
+        from starlette.datastructures import Headers, UploadFile
+
+        from app.services.upload_service import UploadService
+
+        headers = Headers({"content-type": content_type})
+        upload_file = UploadFile(io.BytesIO(b"x" * 2048), filename="invoice.bin", headers=headers)
+
+        storage = self._RecordingStorage()
+        service = UploadService(storage=storage)
+        await service.handle_upload(upload_file)
+
+        assert storage.save_kwargs == {"content_type": content_type}
+
 
 class TestSupabaseStorageServiceConfiguration:
     """Fails fast, in the constructor, when required settings are missing —
     never silently sends requests with a blank auth token or bucket."""
+
+    @pytest.fixture(autouse=True)
+    def _no_real_supabase_settings(self, monkeypatch):
+        """
+        These tests pass "" for the constructor's own supabase_url/
+        service_key/bucket args, expecting the constructor's fallback
+        (`arg or settings.supabase_url`, etc.) to also come up empty. But
+        get_settings() reads real SUPABASE_* values from a developer's
+        local .env for the live pilot backend — and get_settings() is
+        lru_cached, so those real values leak in here unless overridden.
+
+        A blank os.environ value (not delenv) is required: pydantic-settings
+        resolves env vars ahead of the .env file, so delenv would just fall
+        through to the same real .env value this fixture needs to hide.
+        """
+        from app.core.config import get_settings
+
+        monkeypatch.setenv("SUPABASE_URL", "")
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "")
+        monkeypatch.setenv("SUPABASE_BUCKET_NAME", "")
+        get_settings.cache_clear()
+        yield
+        get_settings.cache_clear()
 
     def test_missing_configuration_raises_immediately(self):
         with pytest.raises(StorageError):
