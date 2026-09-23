@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from app.schemas.extraction import LINE_TYPE_CHARGE
 from app.schemas.normalized import NormalizedInvoice
 from app.services.validation.report import CheckResult, CheckStatus
 
@@ -104,13 +105,37 @@ def check_missing_invoice_date(
 
 def check_line_item_math(invoice: NormalizedInvoice, tolerance: Decimal) -> list[CheckResult]:
     """
-    Verify quantity × unit_price ≈ line_total for every item where all
-    three values are known. Derived values were reconciled by construction
-    (normalization), so verification here targets printed values.
+    Verify quantity × unit_price ≈ line_total for every PRODUCT item where
+    all three values are known. Derived values were reconciled by
+    construction (normalization), so verification here targets printed
+    values.
+
+    Charge rows are exempt, explicitly rather than silently. A fixed
+    charge — a delivery fee, a surcharge, a service line — bills an
+    amount, not a number of things, and usually prints nothing in the
+    quantity column. Extraction reports that as null, but the column is
+    NOT NULL and persistence stores 0, so the row then reads as a
+    delivery of none at a non-zero price. Judged by the goods identity
+    that is a contradiction, and it flipped a correctly validated invoice
+    back to review on its charge rows alone. The identity is a statement
+    about goods; it does not describe a charge.
     """
     checks: list[CheckResult] = []
     for item in invoice.line_items:
         prefix = f"line_items[{item.sort_order}]"
+        if item.line_type == LINE_TYPE_CHARGE:
+            checks.append(
+                CheckResult(
+                    name="LINE_ITEM_MATH",
+                    status=CheckStatus.SKIPPED,
+                    field=prefix,
+                    message=(
+                        "Charge row: an amount billed, not a quantity of goods — "
+                        "quantity × unit price does not apply."
+                    ),
+                )
+            )
+            continue
         if None in (item.quantity, item.unit_price, item.line_total):
             checks.append(
                 CheckResult(
@@ -170,10 +195,18 @@ def check_subtotal(invoice: NormalizedInvoice, tolerance: Decimal) -> list[Check
     # exactly the deposit total. Both are consistent readings of the
     # document, so accept either.
     deposits = invoice.deposit_total or Decimal("0")
-    if _within(computed, invoice.subtotal, tolerance) or _within(
-        computed, invoice.subtotal + deposits, tolerance
-    ):
-        return [CheckResult(name="SUBTOTAL_MATCHES_ITEMS", status=CheckStatus.PASSED, field="subtotal")]
+    # A charge row printed inside the item table may sit outside the goods
+    # subtotal (T.J. Sheehan prints its delivery charge on top of it) or
+    # already inside it (a service invoice whose printed Invoice Total
+    # covers the goods AND its fixed charges). Nothing on the document
+    # says which, so try the goods alone and the goods plus the charges.
+    charges = sum((i.line_total for i in invoice.line_items
+                   if i.line_type == "charge" and i.line_total is not None), Decimal("0.00"))
+    for candidate in (computed, computed + charges):
+        if _within(candidate, invoice.subtotal, tolerance) or _within(
+            candidate, invoice.subtotal + deposits, tolerance
+        ):
+            return [CheckResult(name="SUBTOTAL_MATCHES_ITEMS", status=CheckStatus.PASSED, field="subtotal")]
     return [
         CheckResult(
             name="SUBTOTAL_MATCHES_ITEMS",
@@ -186,20 +219,58 @@ def check_subtotal(invoice: NormalizedInvoice, tolerance: Decimal) -> list[Check
     ]
 
 
+def _charge_rows(invoice: NormalizedInvoice) -> list[Decimal]:
+    return [i.line_total for i in invoice.line_items
+            if i.line_type == "charge" and i.line_total is not None]
+
+
+def fuel_printed_as_a_charge_row(invoice: NormalizedInvoice, tolerance: Decimal) -> bool:
+    """
+    Whether the header's fuel_surcharge is the same money as a charge row.
+
+    True when the rows as a whole equal it, or when one row does. That
+    distinction decides where the fuel sits: a fuel figure represented by
+    a charge row is wherever those rows are — inside the printed subtotal
+    or outside it — while a fuel figure no row represents is an addition
+    of its own in the totals block.
+    """
+    fuel = invoice.fuel_surcharge or Decimal("0")
+    if fuel <= 0:
+        return False
+    rows = _charge_rows(invoice)
+    if not rows:
+        return False
+    return _within(sum(rows, Decimal("0")), fuel, tolerance) or any(
+        _within(row, fuel, tolerance) for row in rows
+    )
+
+
 def charges_not_in_fuel(invoice: NormalizedInvoice, tolerance: Decimal) -> Decimal:
     """
     Charge rows (delivery, fuel, service) printed inside the item table,
     less what the header's fuel_surcharge already carries. A vendor may
     print the same delivery charge as a row AND in the totals block; the
-    model reports both, and the amount must count once. When the two
-    agree to the cent the row adds nothing; otherwise the rows are added
-    in full and a genuine discrepancy shows up in the grand-total check.
+    model reports both, and the amount must count once.
+
+    Two ways the same money appears twice, and both must be recognised:
+    the rows as a whole equal the header figure (one delivery charge,
+    printed twice), or ONE of several rows equals it. An invoice with
+    rows of 29.00 and 3.00 against a header fuel of 3.00 satisfies only
+    the second, and comparing just the sum added that 3.00 twice. Any
+    other row is real money the header does not carry and is still added
+    in full, so a genuine discrepancy still shows up in the grand-total
+    check.
     """
-    charges = sum((i.line_total for i in invoice.line_items
-                   if i.line_type == "charge" and i.line_total is not None), Decimal("0"))
+    rows = _charge_rows(invoice)
+    charges = sum(rows, Decimal("0"))
     fuel = invoice.fuel_surcharge or Decimal("0")
-    if charges and _within(charges, fuel, tolerance):
+    if not charges or fuel <= 0:
+        return charges
+    if _within(charges, fuel, tolerance):
         return Decimal("0")
+    for row in rows:
+        if _within(row, fuel, tolerance):
+            return charges - row
     return charges
 
 
@@ -261,6 +332,20 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
     # The deposit-inclusive candidates are tried FIRST so a document that
     # satisfies both readings keeps its existing interpretation.
     deposit = invoice.deposit_total or Decimal("0")
+    # Third axis: a charge row printed in the item table may sit outside the
+    # printed subtotal or already inside it. `extras` above added it; the
+    # candidates below subtract it again for the documents whose subtotal
+    # already covers it. Adding a charge to a subtotal that already contains
+    # it double-counts it and reports a grand total the document never shows.
+    charge_rows = charges_not_in_fuel(invoice, tolerance)
+    # When the charge rows are inside the printed subtotal, a header fuel
+    # figure one of them represents is inside it too — `extras` added it,
+    # so the candidates below take it back out with them.
+    fuel_inside = (
+        (invoice.fuel_surcharge or Decimal("0"))
+        if fuel_printed_as_a_charge_row(invoice, tolerance)
+        else Decimal("0")
+    )
     for label, computed in (
         ("subtotal + tax + deposit + fuel − discount", base + extras - discount),
         ("subtotal + tax + deposit + fuel (discount already in subtotal)", base + extras),
@@ -271,6 +356,22 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
         (
             "subtotal + tax + fuel (discount and deposit already in subtotal)",
             base + extras - deposit,
+        ),
+        (
+            "subtotal + tax + deposit + fuel − discount (charges already in subtotal)",
+            base + extras - charge_rows - fuel_inside - discount,
+        ),
+        (
+            "subtotal + tax + deposit + fuel (discount and charges already in subtotal)",
+            base + extras - charge_rows - fuel_inside,
+        ),
+        (
+            "subtotal + tax + fuel − discount (deposit and charges already in subtotal)",
+            base + extras - charge_rows - fuel_inside - deposit - discount,
+        ),
+        (
+            "subtotal + tax + fuel (discount, deposit and charges already in subtotal)",
+            base + extras - charge_rows - fuel_inside - deposit,
         ),
     ):
         if _within(computed, invoice.grand_total, tolerance):
@@ -283,16 +384,29 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
                 )
             ]
 
+    # A zero grand total against a real goods figure is, on every document
+    # seen so far, a balance-due figure read as the invoice total (a
+    # "TOTAL DUE: $0.00" after payment on account). Say so, so the reviewer
+    # knows which printed figure to correct it to; the decision stays theirs.
+    if invoice.grand_total == 0 and base > 0:
+        message = (
+            "The figure read as the grand total is 0.00 while the goods total is "
+            f"{base}. A zero total on a stocked invoice is usually the balance due "
+            "after payment (\"Total Due\", \"Amount Due\"), not the invoice total — "
+            "check the totals block for the printed invoice/transaction total."
+        )
+    else:
+        message = (
+            "subtotal + tax + fuel does not match the printed grand total "
+            "under any combination of the discount and deposit being "
+            "inside or outside the subtotal."
+        )
     return [
         CheckResult(
             name="GRAND_TOTAL_MATH",
             status=CheckStatus.FAILED,
             field="grand_total",
-            message=(
-                "subtotal + tax + fuel does not match the printed grand total "
-                "under any combination of the discount and deposit being "
-                "inside or outside the subtotal."
-            ),
+            message=message,
             expected=str(base + extras - discount),
             actual=str(invoice.grand_total),
         )

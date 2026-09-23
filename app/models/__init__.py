@@ -16,6 +16,7 @@ from app.models.product_data_proposal import ProductDataProposal
 from app.models.product_reference import ProductIdentifier, ProductIdentity, ProductPricing
 from app.models.store import Store, StoreIdentifier
 from app.models.store_product_reference import StoreProductReference
+from app.models.user import ROLE_RANK, User, UserRole
 from app.models.vendor import Vendor
 
 __all__ = [
@@ -32,8 +33,11 @@ __all__ = [
     "ProductIdentifier",
     "ProductIdentity",
     "ProductPricing",
+    "ROLE_RANK",
     "Store",
     "StoreIdentifier",
     "StoreProductReference",
+    "User",
+    "UserRole",
     "Vendor",
 ]

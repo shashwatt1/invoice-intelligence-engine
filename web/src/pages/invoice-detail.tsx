@@ -7,7 +7,8 @@ import type { InvoiceDetail, LineItem, ValidationCheck } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
 import { PageHeader, SectionHeader } from "@/components/layout/page-header";
 import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
-import { AddRowForm, CorrectingAs, HistoryNote, VoidRowButton } from "@/components/invoice/corrections";
+import { AddRowForm, CorrectingAs, EditableInvoiceDate, HistoryNote, VoidRowButton } from "@/components/invoice/corrections";
+import { BusinessStatusPanel } from "@/components/invoice/business-status-panel";
 import { FinancialSummary } from "@/components/invoice/financial-summary";
 import { IntelligencePanel } from "@/components/invoice/intelligence-panel";
 import { WorkflowTimeline } from "@/components/invoice/workflow-timeline";
@@ -22,6 +23,7 @@ import { ValidationReportCard } from "@/components/invoice/validation-report";
 import { StatusBadge, StatusPill } from "@/components/shared/status-badge";
 import { StoreChip } from "@/components/shared/store-chip";
 import { ErrorState } from "@/components/shared/states";
+import { useAuth } from "@/hooks/use-auth";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -45,7 +47,7 @@ import {
 } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { useCorrectLineItem, useDeleteInvoice, useInvoice } from "@/hooks/use-api";
-import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
+import { formatDateTime, formatMoney } from "@/lib/format";
 import { rememberedReviewer } from "@/lib/reviewer";
 import { cn } from "@/lib/utils";
 
@@ -181,12 +183,14 @@ function EditableAmount({
   field,
   render,
   by,
+  readOnly = false,
 }: {
   invoiceId: string;
   item: LineItem;
   field: "unit_price" | "quantity" | "line_total" | "unit_deposit" | "unit_discount";
   render: (value: number) => string;
   by: string;
+  readOnly?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -194,6 +198,15 @@ function EditableAmount({
 
   const value = item[field];
   const corrected = item.corrected_fields.includes(field);
+
+  if (readOnly) {
+    return (
+      <span className={corrected ? "font-medium underline decoration-dotted underline-offset-2" : value === null ? "text-warning" : undefined}
+            title={corrected ? "Corrected by hand — not from extraction" : undefined}>
+        {value === null ? "not extracted" : render(value)}
+      </span>
+    );
+  }
 
   const save = () => {
     const parsed = Number(draft);
@@ -313,9 +326,15 @@ function ValidationCell({ index, checks }: { index: number; checks: ValidationCh
   );
 }
 
-function DetailBody({ detail }: { detail: InvoiceDetail }) {
-  // One name for every correction made from this page; remembered per browser.
-  const [by, setBy] = useState(rememberedReviewer);
+function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; setBy: (v: string) => void }) {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole("ADMIN");
+  // Correcting a total/line-item value, adding or voiding a row, and
+  // assigning a STORE_PENDING invoice's store are all MANAGER+ actions on
+  // the backend (require_manager) — the affordance is hidden below that
+  // rank rather than offered and then rejected. A USER's own action on
+  // this page is proposing a mapping (CaseMappingCard, unaffected).
+  const canEdit = hasRole("MANAGER");
   const checks = detail.validation_report?.checks ?? [];
   const storePending = detail.store_pending || !detail.store;
   const multiPhoto = detail.photos.length > 1;
@@ -323,14 +342,22 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
 
   return (
     <div className="space-y-4">
-      <WorkflowTimeline detail={detail} />
+      {isAdmin ? <WorkflowTimeline detail={detail} /> : null}
 
       <div className="grid grid-cols-[minmax(0,1fr)_320px] gap-4 max-xl:grid-cols-1">
         {/* MAIN */}
         <div className="min-w-0 space-y-4">
-          <FinancialSummary detail={detail} by={by} />
+          <FinancialSummary detail={detail} by={by} readOnly={!canEdit} />
 
-          {storePending ? <StorePendingCard invoiceId={detail.invoice_id} /> : null}
+          {storePending ? (
+            canEdit ? (
+              <StorePendingCard invoiceId={detail.invoice_id} />
+            ) : (
+              <p className="surface px-5 py-4 text-[0.8rem] text-warning">
+                This invoice has no store yet — a manager will assign it before mappings and EDI apply.
+              </p>
+            )
+          ) : null}
 
           {/* Overlapping photos the model could not reconcile on its own */}
           <DuplicateReviewCard detail={detail} />
@@ -339,9 +366,9 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
           <div className="surface overflow-hidden">
             <SectionHeader
               title="Line items"
-              count={`${detail.line_items.length} row${detail.line_items.length === 1 ? "" : "s"}${issues ? ` · ${issues} with issues` : ""}`}
-              description="In document order. Click a figure to correct it; corrections are attributed and revalidated."
-              actions={<CorrectingAs value={by} onChange={setBy} />}
+              count={`${detail.line_items.length} row${detail.line_items.length === 1 ? "" : "s"}${isAdmin && issues ? ` · ${issues} with issues` : ""}`}
+              description={canEdit ? "In document order. Click a figure to correct it; corrections are attributed and revalidated." : "In document order."}
+              actions={canEdit ? <CorrectingAs value={by} onChange={setBy} /> : undefined}
             />
             {detail.line_items.length === 0 ? (
               <p className="border-t px-5 py-4 text-[0.8rem] text-warning">No line items were extracted — see the validation report.</p>
@@ -359,8 +386,8 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                       <TableHead className="text-right">Deposit</TableHead>
                       <TableHead className="text-right">Line total</TableHead>
                       <TableHead>Mapping</TableHead>
-                      <TableHead className="text-center">Checks</TableHead>
-                      <TableHead className="w-8 pr-3" />
+                      {isAdmin ? <TableHead className="text-center">Checks</TableHead> : null}
+                      {canEdit ? <TableHead className="w-8 pr-3" /> : null}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -370,7 +397,7 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                       return (
                         <TableRow key={item.sort_order} className={cn("row-hover", inactive && "text-muted-foreground", flagged && "bg-warning-soft/40")} data-testid="line-item-row">
                           <TableCell className="pl-5 text-right tabular-nums">
-                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="quantity" render={(v) => v.toLocaleString()} by={by} />
+                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="quantity" render={(v) => v.toLocaleString()} by={by} readOnly={!canEdit} />
                           </TableCell>
                           <TableCell className="max-w-64">
                             <div className="flex items-center gap-1.5">
@@ -395,21 +422,21 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                             </TableCell>
                           ) : null}
                           <TableCell className="text-right tabular-nums">
-                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_price" by={by}
+                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_price" by={by} readOnly={!canEdit}
                                             render={(v) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })} />
                           </TableCell>
                           <TableCell className="text-right text-muted-foreground tabular-nums">
-                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_discount" render={(v) => formatMoney(v)} by={by} />
+                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_discount" render={(v) => formatMoney(v)} by={by} readOnly={!canEdit} />
                           </TableCell>
                           <TableCell className="text-right text-muted-foreground tabular-nums">
-                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_deposit" render={(v) => formatMoney(v)} by={by} />
+                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_deposit" render={(v) => formatMoney(v)} by={by} readOnly={!canEdit} />
                           </TableCell>
                           <TableCell className="text-right font-medium tabular-nums">
-                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="line_total" render={(v) => formatMoney(v)} by={by} />
+                            <EditableAmount invoiceId={detail.invoice_id} item={item} field="line_total" render={(v) => formatMoney(v)} by={by} readOnly={!canEdit} />
                           </TableCell>
                           <TableCell><MappingCell item={item} rows={detail.case_mappings} storePending={storePending} /></TableCell>
-                          <TableCell className="text-center"><ValidationCell index={item.sort_order} checks={checks} /></TableCell>
-                          <TableCell className="pr-3"><VoidRowButton invoiceId={detail.invoice_id} item={item} by={by} /></TableCell>
+                          {isAdmin ? <TableCell className="text-center"><ValidationCell index={item.sort_order} checks={checks} /></TableCell> : null}
+                          {canEdit ? <TableCell className="pr-3"><VoidRowButton invoiceId={detail.invoice_id} item={item} by={by} /></TableCell> : null}
                         </TableRow>
                       );
                     })}
@@ -417,28 +444,42 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
                 </Table>
               </div>
             )}
-            <div className="border-t bg-surface-2 px-4 py-3">
-              <AddRowForm invoiceId={detail.invoice_id} by={by} />
-            </div>
+            {canEdit ? (
+              <div className="border-t bg-surface-2 px-4 py-3">
+                <AddRowForm invoiceId={detail.invoice_id} by={by} />
+              </div>
+            ) : null}
           </div>
 
           {!storePending && detail.store ? (
             <>
-              {/* Case → unit mapping: the remaining gate on the PDI download */}
+              {/* Case → unit mapping: the remaining gate on the PDI download.
+                  Open to every role that reaches this page — USER proposes,
+                  MANAGER/ADMIN can also review from here. */}
               <CaseMappingCard invoiceId={detail.invoice_id} store={detail.store} rows={detail.case_mappings} />
-              {/* What this invoice put forward for review, and what became of it */}
-              <InvoiceReviewCard invoiceId={detail.invoice_id} review={detail.review} />
+              {/* What this invoice put forward for review, and what became of
+                  it — MANAGER+ only: a USER's `review` is always redacted to
+                  NONE here (see _redact_invoice_detail), so showing this card
+                  to a USER would read as "nothing raised" even when something
+                  was, misleadingly. A USER checks its own submissions via
+                  GET /proposals instead. */}
+              {canEdit ? <InvoiceReviewCard invoiceId={detail.invoice_id} review={detail.review} /> : null}
             </>
           ) : null}
 
-          {detail.validation_report ? <ValidationReportCard report={detail.validation_report} /> : null}
-          <DatabaseConfirmationCard database={detail.database} />
-          <DeveloperPanel detail={detail} />
+          {isAdmin ? (
+            <>
+              {detail.validation_report ? <ValidationReportCard report={detail.validation_report} /> : null}
+              <DatabaseConfirmationCard database={detail.database} />
+              <DeveloperPanel detail={detail} />
+            </>
+          ) : null}
         </div>
 
         {/* CONTEXT */}
-        <div className="min-w-0">
-          <IntelligencePanel detail={detail} />
+        <div className="min-w-0 space-y-4">
+          {isAdmin ? <IntelligencePanel detail={detail} /> : null}
+          <BusinessStatusPanel detail={detail} />
         </div>
       </div>
     </div>
@@ -448,6 +489,11 @@ function DetailBody({ detail }: { detail: InvoiceDetail }) {
 export function InvoiceDetailPage() {
   const { invoiceId } = useParams<{ invoiceId: string }>();
   const { data, isPending, isError, error, refetch } = useInvoice(invoiceId);
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole("ADMIN");
+  const canEdit = hasRole("MANAGER");
+  // One name for every correction made from this page; remembered per browser.
+  const [by, setBy] = useState(rememberedReviewer);
 
   return (
     <>
@@ -481,7 +527,7 @@ export function InvoiceDetailPage() {
             meta={
               <>
                 <StoreChip store={data.store} withAddress />
-                <span className="t-meta">dated {formatDate(data.invoice_date)}</span>
+                <EditableInvoiceDate detail={data} by={by} readOnly={!canEdit} />
                 <span className="t-meta">·</span>
                 <span className="t-meta">{data.photos.length > 1 ? `${data.photos.length} photos` : data.filename}</span>
                 <span className="t-meta">·</span>
@@ -497,11 +543,11 @@ export function InvoiceDetailPage() {
                 <DownloadPdiButton invoiceId={data.invoice_id} allowed={data.pdi_export_allowed}
                                    requiresConfirmation={data.pdi_export_requires_confirmation}
                                    blockedReason={data.pdi_export_blocked_reason} />
-                <DeleteInvoiceButton invoiceId={data.invoice_id} />
+                {isAdmin ? <DeleteInvoiceButton invoiceId={data.invoice_id} /> : null}
               </>
             }
           />
-          <DetailBody detail={data} />
+          <DetailBody detail={data} by={by} setBy={setBy} />
         </>
       )}
     </>

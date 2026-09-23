@@ -176,16 +176,21 @@ class TestRevalidation:
         self, api_client, app  # noqa: F811
     ):
         # quantity x unit_price != line_total, with nothing to explain it.
+        # The figures must not prove a whole-number quantity either, or Rule E
+        # would resolve the row deterministically and there would be nothing
+        # left for a person to correct: 45.00 / 22.70 is 1.98, and neither 1
+        # nor 2 reproduces the printed total.
         invoice_id = await process(
-            api_client, app, [line(quantity=1.0, unit_price=22.70, line_total=45.40)],
-            "math.pdf", "math", subtotal=45.40, grand_total=45.40,
+            api_client, app, [line(quantity=2.0, unit_price=22.70, line_total=45.00)],
+            "math.pdf", "math", subtotal=45.00, grand_total=45.00,
         )
         detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
         before = sum(1 for c in detail["validation_report"]["checks"]
                      if c["status"] == "FAILED")
         assert before > 0
+        assert detail["line_items"][0]["quantity"] == 2.0      # Rule E declined
 
-        data = (await patch(api_client, invoice_id, 0, quantity="2")).json()["data"]
+        data = (await patch(api_client, invoice_id, 0, unit_price="22.50")).json()["data"]
         assert data["failed_checks"] < before
 
 

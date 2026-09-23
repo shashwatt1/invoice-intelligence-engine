@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowRight, CopyX, RotateCcw, Sparkles, Store } from "lucide-react";
+import { ArrowRight, CopyX, RotateCcw, Store } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -12,7 +12,7 @@ import { StoreChip } from "@/components/shared/store-chip";
 import { UploadDropzone } from "@/components/processing/upload-dropzone";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -90,16 +90,19 @@ export function ProcessPage() {
       <PageHeader
         eyebrow="Intake"
         title="Process an invoice"
-        description="A PDF, a photo, or several overlapping photos of one long invoice. Each stage — OCR, extraction, store, validation — reports live as the backend commits it."
+        description="A PDF, a photo, or several overlapping photos of one long invoice. Each stage reports live as the backend commits it."
       />
 
-      <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start gap-5 max-lg:grid-cols-1">
-        {/* Left: upload */}
-        <div className="space-y-4">
-          <div className="space-y-1">
-            <label htmlFor="store-select" className="text-[0.78rem] font-medium">
-              Store <span className="text-muted-foreground">(if you know it)</span>
-            </label>
+      <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)] items-start gap-x-12 gap-y-8 max-lg:grid-cols-1">
+        {/* Left: intake, as two numbered decisions */}
+        <div className="space-y-7">
+          <section className="space-y-2.5" aria-labelledby="intake-store">
+            <div className="flex items-baseline gap-2.5">
+              <span className="t-mono text-muted-foreground/70">01</span>
+              <label id="intake-store" htmlFor="store-select" className="t-section">
+                Store <span className="font-normal text-muted-foreground">— optional now, confirmed later</span>
+              </label>
+            </div>
             <Select
               value={store}
               onValueChange={setStore}
@@ -127,16 +130,15 @@ export function ProcessPage() {
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[0.7rem] text-muted-foreground">
+            <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
               The store decides which reference data, case mappings and review queue the invoice
-              meets. There is no default: after the document is read, what it says is checked
-              against your choice, and you confirm before anything is processed.
+              meets. There is no default: what the document says is checked against your choice,
+              and you confirm before anything is processed under it.
             </p>
-          </div>
 
           {selected ? (
             <div
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-primary/30 bg-accent/40 px-3 py-2 text-[0.8rem]"
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-accent/50 px-3 py-2 text-[0.8rem]"
               data-testid="selected-store"
             >
               <Store className="size-4 shrink-0 text-primary" />
@@ -154,12 +156,20 @@ export function ProcessPage() {
               ) : null}
             </div>
           ) : (
-            <div className="flex items-center gap-2 rounded-md bg-muted/60 px-3 py-2 text-[0.78rem] text-muted-foreground">
+            <div className="flex items-center gap-2 text-[0.78rem] text-muted-foreground">
               <Store className="size-4 shrink-0" />
               No store chosen — the document will be read first, then you will confirm the store it names.
             </div>
           )}
+          </section>
 
+          <section className="space-y-2.5" aria-labelledby="intake-upload">
+            <div className="flex items-baseline gap-2.5">
+              <span className="t-mono text-muted-foreground/70">02</span>
+              <h2 id="intake-upload" className="t-section">
+                Document <span className="font-normal text-muted-foreground">— one file, or every photo of one invoice</span>
+              </h2>
+            </div>
           <UploadDropzone
             files={files}
             onFilesChange={(next) => {
@@ -170,16 +180,18 @@ export function ProcessPage() {
             disabled={isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
           />
 
+          </section>
+
           <div className="flex gap-2">
             <Button
               className="flex-1"
               size="lg"
+              variant={files.length === 0 ? "secondary" : "default"}
               disabled={files.length === 0 || isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
               onClick={start}
               title={files.length === 0 ? "Add a file or the photos of one invoice first" : undefined}
               data-testid="process-button"
             >
-              <Sparkles className="size-4" />
               {processMutation.isPending
                 ? "Uploading…"
                 : awaiting
@@ -191,6 +203,7 @@ export function ProcessPage() {
                     : selected
                       ? `Process ${files.length > 1 ? `${files.length} photos as one invoice` : "invoice"} for ${selected.label}`
                       : `Read the ${files.length > 1 ? `${files.length} photos` : "document"}, then confirm the store`}
+              {!isRunning && !processMutation.isPending && !awaiting ? <ArrowRight className="size-4" /> : null}
             </Button>
             {(terminal || duplicate || awaiting) && (
               <Button variant="outline" size="lg" onClick={reset}>
@@ -231,16 +244,21 @@ export function ProcessPage() {
           </AnimatePresence>
         </div>
 
-        {/* Right: live timeline */}
-        <Card className="gap-0 py-0">
-          <CardHeader className="flex flex-row items-center justify-between border-b px-5 py-3.5">
-            <CardTitle className="flex items-center gap-2">
-              Processing
+        {/* Right: the live rail */}
+        <aside className="surface px-6 py-5 lg:sticky lg:top-[4.5rem]" aria-label="Processing" data-testid="processing-panel">
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="t-section">Processing</h2>
+              <p className="t-meta mt-0.5">
+                {status.data ? (status.data.is_terminal ? "Finished — every stage below is recorded" : "Live — each stage appears as the backend commits it") : "What happens once you start"}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
               {status.data?.store ? <StoreChip store={status.data.store} link={false} /> : null}
-            </CardTitle>
-            {status.data && <StatusBadge status={status.data.status} />}
-          </CardHeader>
-          <CardContent className="px-5 py-4">
+              {status.data && <StatusBadge status={status.data.status} />}
+            </div>
+          </div>
+          <div>
             {status.data ? (
               <>
                 <ProcessingTimeline status={status.data} />
@@ -294,18 +312,10 @@ export function ProcessPage() {
                 </AnimatePresence>
               </>
             ) : (
-              <ol className="space-y-3 py-2" aria-label="What happens next">
-                {["Upload — validated, hashed and stored", "Text extraction — OCR per photo, or the PDF's own text", "Store identification — the document is matched to a store; you confirm", "AI structuring — one canonical invoice from the combined text", "Validation — deterministic math and reconciliation", "Persistence — vendor, invoice and lines saved"].map((step, i) => (
-                  <li key={step} className="flex items-start gap-3 text-[0.78rem] text-muted-foreground">
-                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[0.66rem] font-semibold">{i + 1}</span>
-                    <span>{step}</span>
-                  </li>
-                ))}
-                <li className="t-meta pl-8">Stages fill in here live as the backend commits each one.</li>
-              </ol>
+              <ProcessingTimeline status={null} />
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </aside>
       </div>
     </>
   );

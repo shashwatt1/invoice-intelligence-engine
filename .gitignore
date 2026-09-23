@@ -21,6 +21,9 @@ build/
 # Test / coverage artifacts
 .coverage
 .coverage.*
+# Catches variants the two patterns above miss — e.g. ".coverage 2", which
+# macOS/Finder-style duplication produces and which ".coverage.*" does not match.
+.coverage*
 htmlcov/
 .pytest_cache/
 
@@ -50,3 +53,13 @@ data/reference/
 
 # Real invoice photos — never committed
 /Store-Wise Invoices/
+
+# Generated EDI/PDI output from the audit + regression tooling. Contains
+# real supplier product names, UPCs and prices read off real invoices —
+# same reason the directories above are excluded.
+out/
+
+# Stray logo source artifact dropped at the repo root; the shipped favicons
+# live in web/public/ (favicon.ico, favicon-16/32.png, apple-touch-icon.png)
+# and the brand marks in web/public/brand/.
+Fevicon HOR.png

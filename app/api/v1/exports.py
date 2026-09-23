@@ -17,8 +17,10 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import require_manager
 from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
+from app.models.user import User
 from app.repositories.invoice_repository import InvoiceRepository
 from app.services.case_mapping_service import invoice_units_by_item_code
 from app.services.export_service import (
@@ -74,6 +76,7 @@ async def export_invoice(
     invoice_id: uuid.UUID,
     format: ExportFormat = Query(default="json", description="Export format."),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
 ) -> Response:
     invoice = await InvoiceRepository(db).get_detail(invoice_id)
     if invoice is None:

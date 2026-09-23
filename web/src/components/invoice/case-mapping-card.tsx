@@ -94,8 +94,10 @@ function bandOf(row: CaseMappingRow): Band {
   return "none";
 }
 
-/** Where a value came from, in the operator's terms. */
-function Evidence({ row }: { row: CaseMappingRow }) {
+/** Where a value came from, in the operator's terms. Also used by the
+ * Requires Mapping workbench, so evidence phrasing never drifts between
+ * the two entry points. */
+export function Evidence({ row }: { row: CaseMappingRow }) {
   if (row.suggestion_source === "database") {
     return <span className="text-muted-foreground">confirmed — reused on every future invoice</span>;
   }

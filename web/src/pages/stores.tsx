@@ -61,7 +61,7 @@ function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlig
   const hasReference = store.pricing_rows + store.catalogue_rows + store.identities > 0;
   return (
     <div className={cn("surface overflow-hidden", highlighted && "ring-2 ring-primary/40")} id={store.id} data-testid="store-card">
-      <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3 px-6 pt-5 pb-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn("text-[1rem] font-semibold tracking-tight", unresolved && !store.display_name && "font-mono")}>{store.label.replace(" (identity unconfirmed)", "").replace(" (location not yet confirmed)", "")}</span>
@@ -84,8 +84,8 @@ function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlig
         </div>
       </div>
 
-      {/* Operational state */}
-      <div className="grid grid-cols-6 divide-x border-t bg-surface-2 max-lg:grid-cols-3">
+      {/* Operational state — figures on the paper, hairlines between them */}
+      <div className="mx-6 grid grid-cols-6 border-y border-border max-lg:grid-cols-3">
         <Stat label="Invoices" value={store.invoices} />
         <Stat label="Approved mappings" value={store.case_mappings} tone={store.case_mappings ? "success" : undefined} />
         <Stat label="Pending proposals" value={store.pending_proposals} tone={store.pending_proposals ? "warning" : undefined} />
@@ -94,20 +94,20 @@ function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlig
         <Stat label="Product identities" value={store.identities} />
       </div>
 
-      <div className="grid gap-5 border-t px-5 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+      <div className="grid gap-x-10 gap-y-5 bg-surface-2/60 px-6 py-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <div className="space-y-3">
           <div>
-            <div className="t-eyebrow mb-1.5">Identifiers</div>
+            <div className="t-label mb-2">Identifiers <span className="font-normal text-muted-foreground/70">· as each source system knows this store</span></div>
             {store.identifiers.length === 0 ? (
               <p className="t-meta">None recorded.</p>
             ) : (
-              <ul className="space-y-1 text-[0.78rem]">
+              <ul className="grid grid-cols-[auto_auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[0.76rem]">
                 {store.identifiers.map((i) => (
-                  <li key={`${i.source_system}:${i.identifier_type}:${i.identifier_value}`} className="flex flex-wrap items-center gap-2">
-                    <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[0.66rem]">{i.source_system}</span>
+                  <li key={`${i.source_system}:${i.identifier_type}:${i.identifier_value}`} className="contents">
+                    <span className="font-mono text-[0.66rem] text-muted-foreground/80">{i.source_system}</span>
                     <span className="text-muted-foreground">{i.identifier_type.replace(/_/g, " ")}</span>
-                    <span className="font-mono font-medium">{i.identifier_value}</span>
-                    {!i.verified ? <span className="text-[0.66rem] font-medium text-warning" title="Observed on documents; no person has verified it">unverified</span> : null}
+                    <span className="font-mono font-medium">{i.identifier_value}
+                    {!i.verified ? <span className="ml-2 text-[0.66rem] font-medium text-warning" title="Observed on documents; no person has verified it">unverified</span> : null}</span>
                   </li>
                 ))}
               </ul>
@@ -115,14 +115,14 @@ function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlig
           </div>
           {store.notes ? (
             <div>
-              <div className="t-eyebrow mb-1.5">Notes</div>
-              <p className="t-meta whitespace-pre-line leading-relaxed">{store.notes}</p>
+              <div className="t-label mb-1.5">Notes</div>
+              <p className="max-w-prose text-[0.74rem] leading-relaxed whitespace-pre-line text-muted-foreground">{store.notes}</p>
             </div>
           ) : null}
         </div>
         <div className="space-y-3">
           <div>
-            <div className="t-eyebrow mb-1.5">Reference data</div>
+            <div className="t-label mb-2">Reference data</div>
             {hasReference ? (
               <StatusPill size="xs" tone="success" label="Reference corpus loaded" meaning="Item Sales / Beer Inventory data imported for this store" />
             ) : (
@@ -141,9 +141,9 @@ function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlig
 
 function Stat({ label, value, tone }: { label: string; value: number; tone?: "warning" | "success" }) {
   return (
-    <div className="px-4 py-2.5">
-      <div className="t-eyebrow">{label}</div>
-      <div className={cn("mt-0.5 text-[1.05rem] font-semibold tabular-nums", tone === "warning" && "text-warning", tone === "success" && "text-success", !tone && value === 0 && "text-muted-foreground")}>
+    <div className="border-l border-border py-3 pr-3 pl-4 first:border-l-0 first:pl-0 max-lg:[&:nth-child(4)]:border-l-0 max-lg:[&:nth-child(4)]:pl-0">
+      <div className="t-label">{label}</div>
+      <div className={cn("mt-1 text-[1.35rem] leading-none font-semibold tracking-[-0.02em] tabular-nums", tone === "warning" && "text-warning", tone === "success" && "text-success", !tone && value === 0 && "text-muted-foreground")}>
         {value.toLocaleString()}
       </div>
     </div>

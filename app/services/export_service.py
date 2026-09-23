@@ -783,9 +783,11 @@ def unmapped_item_codes(
     Normalized item codes on this invoice with no confirmed
     units-per-case mapping, in document order without duplicates.
 
-    Empty list means the invoice is ready to export. Items with no usable
-    product code at all are excluded: they already export with the blank
-    item-code convention and there is nothing to key a mapping on.
+    Empty list means every priced, identified product has a confirmed
+    pack size. Items with no usable product code at all are excluded
+    here — there is nothing to key a mapping on — but that is not the
+    same as being export-ready: a missing code is caught earlier, by
+    items_with_unresolved_identity, before this mapping gate runs.
     """
     missing: list[str] = []
     for item in pdi_items(invoice):
@@ -831,6 +833,66 @@ def persisted_pdi_export_eligibility(
     return pdi_export_eligibility(invoice, units_by_item_code)
 
 
+def items_with_unresolved_quantity(invoice: Invoice) -> list[str]:
+    """
+    Descriptions of product rows whose quantity is unresolved, in order.
+
+    A quantity extraction could not read is null, and persistence stores
+    it as 0 because the column is NOT NULL — the same value a genuinely
+    shorted row carries. `pdi_items` drops both, so an unreadable quantity
+    would leave the export silently while its money stayed in the printed
+    subtotal and the AMOUNT header.
+
+    The document tells the two apart without any schema change: a short
+    delivered nothing and its line total is 0, while a row whose quantity
+    could not be read still carries the money it was billed for. A product
+    row with quantity 0 and a non-zero line total is therefore unresolved,
+    not shorted. Blocking here is the counterpart to the missing-cost and
+    units-per-case gates: none of them guesses the number, they refuse to
+    export until a person supplies it.
+    """
+    return [
+        item.description or "(no description)"
+        for item in _sorted_items(invoice)
+        if (getattr(item, "line_type", None) or "product") not in NON_PDI_LINE_TYPES
+        and item.quantity is not None
+        and item.quantity == 0
+        and item.line_total is not None
+        and item.line_total != 0
+    ]
+
+
+def items_with_unresolved_identity(invoice: Invoice) -> list[str]:
+    """
+    Descriptions, in document order, of product rows that would become a
+    PDI B-record but carry no canonical UPC/item code.
+
+    `_pdi_item_code()`'s blank-code convention ("00000" + spaces) exists
+    to format a row that has already been decided eligible — it is not
+    itself a decision that a missing UPC is safe to export. A product row
+    with no product_code is an unresolved identity, not a "blank but
+    fine" one, and exporting it would hand PDI a B-record that can never
+    product-match: the money and quantity would leave silently under no
+    identifiable item. Blocking here is the counterpart to the
+    missing-cost, unresolved-quantity and units-per-case gates — none of
+    them guesses, they all refuse to export until a person supplies the
+    missing value.
+
+    Scoped to `pdi_items()` (not every row on the invoice), so a genuine
+    zero-quantity shorted row — already excluded from the export by
+    `pdi_items()` regardless of its product_code — is never blocked here
+    solely because its quantity happened to be zero. Charge/duplicate/
+    voided rows are excluded the same way `pdi_items()` always excludes
+    them; a missing code on a charge row is not a product-identity
+    problem.
+    """
+    return [
+        item.description or "(no description)"
+        for item in pdi_items(invoice)
+        if normalize_item_code(item.product_sku) is None
+    ]
+
+
 def pdi_export_eligibility(
     invoice: Invoice, units_by_item_code: Mapping[str, int] | None = None
 ) -> PdiExportEligibility:
@@ -841,11 +903,13 @@ def pdi_export_eligibility(
     invoices are eligible but flagged for confirmation: the underlying
     data may contain extraction inaccuracies that haven't been reviewed.
 
-    An invoice is additionally blocked while any line item lacks a
-    confirmed units-per-case mapping, so the export cannot silently
-    default an unknown product's pack size. `units_by_item_code` is
-    optional only so callers that genuinely have no session (unit tests
-    of the status rules) can skip that check.
+    An invoice is additionally blocked while any product line has no
+    resolved UPC/item code (see items_with_unresolved_identity) or lacks
+    a confirmed units-per-case mapping, so the export cannot silently
+    default an unknown product's identity or pack size.
+    `units_by_item_code` is optional only so callers that genuinely have
+    no session (unit tests of the status rules) can skip the mapping
+    check.
     """
     if not pdi_items(invoice):
         return PdiExportEligibility(
@@ -869,6 +933,37 @@ def pdi_export_eligibility(
                 f"({', '.join(unpriced[:3])}"
                 f"{', …' if count > 3 else ''}). Correct the invoice before "
                 "exporting — a missing cost cannot be sent as zero."
+            ),
+        )
+
+    unresolved = items_with_unresolved_quantity(invoice)
+    if unresolved:
+        count = len(unresolved)
+        return PdiExportEligibility(
+            allowed=False,
+            requires_confirmation=False,
+            blocked_reason=(
+                f"{count} product{'s' if count != 1 else ''} "
+                f"{'have' if count != 1 else 'has'} an unresolved quantity — "
+                f"a quantity of 0 against a line total that is not 0 "
+                f"({', '.join(unresolved[:3])}"
+                f"{', …' if count > 3 else ''}). Confirm the quantity before "
+                "exporting — it cannot be sent as a delivery of none."
+            ),
+        )
+
+    unresolved_identity = items_with_unresolved_identity(invoice)
+    if unresolved_identity:
+        count = len(unresolved_identity)
+        return PdiExportEligibility(
+            allowed=False,
+            requires_confirmation=False,
+            blocked_reason=(
+                f"{count} product{'s' if count != 1 else ''} "
+                f"{'have' if count != 1 else 'has'} no resolved UPC/item code "
+                f"({', '.join(unresolved_identity[:3])}"
+                f"{', …' if count > 3 else ''}). Confirm the product identity "
+                "before exporting — an unresolved product cannot be sent to PDI."
             ),
         )
 

@@ -13,7 +13,9 @@ export type DocumentStatus =
   | "REVIEW_REQUIRED"
   | "STORE_CONFIRMATION_REQUIRED"
   | "COMPLETED"
-  | "FAILED";
+  | "FAILED"
+  | "STOPPED"
+  | "BINNED";
 
 export type InvoiceDecision = "VALIDATED" | "REVIEW_REQUIRED";
 
@@ -424,6 +426,25 @@ export interface LineItemCreate {
   note?: string | null;
 }
 
+export interface InvoiceDateCorrection {
+  /** ISO date read off the document, or null when it genuinely cannot be determined. */
+  invoice_date: string | null;
+  corrected_by: string;
+  note?: string | null;
+}
+
+export interface InvoiceDateCorrectionResult {
+  invoice_date: string | null;
+  corrected_fields: string[];
+  correction_history: CorrectionEntry[];
+  status: string;
+  composite_confidence: number;
+  failed_checks: number;
+  review_reasons: string[];
+  pdi_export_allowed: boolean;
+  pdi_export_blocked_reason: string | null;
+}
+
 export interface InvoiceTotalsCorrection {
   subtotal?: string;
   tax_amount?: string;
@@ -538,7 +559,8 @@ export interface InvoiceDetail {
 
   validation_report: ValidationReport | null;
   llm_metadata: LlmMetadata | null;
-  database: DatabaseConfirmation;
+  /** ADMIN-only technical/persistence diagnostics; null for MANAGER/USER. */
+  database: DatabaseConfirmation | null;
 
   ocr_text: string | null;
   raw_extraction: Record<string, unknown> | null;
@@ -681,6 +703,46 @@ export interface ProposalListParams {
 }
 
 // ---------------------------------------------------------------------------
+// Requires Mapping — the collaborative work queue (app/api/v1/mapping_queue.py)
+// ---------------------------------------------------------------------------
+
+/** One invoice line waiting on this product's mapping. */
+export interface MappingQueueOccurrence {
+  invoice_id: string;
+  document_id: string;
+  invoice_number: string | null;
+  description: string | null;
+  quantity: number;
+  unit_price: number | null;
+  pack_size: string | null;
+}
+
+/** One master-data gap: a (store, UPC) with no authoritative mapping.
+ * Does not require a proposal to exist — that is the point of this queue. */
+export interface MappingQueueRow {
+  store: StoreRef;
+  item_code: string;
+  description: string | null;
+  invoice_count: number;
+  occurrences: MappingQueueOccurrence[];
+  pending_proposal_id: string | null;
+  pending_value: number | null;
+  pending_proposed_by: string | null;
+}
+
+export interface MappingQueueSummary {
+  unique_products: number;
+  invoice_occurrences: number;
+  stores: number;
+}
+
+export interface MappingQueueListParams {
+  store_id?: string;
+  page?: number;
+  page_size?: number;
+}
+
+// ---------------------------------------------------------------------------
 // History & dashboard
 // ---------------------------------------------------------------------------
 
@@ -699,6 +761,11 @@ export interface HistoryRow {
   source_type: string | null;
   photo_count: number;
   review: InvoiceReviewSummary | null;
+  /** Products with no confirmed units-per-case mapping. Null when not applicable
+   * (no invoice yet, store not yet assigned, or hidden for this role). MANAGER+ only. */
+  mapping_required: number | null;
+  /** 'ready' | 'needs_confirmation' | 'blocked', or null when not applicable. MANAGER+ only. */
+  edi_status: "ready" | "needs_confirmation" | "blocked" | null;
   created_at: string;
 }
 
@@ -724,4 +791,15 @@ export interface InvoiceListParams {
   descending?: boolean;
   page?: number;
   page_size?: number;
+}
+
+export type UserRole = "USER" | "MANAGER" | "ADMIN";
+
+export interface UserAccount {
+  id: string;
+  username: string;
+  role: UserRole;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 }

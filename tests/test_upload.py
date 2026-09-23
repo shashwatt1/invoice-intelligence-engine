@@ -13,9 +13,29 @@ All tests are isolated — each test gets a fresh client per fixture scope.
 from __future__ import annotations
 
 import io
+import uuid
 
 import pytest
 from httpx import AsyncClient
+
+from app.core.dependencies import require_authenticated_user
+from app.models.user import User, UserRole
+
+
+@pytest.fixture(autouse=True)
+def _authenticated(app):
+    """
+    /upload requires a session (it writes a real file to storage); this
+    suite is offline, so a fake authenticated USER is injected the
+    standard FastAPI-testing way, scoped to this module.
+    """
+    fake_user = User(
+        id=uuid.uuid4(), username="offline-upload", password_hash="x",
+        role=UserRole.USER.value, is_active=True,
+    )
+    app.dependency_overrides[require_authenticated_user] = lambda: fake_user
+    yield
+    del app.dependency_overrides[require_authenticated_user]
 
 
 @pytest.mark.asyncio

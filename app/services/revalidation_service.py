@@ -49,11 +49,13 @@ from app.models.invoice import Invoice
 from app.models.processing_log import LogStatus, PipelineStage
 from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.schemas.normalized import NormalizedInvoice, NormalizedLineItem
+from app.services.document_lifecycle import document_status_for, sync_document_status
 from app.services.validation.checks import (
     check_cross_photo_duplicates,
     check_date_order,
     check_grand_total_math,
     check_line_item_math,
+    check_missing_invoice_date,
     check_required_fields,
     check_subtotal,
     check_tax_consistency,
@@ -136,6 +138,10 @@ def build_report(
     normalized = normalized_from_persisted(invoice)
     normalized, checks = reconcile_invoice(normalized, tolerance)
     checks += check_required_fields(normalized)
+    # A person may have entered the date, or said it is unknown: judge what
+    # is on the record now. No raw text to fall back on here, so a missing
+    # date fails the same check the pipeline would have failed.
+    checks += check_missing_invoice_date(normalized, None)
     checks += check_line_item_math(normalized, tolerance)
     checks += check_subtotal(normalized, tolerance)
     checks += check_grand_total_math(normalized, tolerance)
@@ -170,6 +176,12 @@ RULE_D_NOTE = (
     "Container deposit removed from the extracted unit price, proved by the invoice totals: "
     "Σ unit_price x qty = subtotal + deposits and Σ (unit_price - deposit) x qty = subtotal."
 )
+RULE_E_ACTOR = "rule:E"
+RULE_E_NOTE = (
+    "Quantity replaced with the whole number the row's own figures prove "
+    "(line_total / unit_price), corroborated by the printed subtotal, which the line "
+    "totals already satisfy. The extracted value is kept in this entry and in the raw extraction."
+)
 
 
 async def _persist_proven_reconciliation(session: AsyncSession, invoice: Invoice, tolerance: Decimal) -> int:
@@ -187,27 +199,49 @@ async def _persist_proven_reconciliation(session: AsyncSession, invoice: Invoice
     normalized, _ = reconcile_invoice(normalized_from_persisted(invoice), tolerance)
     by_order = {item.sort_order: item for item in invoice.items}
     changed = 0
+    quantities_changed = 0
     for line in normalized.line_items:
-        if not line.unit_price_reconciled or line.unit_price is None:
-            continue
         row = by_order.get(line.sort_order)
-        if row is None or row.unit_price is None or row.unit_price == line.unit_price:
+        if row is None:
             continue
-        row.correction_history = [*(row.correction_history or []), {
-            "field": "unit_price", "old": float(row.unit_price), "new": float(line.unit_price),
-            "by": RULE_D_ACTOR, "at": datetime.now(UTC).isoformat(), "note": RULE_D_NOTE,
-        }]
-        row.unit_price = line.unit_price
-        changed += 1
-    if changed:
+        if line.unit_price_reconciled and line.unit_price is not None and row.unit_price is not None \
+                and row.unit_price != line.unit_price:
+            row.correction_history = [*(row.correction_history or []), {
+                "field": "unit_price", "old": float(row.unit_price), "new": float(line.unit_price),
+                "by": RULE_D_ACTOR, "at": datetime.now(UTC).isoformat(), "note": RULE_D_NOTE,
+            }]
+            row.unit_price = line.unit_price
+            changed += 1
+        # Rule E: a quantity the invoice's own arithmetic proved was corrupted.
+        # Same contract as Rule D — the extracted value survives in the entry.
+        if line.quantity_reconciled and line.quantity is not None and row.quantity != line.quantity:
+            row.correction_history = [*(row.correction_history or []), {
+                "field": "quantity", "old": float(row.quantity), "new": float(line.quantity),
+                "by": RULE_E_ACTOR, "at": datetime.now(UTC).isoformat(), "note": RULE_E_NOTE,
+            }]
+            row.quantity = line.quantity
+            quantities_changed += 1
+    if changed or quantities_changed:
         await session.flush()
+    if changed:
         await ProcessingLogRepository(session).add(
             document_id=invoice.document_id,
             stage=PipelineStage.MANUAL_CORRECTION,
             message=f"Rule D applied on revalidation: deposit removed from the unit price on {changed} row(s).",
             payload={"event": "rule_d_applied", "by": RULE_D_ACTOR, "rows": changed, "note": RULE_D_NOTE},
         )
-    return changed
+    if quantities_changed:
+        await ProcessingLogRepository(session).add(
+            document_id=invoice.document_id,
+            stage=PipelineStage.MANUAL_CORRECTION,
+            message=(
+                "Rule E applied on revalidation: quantity proved by the printed figures on "
+                f"{quantities_changed} row(s)."
+            ),
+            payload={"event": "rule_e_applied", "by": RULE_E_ACTOR,
+                     "rows": quantities_changed, "note": RULE_E_NOTE},
+        )
+    return changed + quantities_changed
 
 
 async def revalidate_invoice(session: AsyncSession, invoice: Invoice) -> ValidationReport:
@@ -239,13 +273,17 @@ async def revalidate_invoice(session: AsyncSession, invoice: Invoice) -> Validat
     invoice.status = report.decision.value
     invoice.composite_confidence = Decimal(str(report.confidence.composite))
     await session.flush()
+    # The document's lifecycle state follows the decision, exactly as it
+    # did at first persistence — the list, dashboard and filters read it.
+    synced = await sync_document_status(session, invoice, report.decision)
 
     await logs.add(
         document_id=invoice.document_id,
         stage=PipelineStage.VALIDATION,
         status=LogStatus.SUCCESS,
         message="Revalidated after a manual correction.",
-        payload=report.to_dict(),
+        payload={**report.to_dict(), "document_status": document_status_for(report.decision).value,
+                 **({"document_status_changed": [synced[0].value, synced[1].value]} if synced else {})},
         duration_ms=report.duration_ms,
     )
 

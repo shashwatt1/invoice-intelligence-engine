@@ -14,12 +14,28 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import dashboard, documents, exports, health, invoices, proposals, stores, upload
+from app.api.v1 import (
+    auth,
+    dashboard,
+    documents,
+    exports,
+    health,
+    invoices,
+    mapping_queue,
+    proposals,
+    stores,
+    upload,
+    users,
+)
 
 api_router = APIRouter()
 
 # System endpoints — health, readiness, version
 api_router.include_router(health.router, prefix="")
+
+# Auth / accounts — no public registration; see scripts/create_user.py
+api_router.include_router(auth.router, prefix="")
+api_router.include_router(users.router, prefix="")
 
 # Upload endpoint — Phase 1 (superseded by /invoices/process for the full pipeline)
 api_router.include_router(upload.router, prefix="")
@@ -30,4 +46,5 @@ api_router.include_router(exports.router, prefix="")
 api_router.include_router(documents.router, prefix="")
 api_router.include_router(dashboard.router, prefix="")
 api_router.include_router(proposals.router, prefix="")
+api_router.include_router(mapping_queue.router, prefix="")
 api_router.include_router(stores.router, prefix="")

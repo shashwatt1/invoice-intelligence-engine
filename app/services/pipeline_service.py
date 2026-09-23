@@ -53,6 +53,7 @@ from app.models.document_page import DocumentPage
 from app.models.processing_log import LogStatus, PipelineStage
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
+from app.services.document_lifecycle import ensure_document_active
 from app.services.extraction_service import ExtractionService
 from app.services.ocr.base import OCRResult
 from app.services.persistence_service import PersistenceService
@@ -158,6 +159,7 @@ class InvoiceProcessingPipeline:
         file_path: str,
         file_hash: str,
         store_id: uuid.UUID | None = None,
+        uploaded_by_user_id: uuid.UUID | None = None,
     ) -> PipelineResult:
         """
         Process one uploaded document end-to-end (intake + all stages).
@@ -168,6 +170,11 @@ class InvoiceProcessingPipeline:
         choice is consistent with what the document says, the run pauses
         for a person to confirm (see run_stages).
 
+        `uploaded_by_user_id` is the authenticated caller's id, for the
+        STOP/MOVE-TO-BIN ownership check (see
+        app.services.document_lifecycle) — set by the API layer from the
+        session, never accepted from request data.
+
         Raises:
             DuplicateDocumentError: Same content hash already processed.
             OCRExtractionError / AIStructuringError / DatabaseError:
@@ -175,7 +182,9 @@ class InvoiceProcessingPipeline:
         """
         page = PageUpload(filename=filename, mime_type=mime_type, file_size_bytes=file_size_bytes,
                           file_path=file_path, file_hash=file_hash, content=file_content)
-        document = await self.intake_pages(session, [page], store_id=store_id)
+        document = await self.intake_pages(
+            session, [page], store_id=store_id, uploaded_by_user_id=uploaded_by_user_id
+        )
         return await self.run_stages_pages(session, document, [page], store_id=store_id)
 
     async def intake(
@@ -200,6 +209,7 @@ class InvoiceProcessingPipeline:
         pages: list[PageUpload],
         *,
         store_id: uuid.UUID | None = None,
+        uploaded_by_user_id: uuid.UUID | None = None,
     ) -> Document:
         """
         Synchronous intake: duplicate check + Document(UPLOADED) + one
@@ -252,6 +262,7 @@ class InvoiceProcessingPipeline:
             file_size_bytes=sum(p.file_size_bytes for p in pages),
             file_path=first.file_path,
             file_hash=combined_hash,
+            uploaded_by_user_id=uploaded_by_user_id,
         )
         document.store_id = store_id
         for number, page in enumerate(pages, start=1):
@@ -324,6 +335,10 @@ class InvoiceProcessingPipeline:
         documents = DocumentRepository(session)
         logs = ProcessingLogRepository(session)
 
+        # A STOP/BIN issued in the gap between queuing this background run
+        # and it actually starting must be respected before OCR even begins.
+        await ensure_document_active(session, document)
+
         # ---- Text extraction, one photo at a time, in parallel ---------------
         await documents.set_status(document, DocumentStatus.OCR_IN_PROGRESS)
         await session.commit()
@@ -343,6 +358,12 @@ class InvoiceProcessingPipeline:
             )
             await self._fail(session, document, PipelineStage.TEXT_EXTRACTION, wrapped)
             raise wrapped from exc
+
+        # OCR cannot be interrupted once sent, but its result must not be
+        # allowed to advance a document a STOP/BIN withdrew while it was
+        # in flight — never caught as a stage failure (see
+        # DocumentWithdrawnError), so it propagates past _fail() untouched.
+        await ensure_document_active(session, document)
 
         photos = [PhotoOCR(page_number=i, filename=p.filename, result=r)
                   for i, (p, r) in enumerate(zip(pages, results, strict=True), start=1)]
@@ -495,6 +516,11 @@ class InvoiceProcessingPipeline:
         documents = DocumentRepository(session)
         logs = ProcessingLogRepository(session)
 
+        # Reached from two entry points (direct upload and
+        # resume_after_store_confirmation) — a STOP/BIN issued while this
+        # document waited for a store confirmation must be respected here.
+        await ensure_document_active(session, document)
+
         # ---- AI structuring -------------------------------------------------
         await documents.set_status(document, DocumentStatus.AI_PROCESSING)
         await session.commit()
@@ -510,6 +536,12 @@ class InvoiceProcessingPipeline:
             )
             await self._fail(session, document, PipelineStage.AI_STRUCTURING, wrapped)
             raise wrapped from exc
+
+        # The LLM call cannot be interrupted once sent; its result must
+        # not be allowed to advance a withdrawn document to VALIDATED/
+        # REVIEW_REQUIRED or persist an invoice. Never caught as a stage
+        # failure — see DocumentWithdrawnError.
+        await ensure_document_active(session, document)
 
         llm_payload = structuring.metadata.to_dict() | {
             "prompt_version": structuring.prompt_version,

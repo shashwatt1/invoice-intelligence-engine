@@ -52,7 +52,7 @@ describe("command bar", () => {
       items: [{
         document_id: "d1", invoice_id: "i1", filename: "a.jpg", store: null, status: "COMPLETED", vendor_name: "ONONDAGA",
         invoice_number: "1012818", invoice_date: null, grand_total: 1216.3, currency: "USD", composite_confidence: 0.95,
-        source_type: "ocr", photo_count: 1, review: null, created_at: "2026-09-18T00:00:00Z",
+        source_type: "ocr", photo_count: 1, review: null, mapping_required: null, edi_status: null, created_at: "2026-09-18T00:00:00Z",
       }],
     });
     wrap(<CommandBar open onOpenChange={() => {}} />);

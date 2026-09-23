@@ -5,7 +5,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ProposalListParams, ProposalSource, ProposalStatus } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
 import { ActiveFilters, FilterBar, SearchInput } from "@/components/shared/filter-bar";
-import { MetricCard } from "@/components/shared/metric-card";
+import { MetricStrip } from "@/components/shared/metric-strip";
 import { type BulkAction, BulkDecisionDialog } from "@/components/review/bulk-decision-dialog";
 import { BulkEditDialog } from "@/components/review/bulk-edit-dialog";
 import { ProposalSourceBadge, ProposalStatusBadge } from "@/components/review/proposal-badges";
@@ -177,13 +177,16 @@ export function DataReviewPage() {
       />
 
       {/* Decision summary — real counts from the queue */}
-      <div className="mb-4 grid grid-cols-4 gap-3 max-md:grid-cols-2">
-        <MetricCard index={0} label="Pending decisions" value={counts.data?.PENDING ?? "—"} tone={counts.data?.PENDING ? "warning" : "neutral"} hint="awaiting a reviewer" onClick={() => setStatus("PENDING")} />
-        <MetricCard index={1} label="Approved" value={counts.data?.APPROVED ?? "—"} tone="success" hint="wrote authoritative mappings" onClick={() => setStatus("APPROVED")} />
-        <MetricCard index={2} label="Rejected" value={counts.data?.REJECTED ?? "—"} hint="master data untouched" onClick={() => setStatus("REJECTED")} />
-        <MetricCard index={3} label="Needs evidence" value={counts.data ? counts.data.ambiguous : "—"} tone={counts.data?.ambiguous ? "warning" : "neutral"} hint="pending, document notation ambiguous"
-                    onClick={() => { setStatus("PENDING"); setSource("document_ambiguous"); }} />
-      </div>
+      <MetricStrip
+        className="mb-4"
+        items={[
+          { key: "pending", label: "Pending decisions", value: counts.data?.PENDING ?? "—", tone: counts.data?.PENDING ? "warning" : "neutral", hint: "awaiting a reviewer", onClick: () => setStatus("PENDING") },
+          { key: "approved", label: "Approved", value: counts.data?.APPROVED ?? "—", tone: "success", hint: "wrote authoritative mappings", onClick: () => setStatus("APPROVED") },
+          { key: "rejected", label: "Rejected", value: counts.data?.REJECTED ?? "—", hint: "master data untouched", onClick: () => setStatus("REJECTED") },
+          { key: "ambiguous", label: "Needs evidence", value: counts.data ? counts.data.ambiguous : "—", tone: counts.data?.ambiguous ? "warning" : "neutral", hint: "pending, document notation ambiguous",
+            onClick: () => { setStatus("PENDING"); setSource("document_ambiguous"); } },
+        ]}
+      />
 
       <FilterBar summary={data ? `${data.total} proposal${data.total === 1 ? "" : "s"}` : null}>
         <Select value={status} onValueChange={(value) => setStatus(value as ProposalStatus | "ALL")}>
@@ -272,7 +275,7 @@ export function DataReviewPage() {
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-surface-2 hover:bg-surface-2">
+                    <TableRow className="hover:bg-transparent">
                       <TableHead className="w-8 pl-3">
                         <Checkbox
                           aria-label={
@@ -295,8 +298,7 @@ export function DataReviewPage() {
                       <TableHead>Status</TableHead>
                       <TableHead>Evidence</TableHead>
                       <TableHead>Origin</TableHead>
-                      <TableHead>Proposed by</TableHead>
-                      <TableHead>Created</TableHead>
+                      <TableHead>Proposed</TableHead>
                       <TableHead>Reviewed</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -305,7 +307,7 @@ export function DataReviewPage() {
                       <Fragment key={row.id}>
                       {status === "PENDING" && source === "ALL" && (index === 0 || data.items[index - 1].source !== row.source) ? (
                         <TableRow className="bg-surface-2/60 hover:bg-surface-2/60" data-testid="source-group">
-                          <TableCell colSpan={13} className="t-eyebrow py-1.5 pl-3">
+                          <TableCell colSpan={12} className="t-eyebrow py-1.5 pl-3">
                             {PROPOSAL_SOURCE_META[row.source].label} · {PROPOSAL_SOURCE_META[row.source].blurb}
                           </TableCell>
                         </TableRow>
@@ -327,7 +329,7 @@ export function DataReviewPage() {
                         </TableCell>
                         <TableCell><StoreChip store={row.store} link={false} compact /></TableCell>
                         <TableCell className="max-w-56" title={row.description ?? undefined}>
-                          <div className="truncate text-[0.82rem] font-medium">{row.description ?? <span className="text-muted-foreground">unnamed product</span>}</div>
+                          <div className="truncate text-[0.84rem] font-semibold tracking-[-0.01em]">{row.description ?? <span className="font-normal text-muted-foreground">unnamed product</span>}</div>
                         </TableCell>
                         <TableCell className="t-mono font-medium">{row.entity_key}</TableCell>
                         <TableCell className="text-[0.78rem] whitespace-nowrap text-muted-foreground">{row.field.replace(/_/g, " ")}</TableCell>
@@ -379,20 +381,18 @@ export function DataReviewPage() {
                             "—"
                           )}
                         </TableCell>
-                        <TableCell className="max-w-28 truncate font-mono text-[0.68rem] text-muted-foreground" title={row.proposed_by}>
-                          {row.proposed_by}
+                        <TableCell className="whitespace-nowrap" title={`${formatDateTime(row.created_at)} · ${row.proposed_by}`}>
+                          <span className="block text-[0.76rem] text-foreground">{formatDate(row.created_at)}</span>
+                          <span className="block max-w-32 truncate font-mono text-[0.64rem] text-muted-foreground">{row.proposed_by}</span>
                         </TableCell>
-                        <TableCell className="t-meta whitespace-nowrap" title={formatDateTime(row.created_at)}>
-                          {formatDate(row.created_at)}
-                        </TableCell>
-                        <TableCell className="text-[0.75rem] whitespace-nowrap text-muted-foreground">
+                        <TableCell className="whitespace-nowrap">
                           {row.reviewed_at ? (
                             <span title={`${formatDateTime(row.reviewed_at)}${row.review_note ? ` — ${row.review_note}` : ""}`}>
-                              {formatDate(row.reviewed_at)}
-                              <span className="block max-w-28 truncate font-mono text-[0.66rem]">{row.reviewed_by}</span>
+                              <span className="block text-[0.76rem] text-foreground">{formatDate(row.reviewed_at)}</span>
+                              <span className="block max-w-32 truncate font-mono text-[0.64rem] text-muted-foreground">{row.reviewed_by}</span>
                             </span>
                           ) : (
-                            "—"
+                            <span className="t-meta">—</span>
                           )}
                         </TableCell>
                       </TableRow>

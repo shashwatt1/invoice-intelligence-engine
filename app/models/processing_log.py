@@ -43,6 +43,10 @@ class PipelineStage(StrEnum):
     # assignment). Its own stage so the audit trail never displaces the
     # latest VALIDATION report the detail view reads.
     MANUAL_CORRECTION = "MANUAL_CORRECTION"
+    # A backend-authoritative workflow action on the document itself
+    # (STOP, MOVE TO BIN) — not a correction to extracted invoice data,
+    # so it gets its own stage rather than overloading MANUAL_CORRECTION.
+    LIFECYCLE = "LIFECYCLE"
 
 
 class LogStatus(StrEnum):

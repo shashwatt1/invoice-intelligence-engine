@@ -37,6 +37,11 @@ class DocumentStatus(StrEnum):
         UPLOADED → OCR_IN_PROGRESS → OCR_COMPLETED → AI_PROCESSING
                  → VALIDATED | REVIEW_REQUIRED → COMPLETED
         Any stage → FAILED (ProcessingLog records which stage and why)
+        Any active stage → STOPPED (user/admin cancellation, see
+            app.services.document_lifecycle.stop_document)
+        Any non-BINNED state → BINNED (managed, recoverable discard from
+            the active workflow, see
+            app.services.document_lifecycle.move_document_to_bin)
     """
 
     UPLOADED = "UPLOADED"
@@ -48,6 +53,8 @@ class DocumentStatus(StrEnum):
     STORE_CONFIRMATION_REQUIRED = "STORE_CONFIRMATION_REQUIRED"   # text extracted; waiting for a person
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    STOPPED = "STOPPED"    # cancelled mid-pipeline; source and audit trail preserved
+    BINNED = "BINNED"      # removed from the active workflow; recoverable, never physically deleted
 
 
 class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -76,6 +83,26 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     file_hash: Mapped[str] = mapped_column(
         String(64), nullable=False, doc="SHA-256 hex digest for duplicate detection."
+    )
+    uploaded_by: Mapped[str | None] = mapped_column(
+        String(200), nullable=True,
+        doc=(
+            "HISTORICAL / superseded by uploaded_by_user_id (P3). Free-text actor "
+            "claimed by the P2-era caller-supplied trust model. Kept only as an audit "
+            "trail of what P2 recorded; never used for authorization anymore — a client "
+            "can no longer claim an identity by typing it into a request."
+        ),
+    )
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+        doc=(
+            "The authenticated user who uploaded this document, set from the session "
+            "at intake time — never accepted from the client. Backs the USER-role "
+            "ownership check for STOP/MOVE-TO-BIN and document visibility. NULL for "
+            "documents uploaded before authentication existed (P0-P2 era); a USER "
+            "caller can never claim a NULL-owner document — only MANAGER/ADMIN can "
+            "still manage it."
+        ),
     )
 
     # Processing state

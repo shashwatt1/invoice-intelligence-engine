@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border bg-secondary/40 px-3 py-2">
-      <div className="text-[0.65rem] font-semibold tracking-wider text-muted-foreground uppercase">
+      <div className="t-label">
         {label}
       </div>
       <div className="mt-0.5 truncate text-[0.85rem] font-semibold tabular-nums">{value}</div>

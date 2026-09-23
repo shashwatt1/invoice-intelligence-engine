@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.mappers import to_history_row
 from app.api.v1.upload import get_upload_service
+from app.core.dependencies import require_admin, require_authenticated_user, require_manager
 from app.core.exceptions import (
     DatabaseError,
     InvoiceBaseException,
@@ -38,6 +39,7 @@ from app.database.session import get_db, get_session_factory
 from app.models.document import DocumentStatus
 from app.models.processing_log import PipelineStage
 from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
+from app.models.user import User, UserRole
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
@@ -54,6 +56,8 @@ from app.schemas.processing import (
     DuplicateDecision,
     DuplicateDecisionResult,
     HistoryRow,
+    InvoiceDateCorrection,
+    InvoiceDateCorrectionResult,
     InvoiceDeleteResult,
     InvoiceDetailData,
     InvoiceReviewSummary,
@@ -73,7 +77,12 @@ from app.services.case_mapping_service import (
     build_case_mapping_status,
     invoice_units_by_item_code,
 )
-from app.services.export_service import normalize_item_code, persisted_pdi_export_eligibility
+from app.services.document_lifecycle import ensure_document_visible
+from app.services.export_service import (
+    normalize_item_code,
+    persisted_pdi_export_eligibility,
+    unmapped_item_codes,
+)
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
@@ -188,6 +197,7 @@ async def process_invoice(
     db: AsyncSession = Depends(get_db),
     upload_service: UploadService = Depends(get_upload_service),
     pipeline: InvoiceProcessingPipeline = Depends(get_pipeline),
+    user: User = Depends(require_authenticated_user),
 ) -> APIResponse[ProcessAccepted]:
     uploads = ([file] if file is not None else []) + list(files)
     if not uploads:
@@ -208,7 +218,7 @@ async def process_invoice(
         ))
 
     try:
-        document = await pipeline.intake_pages(db, pages, store_id=chosen)
+        document = await pipeline.intake_pages(db, pages, store_id=chosen, uploaded_by_user_id=user.id)
     except InvoiceBaseException:
         raise                                   # duplicate etc. — already a safe, typed error
     except Exception as exc:
@@ -259,7 +269,9 @@ async def list_invoices(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
 ) -> PaginatedResponse[HistoryRow]:
+    own_only = user.id if user.role == UserRole.USER.value else None
     rows, total = await DocumentRepository(db).search_history(
         search=search,
         status=document_status,
@@ -267,23 +279,55 @@ async def list_invoices(
         descending=descending,
         page=page,
         page_size=page_size,
+        uploaded_by_user_id=own_only,
     )
     stores = await StoreRepository(db).labels(
         [i.store_id if i else d.store_id for d, i in rows])
     reviews = await ProductDataProposalRepository(db).by_invoice_ids(
         [i.id for _, i in rows if i is not None])
     photo_counts = await DocumentRepository(db).page_counts([d.id for d, _ in rows])
+    # Mapping/EDI status is a MANAGER+ business surface (see PART 11 of the
+    # Requires Mapping phase) — computed only for the rows on this page
+    # (bounded by page_size), reusing the same gate functions the invoice
+    # detail and export endpoints use, so the list can never disagree with them.
+    mapping_and_edi: dict[uuid.UUID, tuple[int, str]] = {}
+    if user.role != UserRole.USER.value:
+        for _, invoice in rows:
+            if invoice is None or invoice.store_id is None:
+                continue
+            units = await invoice_units_by_item_code(db, invoice)
+            eligibility = persisted_pdi_export_eligibility(invoice, units)
+            edi_status = (
+                "blocked" if not eligibility.allowed
+                else "needs_confirmation" if eligibility.requires_confirmation
+                else "ready"
+            )
+            mapping_and_edi[invoice.id] = (len(unmapped_item_codes(invoice, units)), edi_status)
     return PaginatedResponse(
-        items=[to_history_row(document, invoice,
+        items=[_redact_history_row(to_history_row(
+                              document, invoice,
                               stores.get(invoice.store_id if invoice else document.store_id),
                               review=InvoiceReviewSummary.from_proposals(reviews.get(invoice.id, []))
                               if invoice else None,
-                              photo_count=photo_counts.get(document.id, 1))
+                              photo_count=photo_counts.get(document.id, 1),
+                              mapping_required=mapping_and_edi.get(invoice.id, (None, None))[0]
+                              if invoice else None,
+                              edi_status=mapping_and_edi.get(invoice.id, (None, None))[1]
+                              if invoice else None), user.role)
                for document, invoice in rows],
         total=total,
         page=page,
         page_size=page_size,
     )
+
+
+def _redact_history_row(row: HistoryRow, role: str) -> HistoryRow:
+    """USER gets its 'basic processing status' shape: no confidence
+    internals, no master-data review state (that is MANAGER's mapping
+    evidence, not a USER concern)."""
+    if role != UserRole.USER.value:
+        return row
+    return row.model_copy(update={"composite_confidence": None, "review": None, "source_type": None})
 
 
 @router.get(
@@ -299,12 +343,14 @@ async def list_invoices(
 async def get_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
 ) -> APIResponse[InvoiceDetailData]:
     invoice = await InvoiceRepository(db).get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
+    ensure_document_visible(invoice.document, user)
 
     logs = await ProcessingLogRepository(db).for_document(invoice.document_id)
     payloads = {log.stage: log.payload for log in logs if log.payload}
@@ -414,7 +460,48 @@ async def get_invoice(
         ocr_text=document.raw_ocr_text,
         raw_extraction=invoice.raw_extraction_json,
     )
-    return APIResponse(data=data)
+    return APIResponse(data=_redact_invoice_detail(data, user.role))
+
+
+def _redact_invoice_detail(data: InvoiceDetailData, role: str) -> InvoiceDetailData:
+    """
+    ADMIN sees the full technical model. MANAGER keeps every
+    business/review field (vendor, printed totals, case mappings,
+    mapping evidence, correction history, line items) but loses developer
+    diagnostics: raw OCR text, raw LLM extraction, LLM call metadata, the
+    raw validation report, the extraction model name, persistence
+    internals, and the composite extraction-confidence score.
+
+    USER is a data-team operational role, not merely upload-only: it
+    keeps the same business fields MANAGER does (vendor, printed totals,
+    line_items — UPC/product identity, description, quantity, price —
+    and case_mappings) so it can read the invoice it is working on and
+    submit a proposal via POST /invoices/{id}/case-mappings. It still
+    loses every developer/technical field, confidence internals,
+    correction history, and the invoice-level `review` summary (that's
+    proposal governance detail — MANAGER's; a USER checks its OWN
+    proposal status through GET /proposals, filtered to what it
+    submitted, not through this endpoint).
+    """
+    if role == UserRole.ADMIN.value:
+        return data
+    technical_fields = {
+        "ocr_text": None, "raw_extraction": None, "llm_metadata": None,
+        "validation_report": None, "database": None, "extraction_model": None,
+        "composite_confidence": None,
+    }
+    if role == UserRole.MANAGER.value:
+        return data.model_copy(update=technical_fields)
+    return data.model_copy(update={
+        **technical_fields,
+        "corrected_fields": [], "correction_history": [],
+        "photos": [], "duplicate_review_required": False,
+        "review": InvoiceReviewSummary(status="NONE"),
+        # Kept for USER: vendor, printed totals, case_mappings (mapping
+        # status) and line_items (UPC/product identity, description,
+        # quantity, price) — the business/operational view a data-team
+        # USER needs to read the invoice and submit a mapping proposal.
+    })
 
 
 @router.delete(
@@ -438,6 +525,7 @@ async def get_invoice(
 async def delete_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
 ) -> APIResponse[InvoiceDeleteResult]:
     invoice = await InvoiceRepository(db).get_detail(invoice_id)
     if invoice is None:
@@ -502,6 +590,7 @@ async def confirm_case_mappings(
     invoice_id: uuid.UUID,
     payload: CaseMappingRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
 ) -> APIResponse[CaseMappingResult]:
     """
     Submits the operator's values for review. Writes PROPOSALS only.
@@ -511,12 +600,19 @@ async def confirm_case_mappings(
     verified ones; that path is closed. A reviewer promotes a proposal
     through app.services.proposal_service.approve(), and only then does
     the value exist for the formatter.
+
+    Open to any authenticated role, including USER: submitting a
+    proposal is data-entry, not a governance decision — approve/reject
+    stay MANAGER+ (see app/api/v1/proposals.py). A USER may only propose
+    against an invoice they can see (the same ownership rule as GET
+    /invoices/{id}).
     """
     invoice = await InvoiceRepository(db).get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
+    ensure_document_visible(invoice.document, user)
 
     store = invoice.store_id
     if store is None:
@@ -561,7 +657,7 @@ async def confirm_case_mappings(
             item_code=code,
             units_per_case=confirmation.units_per_case,
             review_status=review_by_code.get(code),
-            proposed_by="frontend:review-ui",
+            proposed_by=user.username,
         )
         submitted += 1
     await db.commit()
@@ -611,6 +707,7 @@ async def correct_line_item(
     sort_order: int,
     payload: LineItemCorrection,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
 ) -> APIResponse[LineItemCorrectionResult]:
     updates = payload.updates()
     if not updates:
@@ -686,6 +783,7 @@ async def decide_duplicate(
     sort_order: int,
     body: DuplicateDecision,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
 ) -> APIResponse[DuplicateDecisionResult]:
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
@@ -764,6 +862,7 @@ async def assign_store(
     invoice_id: uuid.UUID,
     body: StoreAssignment,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
 ) -> APIResponse[InvoiceDetailData]:
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
@@ -788,7 +887,7 @@ async def assign_store(
                  "assigned_by": body.assigned_by, "note": body.note},
     )
     await db.commit()
-    return await get_invoice(invoice_id, db)
+    return await get_invoice(invoice_id, db, user)
 
 
 def _corrected_line(item) -> CorrectedLineItem:
@@ -842,6 +941,7 @@ async def _revalidated(db, invoice_id: uuid.UUID):
 )
 async def add_line_item(
     invoice_id: uuid.UUID, payload: LineItemCreate, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
 ) -> APIResponse[LineItemCorrectionResult]:
     negative = sorted(f for f in ("quantity", "unit_price", "unit_deposit", "unit_discount", "line_total")
                       if getattr(payload, f) is not None and getattr(payload, f) < 0)
@@ -898,6 +998,7 @@ async def add_line_item(
 )
 async def void_line_item(
     invoice_id: uuid.UUID, sort_order: int, payload: LineItemVoid, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
 ) -> APIResponse[LineItemCorrectionResult]:
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
@@ -924,6 +1025,43 @@ async def void_line_item(
 
 
 @router.patch(
+    "/invoices/{invoice_id}/date",
+    response_model=APIResponse[InvoiceDateCorrectionResult],
+    summary="Correct the invoice date, or record that it is unknown",
+    description=(
+        "Replaces the invoice date with the one a person read off the document, or sets it to "
+        "null when the document genuinely does not show one. The extracted value is kept in the "
+        "correction history (old, new, who, when, why) and `invoice_date` is listed in "
+        "corrected_fields, so a typed date never reads as extracted data. The date is never "
+        "inferred from upload, processing, file or payment dates. Validation runs again with the "
+        "pipeline's own rules and the document's lifecycle state follows the new decision."
+    ),
+    responses={404: {"description": "Invoice not found"}},
+)
+async def correct_invoice_date(
+    invoice_id: uuid.UUID, payload: InvoiceDateCorrection, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[InvoiceDateCorrectionResult]:
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    await repository.correct_invoice_date(invoice, payload.invoice_date,
+                                          corrected_by=payload.corrected_by, note=payload.note)
+    await _log_correction(db, invoice, "invoice_date_corrected", payload.corrected_by, payload.note,
+                          changes=(invoice.correction_history or [])[-1:])
+    invoice, report, eligibility = await _revalidated(db, invoice_id)
+    await db.commit()
+    return APIResponse(data=InvoiceDateCorrectionResult(
+        invoice_date=invoice.invoice_date,
+        corrected_fields=invoice.corrected_fields or [], correction_history=invoice.correction_history or [],
+        status=report.decision.value, composite_confidence=report.confidence.composite,
+        failed_checks=len(report.failed_checks), review_reasons=report.review_reasons,
+        pdi_export_allowed=eligibility.allowed, pdi_export_blocked_reason=eligibility.blocked_reason,
+    ))
+
+
+@router.patch(
     "/invoices/{invoice_id}/totals",
     response_model=APIResponse[InvoiceTotalsCorrectionResult],
     summary="Correct printed header totals (grand total included)",
@@ -938,6 +1076,7 @@ async def void_line_item(
 )
 async def correct_totals(
     invoice_id: uuid.UUID, payload: InvoiceTotalsCorrection, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
 ) -> APIResponse[InvoiceTotalsCorrectionResult]:
     updates = payload.updates()
     if not updates:

@@ -39,7 +39,7 @@ the proof; either alone is only a warning.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.schemas.normalized import NormalizedInvoice, NormalizedLineItem
 from app.services.validation.report import CheckResult, CheckStatus
@@ -277,6 +277,138 @@ def _reconcile_deposit_in_unit_price(
     return items
 
 
+
+def _subtotal_corroborates_line_totals(
+    invoice: NormalizedInvoice, items: tuple[NormalizedLineItem, ...], tolerance: Decimal
+) -> bool:
+    """
+    Whether the printed subtotal independently proves the line totals.
+
+    The same conventions check_subtotal already accepts: the goods alone,
+    or the goods plus charge rows printed inside the subtotal, either of
+    them against the subtotal or against subtotal + deposits for layouts
+    that fold the deposit into each extended total.
+
+    This is the control that makes Rule E safe. Arithmetic on one row
+    cannot say whether the quantity or the line total is the corrupted
+    figure; a subtotal that the line totals already satisfy says the line
+    totals are right, so a quantity contradicting its own row is wrong.
+    """
+    if invoice.subtotal is None:
+        return False
+    products = sum((i.line_total for i in items
+                    if i.line_type == "product" and i.line_total is not None), Decimal("0.00"))
+    charges = sum((i.line_total for i in items
+                   if i.line_type == "charge" and i.line_total is not None), Decimal("0.00"))
+    deposits = invoice.deposit_total or Decimal("0")
+    for candidate in (products, products + charges):
+        if _within(candidate, invoice.subtotal, tolerance) or _within(
+            candidate, invoice.subtotal + deposits, tolerance
+        ):
+            return True
+    return False
+
+
+def _proven_quantity(
+    item: NormalizedLineItem, tolerance: Decimal
+) -> Decimal | None:
+    """
+    The whole quantity the row's own figures prove, or None.
+
+    line_total / unit_price must land on a positive whole number that
+    reproduces the printed line total, and it must be the ONLY integer
+    that does: when the unit price is at or below the money tolerance the
+    neighbouring integers satisfy the same arithmetic, so nothing is
+    proven and the row is left alone.
+    """
+    qty, unit_price, line_total = item.quantity, item.unit_price, item.line_total
+    if qty is None or unit_price is None or line_total is None:
+        return None
+    if unit_price <= 0 or line_total <= 0:
+        return None
+    candidate = (line_total / unit_price).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    if candidate < 1 or candidate == qty:
+        return None
+    if not _within((candidate * unit_price).quantize(MONEY_EXP), line_total, tolerance):
+        return None
+    for neighbour in (candidate - 1, candidate + 1):
+        if neighbour >= 1 and _within((neighbour * unit_price).quantize(MONEY_EXP), line_total, tolerance):
+            return None                      # more than one integer fits: not proof
+    return candidate
+
+
+def _reconcile_quantity(
+    invoice: NormalizedInvoice,
+    items: tuple[NormalizedLineItem, ...],
+    tolerance: Decimal,
+    checks: list[CheckResult],
+) -> tuple[NormalizedLineItem, ...]:
+    """
+    Rule E — a quantity the invoice proves is corrupted.
+
+    Observed on UniFirst 2310090549, whose QTY column Vision read as one
+    merged token ("24132" for five adjacent rows of 2, 4, 1, 3, 2) and
+    whose LAUNDRY BAGS total of 2.02 arrived as "202" in the position this
+    layout prints a quantity. The rows' own figures prove what each
+    quantity was — line_total / unit_price is a whole number — and the
+    printed subtotal proves the line totals those figures rest on.
+
+    Runs LAST, after Rules A-D: a row either of them explains keeps that
+    narrower interpretation. Product rows only; a charge row's quantity is
+    not a count of anything and is never invented or corrected. Never
+    touches a printed quantity of 0 (a shorted row delivered nothing) or a
+    row missing a price or a total.
+    """
+    unresolved = [
+        item for item in items
+        if item.line_type == "product"
+        and item.quantity not in (None, Decimal("0"))
+        and item.unit_price is not None
+        and item.line_total is not None
+        and not _within((item.quantity * item.unit_price).quantize(MONEY_EXP), item.line_total, tolerance)
+        and not (
+            item.unit_deposit is not None
+            and _within(
+                (item.quantity * (item.unit_price + item.unit_deposit)).quantize(MONEY_EXP),
+                item.line_total,
+                tolerance,
+            )
+        )
+    ]
+    if not unresolved:
+        return items
+    if not _subtotal_corroborates_line_totals(invoice, items, tolerance):
+        return items                          # no independent control: prove nothing
+
+    corrected: dict[int, Decimal] = {}
+    for item in unresolved:
+        proven = _proven_quantity(item, tolerance)
+        if proven is None:
+            continue
+        corrected[item.sort_order] = proven
+        checks.append(
+            CheckResult(
+                name="QUANTITY_RECONCILED",
+                status=CheckStatus.PASSED,
+                field=f"line_items[{item.sort_order}].quantity",
+                message=(
+                    f"Extracted quantity did not match the printed line total; replaced with "
+                    f"{proven}, proved by line_total / unit_price and corroborated by the "
+                    "printed subtotal, which the line totals already satisfy."
+                ),
+                expected=str(proven),
+                actual=str(item.quantity),
+            )
+        )
+    if not corrected:
+        return items
+    return tuple(
+        item.model_copy(update={"quantity": corrected[item.sort_order], "quantity_reconciled": True})
+        if item.sort_order in corrected else item
+        for item in items
+    )
+
+
 def reconcile_invoice(
     invoice: NormalizedInvoice, tolerance: Decimal
 ) -> tuple[NormalizedInvoice, list[CheckResult]]:
@@ -292,6 +424,9 @@ def reconcile_invoice(
         _reconcile_line_item(item, tolerance, checks) for item in invoice.line_items
     )
     items = _reconcile_deposit_in_unit_price(invoice, items, tolerance, checks)
+    # Rule E last: only rows no earlier rule could explain, and only when
+    # the printed subtotal independently proves the line totals.
+    items = _reconcile_quantity(invoice, items, tolerance, checks)
     reconciled = invoice.model_copy(update={"line_items": items})
 
     # Invoice-level cross-check: the corrected line totals should now sum

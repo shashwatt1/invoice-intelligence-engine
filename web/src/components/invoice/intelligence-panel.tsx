@@ -1,12 +1,9 @@
-import { CheckCircle2, ClipboardCheck, FileScan, Gauge, ListOrdered, MapPin, ShieldAlert } from "lucide-react";
-import { Link } from "react-router-dom";
+import { CheckCircle2, FileScan } from "lucide-react";
 
 import type { InvoiceDetail } from "@/api/types";
 import { ConfidenceMeter } from "@/components/shared/confidence-meter";
 import { StatusBadge, StatusPill } from "@/components/shared/status-badge";
-import { StoreChip } from "@/components/shared/store-chip";
-import { formatDuration, formatPercent, formatTokens } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import { formatPercent } from "@/lib/format";
 
 function Row({ icon: Icon, label, children }: { icon: React.ElementType; label: string; children: React.ReactNode }) {
   return (
@@ -21,17 +18,21 @@ function Row({ icon: Icon, label, children }: { icon: React.ElementType; label: 
 }
 
 /**
- * What the backend actually knows about this invoice, in one column:
- * validation, confidence, what still needs a person, mapping and store
- * state, and whether an EDI can be produced. Nothing here is generated
- * prose — every line is a recorded value.
+ * What the backend knows about HOW this invoice was extracted and
+ * validated: confidence, the check-by-check validation report, and
+ * extraction stats. ADMIN-only — every field this panel reads
+ * (composite_confidence, validation_report, llm_metadata, ocr_text,
+ * corrected_fields at the header level) is redacted to null/empty for
+ * MANAGER/USER by the backend (see
+ * app.api.v1.invoices._redact_invoice_detail), and the caller
+ * (invoice-detail.tsx) only mounts this panel for ADMIN. Business status
+ * that every role needs — mapping progress, store, EDI readiness — lives
+ * in BusinessStatusPanel instead, which is never redacted away.
  */
 export function IntelligencePanel({ detail: d }: { detail: InvoiceDetail }) {
   const report = d.validation_report;
   const failed = report?.checks.filter((c) => c.status === "FAILED") ?? [];
   const warnings = report?.checks.filter((c) => c.status === "WARNING") ?? [];
-  const mapped = d.case_mappings.filter((r) => r.mapped).length;
-  const unmapped = d.case_mappings.filter((r) => !r.mapped);
   const corrected = d.line_items.filter((i) => i.corrected_fields.length || i.entry_source === "manual").length + d.corrected_fields.length;
 
   return (
@@ -92,62 +93,11 @@ export function IntelligencePanel({ detail: d }: { detail: InvoiceDetail }) {
         )}
       </Row>
 
-      <Row icon={ClipboardCheck} label="Master data">
-        {d.store_pending || !d.store ? (
-          <span className="text-warning">Waiting for a store before mappings apply.</span>
-        ) : (
-          <>
-            <div className="flex items-center justify-between">
-              <span className="tabular-nums"><span className="font-semibold">{mapped}</span>/{d.case_mappings.length} product mappings approved</span>
-            </div>
-            <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-surface-3" role="meter" aria-valuenow={mapped} aria-valuemin={0} aria-valuemax={d.case_mappings.length} aria-label="Approved mappings">
-              <div className={cn("h-full rounded-full", unmapped.length ? "bg-warning" : "bg-success")} style={{ width: d.case_mappings.length ? `${(mapped / d.case_mappings.length) * 100}%` : "0%" }} />
-            </div>
-            {d.review.pending ? (
-              <div className="t-meta mt-1.5"><Link to={`/data-review?invoice=${d.invoice_id}`} className="text-warning hover:underline">{d.review.pending} awaiting approval in Master Data Review</Link></div>
-            ) : unmapped.length ? (
-              <div className="t-meta mt-1.5">{unmapped.length} product{unmapped.length === 1 ? "" : "s"} still need a units-per-case mapping</div>
-            ) : null}
-          </>
-        )}
-      </Row>
-
-      <Row icon={MapPin} label="Store">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <StoreChip store={d.store} />
-        </div>
-        {d.store?.address ? <div className="t-meta mt-1">{d.store.address}</div> : null}
-        {d.store && d.store.identity_status !== "confirmed" ? (
-          <div className="t-meta mt-1 flex items-center gap-1"><ShieldAlert className="size-3 text-warning" /> Store identity needs confirmation — mappings still apply to it.</div>
-        ) : null}
-      </Row>
-
-      <Row icon={ListOrdered} label="EDI readiness">
-        {d.pdi_export_allowed ? (
-          d.pdi_export_requires_confirmation ? (
-            <StatusPill tone="warning" label="Ready — review flagged" meaning="The PDI file can be generated; validation asked for a person to look first." />
-          ) : (
-            <StatusPill tone="success" label="Ready" meaning="Every gate is clear; the PDI file can be generated." />
-          )
-        ) : (
-          <>
-            <StatusPill tone="danger" label="Blocked" meaning={d.pdi_export_blocked_reason ?? undefined} />
-            <div className="t-meta mt-1.5 leading-snug">{d.pdi_export_blocked_reason}</div>
-          </>
-        )}
-      </Row>
-
       <Row icon={FileScan} label="Extraction">
         <div className="t-meta space-y-0.5 tabular-nums">
-          <div>{d.photos.length > 1 ? `${d.photos.length} photos combined` : d.source_type === "digital_pdf" ? "digital PDF text" : "OCR"}{d.ocr_text ? ` · ${formatTokens(d.ocr_text.length)} chars` : ""}</div>
-          {d.llm_metadata ? <div>{d.llm_metadata.model} · {formatTokens(d.llm_metadata.total_tokens)} tokens · {formatDuration(d.llm_metadata.latency_ms)}</div> : null}
+          <div>{d.photos.length > 1 ? `${d.photos.length} photos combined` : d.source_type === "digital_pdf" ? "digital PDF text" : "photo read by OCR"} · {d.line_items.length} line{d.line_items.length === 1 ? "" : "s"} extracted</div>
+          {d.llm_metadata?.prompt_version ? <div>prompt {d.llm_metadata.prompt_version} · model, tokens and timing in the developer panel</div> : null}
           {corrected ? <div className="text-foreground">{corrected} manual correction{corrected === 1 ? "" : "s"} on record</div> : null}
-        </div>
-      </Row>
-
-      <Row icon={Gauge} label="Review">
-        <div className="t-meta">
-          {d.review.status === "NONE" ? "No master-data proposals raised from this invoice." : `${d.review.approved} approved · ${d.review.pending} pending · ${d.review.rejected} rejected`}
         </div>
       </Row>
     </aside>

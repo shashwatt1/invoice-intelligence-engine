@@ -25,7 +25,7 @@ export function StoreChip({
 }) {
   if (!store) {
     return (
-      <span className={cn("inline-flex items-center gap-1 rounded-md border border-dashed px-1.5 py-0.5 text-[0.7rem] text-muted-foreground", className)}
+      <span className={cn("inline-flex items-center gap-1 text-[0.74rem] text-muted-foreground", className)}
             title="No store assigned yet">
         <MapPin className="size-3" aria-hidden /> Store pending
       </span>
@@ -41,7 +41,7 @@ export function StoreChip({
         {compact ? shortLabel : (store.display_name ?? shortLabel)}
       </span>
       {unresolved ? (
-        <span className="rounded-sm bg-warning/12 px-1 text-[0.6rem] font-semibold tracking-wide text-warning uppercase">
+        <span className="text-[0.66rem] font-medium text-warning">
           {compact ? "unconfirmed" : "identity unconfirmed"}
         </span>
       ) : null}
@@ -52,14 +52,15 @@ export function StoreChip({
     </>
   );
   const classes = cn(
-    "inline-flex max-w-full items-center gap-1.5 rounded-md border bg-card px-1.5 py-0.5 text-[0.72rem] font-medium text-foreground",
+    "inline-flex max-w-full items-center gap-1.5 text-[0.76rem] font-medium text-foreground",
+    compact ? "" : "rounded-md bg-surface-2 px-2 py-1",
     className,
   );
   const title = unresolved
     ? "Store identity needs confirmation — known by its source identifier or by document evidence."
     : (store.address ?? undefined);
   return link ? (
-    <Link to={`/stores?store=${store.id}`} className={cn(classes, "transition-colors hover:border-foreground/30")} title={title}>
+    <Link to={`/stores?store=${store.id}`} className={cn(classes, "transition-colors hover:bg-surface-3 hover:text-brand")} title={title}>
       {body}
     </Link>
   ) : (

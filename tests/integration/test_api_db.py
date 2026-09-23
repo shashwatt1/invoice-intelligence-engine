@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.exceptions import AIStructuringError
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import ADMIN_PASSWORD, ADMIN_USERNAME, requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.pdf_builder import build_pdf
 
@@ -37,7 +37,19 @@ INVOICE_PDF = build_pdf(
 
 @pytest_asyncio.fixture
 async def api_client(app, db_engine, db_session, monkeypatch):
-    """ASGI client wired to the test database and a fake-LLM pipeline."""
+    """
+    ASGI client wired to the test database and a fake-LLM pipeline,
+    authenticated as the seeded ADMIN account by default.
+
+    Every pre-P3 test in this suite was written when nothing required
+    auth; ADMIN is defined to have "all current application
+    functionality", so logging in as ADMIN here is the exact, correct
+    translation of "how these tests behaved before authentication
+    existed" into the post-P3 world — not a bypass. Tests that
+    specifically exercise MANAGER/USER boundaries log in as those
+    accounts themselves (see tests.integration.conftest.user_id /
+    ADMIN_USERNAME / MANAGER_USERNAME / USER_USERNAME).
+    """
     from app.api.v1 import documents as documents_module
     from app.api.v1 import invoices as invoices_module
     from app.api.v1.invoices import get_pipeline
@@ -58,6 +70,10 @@ async def api_client(app, db_engine, db_session, monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login = await client.post(
+            "/api/v1/auth/login", json={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
+        )
+        assert login.status_code == 200, login.text
         yield client
     app.dependency_overrides.clear()
 

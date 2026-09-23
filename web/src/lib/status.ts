@@ -40,6 +40,8 @@ export const STATUS_META: Record<DocumentStatus, { label: string; tone: Tone; me
   STORE_CONFIRMATION_REQUIRED: { label: "Confirm store", tone: "warning", meaning: "Waiting for a person to say which store this is for." },
   COMPLETED: { label: "Validated", tone: "success", meaning: "Persisted with every check passed." },
   FAILED: { label: "Failed", tone: "danger", meaning: "A stage failed; the document and its log were kept." },
+  STOPPED: { label: "Stopped", tone: "neutral", meaning: "Processing was cancelled; the source and audit trail were kept." },
+  BINNED: { label: "In bin", tone: "neutral", meaning: "Removed from the active workflow; recoverable, nothing was deleted." },
 };
 
 /** Proposal lifecycle. The labels say what each state MEANS for the EDI,

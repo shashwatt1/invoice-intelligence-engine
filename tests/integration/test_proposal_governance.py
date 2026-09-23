@@ -28,7 +28,7 @@ from app.repositories.product_data_proposal_repository import (
 from app.schemas.extraction import ExtractedLineItem
 from app.services import proposal_service
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import ADMIN_USERNAME, requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -92,7 +92,9 @@ class TestTheFrontendCannotWriteMasterData:
         [p] = await ProductDataProposalRepository(db_session).list(entity_key=NORMALIZED)
         assert p.status == STATUS_PENDING
         assert p.proposed_value == 4
-        assert p.proposed_by == "frontend:review-ui"
+        # P3: real attribution from the authenticated session, not a
+        # hardcoded placeholder — api_client is logged in as ADMIN.
+        assert p.proposed_by == ADMIN_USERNAME
         assert str(p.invoice_id) == invoice_id
 
     async def test_the_export_stays_blocked_while_pending(self, api_client, app):  # noqa: F811

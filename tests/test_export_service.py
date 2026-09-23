@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -33,6 +34,7 @@ from app.services.export_service import (
     build_pdi_export,
     build_txt,
     export_basename,
+    items_with_unresolved_identity,
     normalize_item_code,
     pdi_export_eligibility,
 )
@@ -510,6 +512,11 @@ class TestPdiExportEligibility:
 
     def test_validated_invoice_is_allowed_without_confirmation(self):
         invoice = make_invoice(status="VALIDATED")
+        # make_invoice()'s second item has no product_sku on purpose (it
+        # covers the blank-UPC CSV case elsewhere) — this test is about
+        # the status rule, not product identity, so give it a resolved
+        # code to isolate what's under test.
+        invoice.items[1].product_sku = "0000098765"
         result = pdi_export_eligibility(invoice)
         assert result.allowed is True
         assert result.requires_confirmation is False
@@ -517,6 +524,7 @@ class TestPdiExportEligibility:
 
     def test_review_required_invoice_with_items_is_allowed_with_confirmation(self):
         invoice = make_invoice(status="REVIEW_REQUIRED")
+        invoice.items[1].product_sku = "0000098765"
         result = pdi_export_eligibility(invoice)
         assert result.allowed is True
         assert result.requires_confirmation is True
@@ -530,3 +538,242 @@ class TestPdiExportEligibility:
             assert result.allowed is False
             assert result.requires_confirmation is False
             assert result.blocked_reason  # non-empty, explains why
+
+
+class TestRedBullUpcIdentifierRegression:
+    """
+    RCM / Red Bull Distribution Company Inc., invoice 2035546957,
+    09/17/2026. The source invoice prints two distinct identifiers per
+    row: a vendor item code in the ID column ("RB248904") and, on its
+    own line below the description, the actual retail barcode
+    ("611269002461"). Extraction previously put the vendor code in
+    product_code; persisted, the generated EDI carried
+
+        B00000248904SF ICED 8.40Z ...
+
+    — a zero-padded vendor code that cannot match an existing product in
+    the downstream system. That literal string is the regression this
+    class pins against: given the CORRECT canonical UPC (what extraction
+    must now produce), the EDI must contain the real barcode's PDI code
+    and must NEVER contain any of the seven zero-padded vendor-ID codes
+    that were actually generated.
+
+    This class does not touch the EDI formatter — _pdi_item_code's
+    zero-pad-a-short-code behavior is itself correct (see
+    TestPdiItemCode.test_short_vendor_item_number_is_zero_padded) for a
+    row that genuinely has no barcode. The bug was entirely upstream, in
+    which value extraction put into product_code; these assertions prove
+    the EDI layer does the right thing once that value is right.
+    """
+
+    # (description, WRONG value the extraction bug produced, CORRECT canonical UPC)
+    PRODUCTS = [
+        ("SF ICED 8.40Z", "RB248904", "611269002461"),
+        ("SUGARFREE 8.40Z 4PK", "RB2860", "611269109009"),
+        ("COCONUT 120Z LS", "RB221027", "611269032120"),
+        ("SF ICED 120Z", "RB248897", "611269002447"),
+        ("SF W PEACH 120Z", "RB249729", "611269002768"),
+        ("ICED 120Z", "RB248898", "611269001846"),
+        ("RED BULL 120Z LS", "RB4816", "611269818994"),
+    ]
+    # The exact wrong codes the actual generated EDI contained (uploaded regression evidence).
+    WRONG_EDI_CODES = ["00000248904", "00000002860", "00000221027", "00000248897",
+                       "00000249729", "00000248898", "00000004816"]
+    RIGHT_EDI_CODES = ["61126900246", "61126910900", "61126903212", "61126900244",
+                       "61126900276", "61126900184", "61126981899"]
+
+    def _red_bull_invoice(self, *, use_correct_upc: bool) -> Invoice:
+        invoice = make_invoice(invoice_number="2035546957", vendor_name="Red Bull Distribution Company Inc.",
+                               grand_total=Decimal("329.53"))
+        invoice.items = [
+            InvoiceItem(
+                invoice_id=invoice.id, description=desc,
+                product_sku=(upc if use_correct_upc else supplier),
+                quantity=Decimal("1.0000"), unit_price=Decimal("50.71"),
+                line_total=Decimal("50.71"), sort_order=i,
+            )
+            for i, (desc, supplier, upc) in enumerate(self.PRODUCTS)
+        ]
+        return invoice
+
+    def test_each_product_normalizes_to_its_real_upcs_pdi_code_not_the_vendor_ids(self):
+        for desc, supplier, upc in self.PRODUCTS:
+            wrong_code = _pdi_item_code(supplier)
+            right_code = _pdi_item_code(upc)
+            assert right_code != wrong_code, desc
+            assert normalize_item_code(upc) == right_code, desc
+
+    def test_the_correct_upc_produces_the_correct_edi_and_never_the_regression_codes(self):
+        invoice = self._red_bull_invoice(use_correct_upc=True)
+        pdi = build_pdi_export(invoice, units_for(invoice))
+
+        for wrong_code in self.WRONG_EDI_CODES:
+            assert wrong_code not in pdi, f"regression: EDI still contains vendor-ID code {wrong_code}"
+        for right_code in self.RIGHT_EDI_CODES:
+            assert right_code in pdi, f"missing expected canonical UPC code {right_code}"
+
+    def test_detail_lines_carry_the_real_barcode_for_every_product(self):
+        invoice = self._red_bull_invoice(use_correct_upc=True)
+        detail_lines = build_pdi_export(invoice, units_for(invoice)).splitlines()[1:]
+        assert len(detail_lines) == 7
+        for line, (desc, supplier, upc) in zip(detail_lines, self.PRODUCTS, strict=True):
+            expected = _pdi_item_code(upc)
+            assert line[1:12] == expected, f"{desc}: expected item code {expected!r}, got {line[1:12]!r}"
+            assert line[1:12] != _pdi_item_code(supplier), f"{desc}: EDI regressed to the vendor code"
+
+    def test_the_buggy_extraction_shape_is_what_produced_the_reported_regression(self):
+        # Documents the mechanism (not the desired behavior): if product_code
+        # were still the vendor code, as the LLM bug actually produced, the
+        # formatter — correctly, for a genuinely-short code — zero-pads it.
+        # This is why the fix belongs at extraction, never in the formatter.
+        invoice = self._red_bull_invoice(use_correct_upc=False)
+        pdi = build_pdi_export(invoice, units_for(invoice))
+        for wrong_code in self.WRONG_EDI_CODES:
+            assert wrong_code in pdi
+
+    def test_end_to_end_chain_supplier_id_never_reaches_the_edi_for_rb248904(self):
+        """
+        The complete semantic chain P0 exists to prove, pinned to the one
+        row the regression was reported against:
+
+            supplier_item_id "RB248904" != UPC "611269002461"
+            -> UPC survives normalize_item_code() unchanged in digits
+            -> canonical item code is 11126900246's PDI form (61126900246)
+            -> the built EDI's B-record carries that canonical code
+            -> the EDI never substitutes/contains the supplier ID's code
+        """
+        supplier_item_id, upc = "RB248904", "611269002461"
+        assert supplier_item_id != upc
+
+        canonical = normalize_item_code(upc)
+        assert canonical == "61126900246"
+        assert canonical != normalize_item_code(supplier_item_id)
+
+        invoice = make_invoice(invoice_number="2035546957", vendor_name="Red Bull Distribution Company Inc.")
+        invoice.items = [InvoiceItem(
+            invoice_id=invoice.id, description="SF ICED 8.40Z", product_sku=upc,
+            quantity=Decimal("1.0000"), unit_price=Decimal("50.71"), line_total=Decimal("50.71"), sort_order=0,
+        )]
+        pdi = build_pdi_export(invoice, units_for(invoice))
+        detail_line = pdi.splitlines()[1]
+
+        assert detail_line[1:12] == canonical
+        assert "00000248904" not in pdi
+        assert supplier_item_id not in pdi
+
+    def test_unresolved_identity_never_becomes_an_invented_edi_code(self):
+        """
+        Rows the extractor cannot confidently resolve a UPC for (returns
+        None rather than guessing) must reach the EDI as the documented
+        blank-item-code convention, never as a fabricated or supplier-ID
+        code. This is the "uncertain UPC -> unresolved identity -> no
+        unsafe EDI item code" guarantee the RCM/Red Bull fix depends on.
+        """
+        invoice = self._red_bull_invoice(use_correct_upc=True)
+        # ICED 12OZ (index 5): the real extractor abstained here rather
+        # than guess a barcode. Model that here directly.
+        invoice.items[5].product_sku = None
+        pdi = build_pdi_export(invoice, units_for(invoice))
+        detail_lines = pdi.splitlines()[1:]
+
+        blank_line = detail_lines[5]
+        assert blank_line[1:12] == "00000      ", "unresolved row must use the blank-code convention, never a guess"
+        assert "RB248898" not in pdi, "the supplier code must never fill in for a missing UPC"
+        assert normalize_item_code(None) is None
+
+
+class TestUnresolvedIdentityBlocksPdiEligibility:
+    """
+    A product row with no canonical UPC/item code must never be treated
+    as "blank but fine" for export eligibility. `_pdi_item_code`'s blank
+    convention is a defensive formatter fallback, not a green light —
+    `items_with_unresolved_identity`/`pdi_export_eligibility` are the
+    authoritative gate that stops such a row from ever reaching a real
+    exported EDI file.
+    """
+
+    def _invoice_with(self, items: list[InvoiceItem]) -> Invoice:
+        invoice = make_invoice(invoice_number="2035546957", vendor_name="Red Bull Distribution Company Inc.")
+        invoice.items = items
+        return invoice
+
+    def _product(self, **overrides) -> InvoiceItem:
+        base = {
+            "description": "SOME PRODUCT", "quantity": Decimal("1.0000"),
+            "unit_price": Decimal("50.71"), "line_total": Decimal("50.71"), "sort_order": 0,
+        }
+        base.update(overrides)
+        return InvoiceItem(invoice_id=uuid.uuid4(), **base)
+
+    # A. product_code=None on a product line -> EDI readiness BLOCKED.
+    def test_a_null_product_code_blocks_pdi_eligibility(self):
+        invoice = self._invoice_with([self._product(product_sku=None)])
+        assert items_with_unresolved_identity(invoice) == ["SOME PRODUCT"]
+
+        eligibility = pdi_export_eligibility(invoice, units_for(invoice))
+        assert eligibility.allowed is False
+        assert "SOME PRODUCT" in eligibility.blocked_reason
+        assert "resolved UPC" in eligibility.blocked_reason
+
+    # B. product_code=None -> supplier_item_id is NOT substituted.
+    def test_b_blocked_reason_never_contains_a_supplier_id_standing_in_for_the_upc(self):
+        invoice = self._invoice_with([self._product(description="SF ICED 8.40Z", product_sku=None)])
+        eligibility = pdi_export_eligibility(invoice, units_for(invoice))
+        assert eligibility.allowed is False
+        assert "RB248904" not in (eligibility.blocked_reason or "")
+
+    # C. product_code=None -> no fabricated numeric UPC is generated.
+    def test_c_no_fabricated_upc_is_generated_for_the_unresolved_row(self):
+        invoice = self._invoice_with([self._product(product_sku=None)])
+        assert normalize_item_code(None) is None
+        eligibility = pdi_export_eligibility(invoice, units_for(invoice))
+        assert eligibility.allowed is False
+        # The blocked reason must name the row, never a made-up digit string.
+        assert not re.search(r"\b\d{6,}\b", eligibility.blocked_reason or "")
+
+    # D. charge row with no product_code -> unchanged and not incorrectly blocked as a product.
+    def test_d_a_charge_row_with_no_product_code_is_not_blocked_as_a_product(self):
+        invoice = self._invoice_with([
+            self._product(product_sku="611269002461"),
+            self._product(description="FUEL SURCHARGE", line_type="charge", product_sku=None,
+                          quantity=None, unit_price=Decimal("12.45"), line_total=Decimal("12.45"), sort_order=1),
+        ])
+        assert items_with_unresolved_identity(invoice) == []
+        eligibility = pdi_export_eligibility(invoice, units_for(invoice))
+        assert eligibility.allowed is True
+
+    # E. zero-quantity shorted product -> existing behavior unchanged (not blocked by the new gate).
+    def test_e_a_genuinely_shorted_zero_quantity_row_is_not_blocked_by_the_identity_gate(self):
+        invoice = self._invoice_with([self._product(
+            description="SHORTED ITEM", product_sku=None,
+            quantity=Decimal("0"), line_total=Decimal("0"),
+        )])
+        # pdi_items() already excludes a genuine short (quantity<=0); the
+        # identity gate must not add a NEW block for it.
+        assert items_with_unresolved_identity(invoice) == []
+        eligibility = pdi_export_eligibility(invoice, units_for(invoice))
+        assert eligibility.allowed is False  # blocked only because there are zero exportable items
+        assert "no product line items" in (eligibility.blocked_reason or "") or "no extracted line items" in (eligibility.blocked_reason or "")
+
+    # F. Red Bull RB248904 / 611269002461 -> remains EDI-ready from the identifier perspective.
+    def test_f_rb248904_real_upc_remains_edi_ready(self):
+        invoice = self._invoice_with([self._product(description="SF ICED 8.40Z", product_sku="611269002461")])
+        assert items_with_unresolved_identity(invoice) == []
+        eligibility = pdi_export_eligibility(invoice, units_for(invoice))
+        assert eligibility.allowed is True
+
+    # G. Red Bull COCONUT 12OZ LS / 611269321210 -> remains EDI-ready from the identifier perspective.
+    def test_g_coconut_upc_remains_edi_ready(self):
+        invoice = self._invoice_with([self._product(description="COCONUT 12OZ LS", product_sku="611269321210")])
+        assert items_with_unresolved_identity(invoice) == []
+        eligibility = pdi_export_eligibility(invoice, units_for(invoice))
+        assert eligibility.allowed is True
+
+    def test_the_existing_mapping_gate_remains_authoritative_for_a_known_upc(self):
+        # A product with a resolved UPC but no confirmed case mapping must
+        # still be blocked by the pre-existing mapping gate, unaffected by
+        # this change (requirement: the mapping gate stays authoritative).
+        invoice = self._invoice_with([self._product(product_sku="611269002461")])
+        eligibility = pdi_export_eligibility(invoice, units_by_item_code={})
+        assert eligibility.allowed is False
+        assert "mapping" in eligibility.blocked_reason

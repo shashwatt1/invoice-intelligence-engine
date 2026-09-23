@@ -20,9 +20,14 @@ import type {
   BulkProposalDecision,
   DuplicateDecision,
   DuplicateDecisionResult,
+  InvoiceDateCorrection,
+  InvoiceDateCorrectionResult,
   InvoiceTotalsCorrection,
   InvoiceTotalsCorrectionResult,
   LineItemCreate,
+  MappingQueueListParams,
+  MappingQueueRow,
+  MappingQueueSummary,
   ProcessAccepted,
   ProductHistory,
   ProposalDecision,
@@ -36,13 +41,61 @@ import type {
   StoreCreate,
   StoreDirectoryEntry,
   StoreIdentityUpdate,
+  UserAccount,
+  UserRole,
 } from "./types";
+
+/** Sets the httpOnly session cookie on success; never returns a token in
+ * the body. Throws ApiError (401) on wrong credentials or an inactive
+ * account — both report the same message, deliberately. */
+export async function login(username: string, password: string): Promise<UserAccount> {
+  const { data } = await apiClient.post<ApiEnvelope<UserAccount>>("/auth/login", { username, password });
+  return data.data!;
+}
+
+export async function logout(): Promise<void> {
+  await apiClient.post("/auth/logout");
+}
+
+/** The authenticated caller's identity, or throws ApiError (401) if not logged in. */
+export async function me(): Promise<UserAccount> {
+  const { data } = await apiClient.get<ApiEnvelope<UserAccount>>("/auth/me");
+  return data.data!;
+}
+
+/** ADMIN only. */
+export async function listUsers(): Promise<UserAccount[]> {
+  const { data } = await apiClient.get<ApiEnvelope<UserAccount[]>>("/users");
+  return data.data!;
+}
+
+/** ADMIN only — the only way an account is created besides the bootstrap CLI. */
+export async function createUser(username: string, password: string, role: UserRole): Promise<UserAccount> {
+  const { data } = await apiClient.post<ApiEnvelope<UserAccount>>("/users", { username, password, role });
+  return data.data!;
+}
+
+/** ADMIN only. */
+export async function changeUserRole(userId: string, role: UserRole): Promise<UserAccount> {
+  const { data } = await apiClient.patch<ApiEnvelope<UserAccount>>(`/users/${userId}/role`, { role });
+  return data.data!;
+}
+
+/** ADMIN only. */
+export async function setUserActive(userId: string, isActive: boolean): Promise<UserAccount> {
+  const { data } = await apiClient.patch<ApiEnvelope<UserAccount>>(`/users/${userId}/active`, { is_active: isActive });
+  return data.data!;
+}
 
 /** `files` are the photos of ONE invoice in top-to-bottom order (a single
  * PDF or photo is a list of one); the backend reads them as one intake.
  * `storeId` is the store the operator chose up front, if any. Without it
- * the run pauses after text extraction for a person to confirm the store. */
-export async function processInvoice(files: File[], storeId: string | null): Promise<ProcessAccepted> {
+ * the run pauses after text extraction for a person to confirm the store.
+ * The uploader is the authenticated session — there is no field for it here. */
+export async function processInvoice(
+  files: File[],
+  storeId: string | null,
+): Promise<ProcessAccepted> {
   const form = new FormData();
   for (const file of files) form.append("files", file);
   if (storeId) form.append("store_id", storeId);
@@ -210,6 +263,22 @@ export async function getProductHistory(storeId: string, itemCode: string): Prom
   return data.data!;
 }
 
+// ---------------------------------------------------------------------------
+// Requires Mapping — a read-only view over unresolved master-data gaps.
+// Proposing a value happens through confirmCaseMappings above, against
+// whichever affected invoice the manager opens; nothing here writes.
+// ---------------------------------------------------------------------------
+
+export async function listMappingQueue(params: MappingQueueListParams): Promise<Paginated<MappingQueueRow>> {
+  const { data } = await apiClient.get<Paginated<MappingQueueRow>>("/mapping-queue", { params });
+  return data;
+}
+
+export async function getMappingQueueSummary(): Promise<MappingQueueSummary> {
+  const { data } = await apiClient.get<ApiEnvelope<MappingQueueSummary>>("/mapping-queue/summary");
+  return data.data!;
+}
+
 export async function listStores(): Promise<StoreDirectoryEntry[]> {
   const { data } = await apiClient.get<ApiEnvelope<StoreDirectoryEntry[]>>("/stores");
   return data.data!;
@@ -249,6 +318,27 @@ export async function decideDuplicate(
   const { data } = await apiClient.post<ApiEnvelope<DuplicateDecisionResult>>(
     `/invoices/${invoiceId}/items/${sortOrder}/duplicate-decision`,
     decision,
+  );
+  return data.data!;
+}
+
+/** Backend-authoritative cancellation of the document's active processing
+ * attempt. Only valid while a run is genuinely in progress; idempotent.
+ * The actor is the authenticated session (httpOnly cookie) — there is no
+ * request body; a USER can only stop a document they themselves uploaded. */
+export async function stopDocument(documentId: string): Promise<DocumentStatusData> {
+  const { data } = await apiClient.post<ApiEnvelope<DocumentStatusData>>(
+    `/documents/${documentId}/stop`,
+  );
+  return data.data!;
+}
+
+/** Backend-authoritative, recoverable removal from the active workflow.
+ * Never deletes the source or the invoice; idempotent. The actor is the
+ * authenticated session — there is no request body. */
+export async function moveDocumentToBin(documentId: string): Promise<DocumentStatusData> {
+  const { data } = await apiClient.post<ApiEnvelope<DocumentStatusData>>(
+    `/documents/${documentId}/move-to-bin`,
   );
   return data.data!;
 }
@@ -304,6 +394,15 @@ export async function voidLineItem(
     `/invoices/${invoiceId}/items/${sortOrder}`,
     { data: { voided_by: voidedBy, note } },
   );
+  return data.data!;
+}
+
+/** Enters the invoice date read off the document, or records it as unknown (null). */
+export async function correctInvoiceDate(
+  invoiceId: string,
+  body: InvoiceDateCorrection,
+): Promise<InvoiceDateCorrectionResult> {
+  const { data } = await apiClient.patch<ApiEnvelope<InvoiceDateCorrectionResult>>(`/invoices/${invoiceId}/date`, body);
   return data.data!;
 }
 

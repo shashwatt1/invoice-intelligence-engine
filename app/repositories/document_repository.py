@@ -15,6 +15,7 @@ from collections.abc import Sequence
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.document import Document, DocumentStatus
 from app.models.document_page import DocumentPage
@@ -45,6 +46,8 @@ class DocumentRepository:
         file_size_bytes: int,
         file_path: str,
         file_hash: str,
+        uploaded_by: str | None = None,
+        uploaded_by_user_id: uuid.UUID | None = None,
     ) -> Document:
         """Create a new document in UPLOADED state."""
         document = Document(
@@ -53,6 +56,8 @@ class DocumentRepository:
             file_size_bytes=file_size_bytes,
             file_path=file_path,
             file_hash=file_hash,
+            uploaded_by=uploaded_by,
+            uploaded_by_user_id=uploaded_by_user_id,
             status=DocumentStatus.UPLOADED,
         )
         self._session.add(document)
@@ -130,12 +135,25 @@ class DocumentRepository:
         descending: bool = True,
         page: int = 1,
         page_size: int = 20,
+        uploaded_by_user_id: uuid.UUID | None = None,
     ) -> tuple[list[tuple[Document, Invoice | None]], int]:
         """
         Processing history: documents LEFT JOINed to their invoice, so
         failed documents (which never produce an invoice) still appear.
+
+        `uploaded_by_user_id`, when given, restricts the results to that
+        user's own uploads — the USER-role visibility boundary. Omitted
+        entirely for MANAGER/ADMIN, who see every document.
+
+        Invoice.items is eager-loaded (bounded by page_size) so a caller
+        can compute per-row mapping/EDI status without a lazy load per
+        row, which AsyncSession cannot do implicitly anyway.
         """
-        query = select(Document, Invoice).outerjoin(Invoice, Invoice.document_id == Document.id)
+        query = (
+            select(Document, Invoice)
+            .outerjoin(Invoice, Invoice.document_id == Document.id)
+            .options(selectinload(Invoice.items))
+        )
 
         if search:
             pattern = f"%{search.strip()}%"
@@ -148,6 +166,8 @@ class DocumentRepository:
             )
         if status is not None:
             query = query.where(Document.status == status)
+        if uploaded_by_user_id is not None:
+            query = query.where(Document.uploaded_by_user_id == uploaded_by_user_id)
 
         count_query = select(func.count()).select_from(query.subquery())
         total = (await self._session.execute(count_query)).scalar_one()

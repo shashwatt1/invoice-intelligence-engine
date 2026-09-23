@@ -1,16 +1,24 @@
 import { formatPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
+/* Above the review threshold confidence is unremarkable and reads as plain
+   text; colour is reserved for scores a person should look at. */
 function toneFor(score: number): string {
-  if (score >= 0.85) return "text-success";
+  if (score >= 0.85) return "text-foreground";
   if (score >= 0.6) return "text-warning";
   return "text-danger";
 }
 
 function barToneFor(score: number): string {
-  if (score >= 0.85) return "bg-success";
+  if (score >= 0.85) return "bg-brand";
   if (score >= 0.6) return "bg-warning";
   return "bg-danger";
+}
+
+function ringToneFor(score: number): string {
+  if (score >= 0.85) return "text-brand";
+  if (score >= 0.6) return "text-warning";
+  return "text-danger";
 }
 
 /** Composite confidence with a tinted fill bar. */
@@ -51,9 +59,9 @@ export function ConfidenceInline({ score }: { score: number | null | undefined }
       <svg viewBox="0 0 16 16" className="size-4 -rotate-90" aria-hidden>
         <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" className="text-surface-3" />
         <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-                strokeDasharray={`${c * pct} ${c}`} className={toneFor(pct).replace("text-", "text-")} />
+                strokeDasharray={`${c * pct} ${c}`} className={ringToneFor(pct)} />
       </svg>
-      <span className={cn("text-[0.78rem] font-semibold tabular-nums", toneFor(pct))}>{formatPercent(pct, 0)}</span>
+      <span className={cn("text-[0.8rem] font-medium tabular-nums", toneFor(pct))}>{formatPercent(pct, 0)}</span>
     </span>
   );
 }

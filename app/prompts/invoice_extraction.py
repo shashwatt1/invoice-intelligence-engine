@@ -473,6 +473,261 @@ def _derive_v6(base: str) -> str:
 _SYSTEM_PROMPT_V6 = _derive_v6(_SYSTEM_PROMPT_V5)
 
 
+# v7 — the invoice total is not the balance due. On a real 7-line invoice
+# the totals block printed "INVOICE $329.53" (the transaction) and, after a
+# payment received on account, "TOTAL DUE: $0.00" (the balance). v6's only
+# guidance was "grand total must be the printed value", so the model took
+# the due figure — the schema called grand_total "final amount payable" —
+# and the EDI header would have carried $0.00. v7 names the distinction
+# and gives the due figure its own field (amount_due) so the model never
+# has to choose. Everything else reads exactly as v6.
+_RULE_9_V6 = (
+    "9. Subtotal, tax, and grand total must be the printed values, even if the math "
+    "looks inconsistent — flag the inconsistency in `concerns` instead of "
+    "correcting it. "
+)
+_RULE_9_V7 = (
+    "9. Subtotal, tax, and grand total must be the printed values, even if the math "
+    "looks inconsistent — flag the inconsistency in `concerns` instead of "
+    "correcting it. `grand_total` is the INVOICE TRANSACTION TOTAL — the value of "
+    "this invoice (\"Invoice Total\", \"Invoice\", \"Total\", \"Grand Total\"). It is "
+    "NOT the balance still owed. A due/balance figure (\"Total Due\", \"Amount Due\", "
+    "\"Balance Due\") reflects payments, credits or amounts received on account "
+    "and goes in `amount_due`; when the document prints both and they differ, "
+    "`grand_total` is the transaction total, never the due figure. Only when the "
+    "sole printed total is a due/balance figure is that the `grand_total`. "
+)
+
+_V7_EDITS = ((_RULE_9_V6, _RULE_9_V7),)
+
+
+def _derive_v7(base: str) -> str:
+    text = base
+    for old, new in _V7_EDITS:
+        if old not in text:
+            raise RuntimeError("v7 derivation: expected v6 passage not found; v6 text changed?")
+        text = text.replace(old, new, 1)
+    return text
+
+
+_SYSTEM_PROMPT_V7 = _derive_v7(_SYSTEM_PROMPT_V6)
+
+
+# v8 — a pre-tax extended amount is not a tax-inclusive line total. A
+# service invoice (UniFirst 2310090549, RCM, 18 Sep 2026) prints
+# QTY | ITEM | DESCRIPTION | RATE | AMOUNT | TAX | TOTAL, where AMOUNT is
+# the extended amount and TOTAL is AMOUNT + TAX. v7's column table listed
+# "EXT, AMOUNT, TOTAL" as synonyms for the extended line total, so on a
+# layout printing BOTH the model took TOTAL: 12 x 7.16 = 85.92 then
+# contradicted a line_total of 92.01 on every taxed row and the goods no
+# longer summed to the printed subtotal. The canonical model is
+# quantity x unit_price = line_total with tax carried at the header, so
+# v8 names the pre-tax column and gives the row's tax its own field.
+# Everything else reads exactly as v7.
+_COLUMN_TABLE_V7 = (
+    "  EXT, AMOUNT, TOTAL      -> extended line total\n"
+)
+_COLUMN_TABLE_V8 = (
+    "  EXT, AMOUNT, NET AMOUNT  -> extended line total, BEFORE tax\n"
+    "  TOTAL, LINE TOTAL       -> extended total; when the row ALSO prints an\n"
+    "                             AMOUNT (or EXT) column and a TAX column, this\n"
+    "                             column is AMOUNT + TAX and is NOT line_total\n"
+    "  TAX, VAT, GST           -> tax charged on the row -> line_tax, never cost\n"
+)
+
+_TAX_IDENTITY_V7 = (
+    "If (a) fails, you almost certainly took unit_price and line_total from "
+    "DIFFERENT columns of the same row. Re-read the row and pick the price column "
+    "that satisfies the identity.\n"
+)
+_TAX_IDENTITY_V8 = (
+    "If (a) fails, you almost certainly took unit_price and line_total from "
+    "DIFFERENT columns of the same row. Re-read the row and pick the price column "
+    "that satisfies the identity.\n"
+    "\n"
+    "If the column you took line_total from differs from quantity x unit_price by "
+    "the row's TAX figure, you took the tax-inclusive column. line_total is the "
+    "PRE-TAX extended amount; put the row's tax in line_tax and leave tax_amount "
+    "to the totals block.\n"
+)
+
+_V8_EDITS = (
+    (_COLUMN_TABLE_V7, _COLUMN_TABLE_V8),
+    (_TAX_IDENTITY_V7, _TAX_IDENTITY_V8),
+)
+
+
+def _derive_v8(base: str) -> str:
+    text = base
+    for old, new in _V8_EDITS:
+        if text.count(old) != 1:
+            raise RuntimeError("v8 derivation: expected v7 passage not found exactly once; v7 text changed?")
+        text = text.replace(old, new, 1)
+    return text
+
+
+_SYSTEM_PROMPT_V8 = _derive_v8(_SYSTEM_PROMPT_V7)
+
+
+# v9 — which row a quantity belongs to. Vision reads some tables as a
+# columnar stream in which the QTY value precedes the ITEM code rather
+# than the description (UniFirst 2310090549). Two artifacts followed:
+# five vertically adjacent single-digit quantities merged into one token,
+# and a row's printed TOTAL of 2.02 arrived as "202" in the position the
+# next row's quantity would occupy, so it was read as that row's count.
+# Neither is recoverable from the text, so v9 states the attribution rule
+# structurally and tells the model to abstain rather than borrow. It does
+# NOT ask the model to split merged tokens arithmetically: recovering a
+# provable quantity is the deterministic layer's job (Rule E), which acts
+# only when the printed subtotal corroborates the line totals.
+_QUANTITY_RULE_V8 = (
+    "  3. The quantity is the integer at the START of the name row ('2 BUD LIGHT' "
+    "-> 2). A row printed with 0 is quantity 0: keep it, line_total 0, and do not "
+    "read a following annotation such as '-2 SHORT ON TRUCK' or '-1 Out of Stock' "
+    "as the quantity.\n"
+)
+_QUANTITY_RULE_V9 = (
+    "  3. The quantity is the integer at the START of the name row ('2 BUD LIGHT' "
+    "-> 2). A row printed with 0 is quantity 0: keep it, line_total 0, and do not "
+    "read a following annotation such as '-2 SHORT ON TRUCK' or '-1 Out of Stock' "
+    "as the quantity.\n"
+    "  3a. ATTRIBUTE EACH QUANTITY TO ITS OWN ROW. Not every layout puts the "
+    "quantity first in the name row: the quantity column may print its value BEFORE "
+    "the item code, so a columnar stream reads '12 / 622107 / DESCRIPTION / ...'. "
+    "Work out where the QTY column sits from the table's own structure, then take "
+    "each row's quantity from that position — never the trailing money value of the "
+    "row above it. A money value may lose its decimal point in OCR (a printed 4.50 "
+    "arriving as '450'), which makes the last figure of one row look exactly like the count "
+    "of the next; the number of trailing figures each row carries tells you which it "
+    "is. An integer-shaped token sitting immediately before an item code is a "
+    "quantity only if the QTY column is what it occupies.\n"
+    "  3b. Quantities are never concatenated. Adjacent rows in a narrow QTY column "
+    "can be merged by OCR into one long token; that token is not a quantity. When "
+    "you cannot attribute a quantity to its row with confidence, report the row with "
+    "quantity null and a `concerns` entry of reason `ambiguous_column` rather than a "
+    "number you cannot place. A charge row that prints no quantity has quantity null "
+    "— a fixed charge counts nothing, and a neighbouring figure is never its "
+    "quantity.\n"
+)
+
+_V9_EDITS = ((_QUANTITY_RULE_V8, _QUANTITY_RULE_V9),)
+
+
+def _derive_v9(base: str) -> str:
+    text = base
+    for old, new in _V9_EDITS:
+        if text.count(old) != 1:
+            raise RuntimeError("v9 derivation: expected v8 passage not found exactly once; v8 text changed?")
+        text = text.replace(old, new, 1)
+    return text
+
+
+_SYSTEM_PROMPT_V9 = _derive_v9(_SYSTEM_PROMPT_V8)
+
+
+# v10 — a charge row must not inherit the row above's last figure. v9
+# stated the attribution rule, but on a columnar stream a fresh run still
+# gave a fixed charge the token sitting immediately before its item code:
+# the previous row's printed total, whose decimal point OCR had dropped,
+# so it no longer looked like money. v9 left the discriminator in prose;
+# v10 turns it into a procedure the model can actually execute — count the
+# price columns, then ask whether the row above is already complete — and
+# makes a charge row's quantity null by default. Nothing here splits or
+# invents a value: recovering a provable quantity stays deterministic.
+_CHARGE_QTY_V9 = (
+    "rather than a number you cannot place. A charge row that prints no quantity has "
+    "quantity null — a fixed charge counts nothing, and a neighbouring figure is never "
+    "its quantity.\n"
+)
+_CHARGE_QTY_V10 = (
+    "rather than a number you cannot place.\n"
+    "  3c. BEFORE CALLING A TOKEN A QUANTITY, CHECK THE ROW ABOVE. From the table's "
+    "header, count how many figures each complete row carries (for example a rate, an "
+    "extended amount, a tax and a total is four). Walking the stream in order, when you "
+    "meet a bare number in front of an item code, look at the row above it: if that row "
+    "already has its full set of figures, the number is this row's quantity; if that row "
+    "is one short, the number completes the row above and is NOT a quantity. A money "
+    "value that lost its decimal point looks exactly like a small integer, so this count "
+    "is the only reliable test — never the token's appearance.\n"
+    "  3d. CHARGE ROWS COUNT NOTHING. A fixed charge, surcharge, service or delivery row "
+    "bills an amount, not a number of things: a charge row's quantity is null unless the "
+    "QTY column prints one on that row — never a token taken from a neighbouring row, "
+    "and never a figure carried over from the totals block.\n"
+)
+
+_V10_EDITS = ((_CHARGE_QTY_V9, _CHARGE_QTY_V10),)
+
+
+def _derive_v10(base: str) -> str:
+    text = base
+    for old, new in _V10_EDITS:
+        if text.count(old) != 1:
+            raise RuntimeError("v10 derivation: expected v9 passage not found exactly once; v9 text changed?")
+        text = text.replace(old, new, 1)
+    return text
+
+
+_SYSTEM_PROMPT_V10 = _derive_v10(_SYSTEM_PROMPT_V9)
+
+
+# v11 — a vendor's own item number is not a UPC. A real photographed
+# invoice printed both per row: a short vendor code in the ID column
+# (e.g. "RB248904") and, separately, the actual retail barcode printed on
+# its own line below the description (e.g. "611269002461"). v10's rule 10
+# only said "prefer the UPC when both are shown" without saying how to
+# tell them apart, so the model took the ID-column token — the only one
+# it reliably associated with the row — and the generated EDI carried a
+# zero-padded vendor code instead of the barcode, which cannot match an
+# existing product in the downstream system.
+#
+# Two failures compound here, and v11 names both: (1) recognizing that an
+# ID-column code and a separate long digit-only barcode are DIFFERENT
+# identifiers, never one standing in for the other; (2) when the barcode
+# prints on its own line below the description, the photographed layout
+# means it can appear in the raw OCR text closer to the FOLLOWING row's
+# leading numbers than to its own row — so a naive "nearest text" pairing
+# assigns it to the wrong row entirely. v11 tells the model to pair
+# barcodes to rows by DOCUMENT ORDER, extending the same discipline Step
+# 1c already uses for detached price blocks, to this narrower case of a
+# single displaced token per row. No layout or vendor is named.
+_SUPPLIER_ID_RULE_V10 = (
+    "10. product_code: the UPC/barcode or vendor item/SKU printed on this line, "
+    "exactly as printed (keep dashes, leading zeros, letters). Prefer the UPC when "
+    "both are shown. Never infer, look up, or construct a code that is not printed.\n"
+)
+_SUPPLIER_ID_RULE_V11 = (
+    "10. product_code is the retail barcode/UPC ONLY — a long digit-only number, "
+    "typically 11-14 digits. A short or letter-prefixed code printed in an ID/ITEM "
+    "column (a vendor's own item number) is NEVER product_code; that goes in "
+    "supplier_item_id instead. When a row prints both, capture both — product_code "
+    "is the barcode, supplier_item_id is the vendor code — never let one stand in "
+    "for the other. A barcode is sometimes printed on its own line below the "
+    "description rather than beside the row's other figures; in raw OCR text that "
+    "line can then appear to sit closer to the FOLLOWING row's leading numbers than "
+    "to its own row. Match barcodes to rows by the order the rows themselves appear "
+    "on the document — the k-th barcode-shaped token belongs to the k-th product "
+    "row — never by which row's text block it happens to fall nearest to. If no "
+    "barcode is printed for a row, product_code is null: never substitute the "
+    "vendor item number, and never infer, look up, or construct a code that is not "
+    "printed.\n"
+)
+
+_V11_EDITS = ((_SUPPLIER_ID_RULE_V10, _SUPPLIER_ID_RULE_V11),)
+
+
+def _derive_v11(base: str) -> str:
+    text = base
+    for old, new in _V11_EDITS:
+        if text.count(old) != 1:
+            raise RuntimeError("v11 derivation: expected v10 passage not found exactly once; v10 text changed?")
+        text = text.replace(old, new, 1)
+    return text
+
+
+_SYSTEM_PROMPT_V11 = _derive_v11(_SYSTEM_PROMPT_V10)
+
+
+
 _REGISTRY: dict[str, PromptTemplate] = {
     "v1": PromptTemplate(
         version="v1",
@@ -504,9 +759,34 @@ _REGISTRY: dict[str, PromptTemplate] = {
         system_prompt=_SYSTEM_PROMPT_V6,
         build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
     ),
+    "v7": PromptTemplate(
+        version="v7",
+        system_prompt=_SYSTEM_PROMPT_V7,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
+    "v8": PromptTemplate(
+        version="v8",
+        system_prompt=_SYSTEM_PROMPT_V8,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
+    "v9": PromptTemplate(
+        version="v9",
+        system_prompt=_SYSTEM_PROMPT_V9,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
+    "v10": PromptTemplate(
+        version="v10",
+        system_prompt=_SYSTEM_PROMPT_V10,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
+    "v11": PromptTemplate(
+        version="v11",
+        system_prompt=_SYSTEM_PROMPT_V11,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
 }
 
-ACTIVE_VERSION = "v6"
+ACTIVE_VERSION = "v11"
 
 
 def get_prompt(version: str | None = None) -> PromptTemplate:

@@ -17,58 +17,69 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: oklch(0.978 0.003 250);
-  --foreground: oklch(0.19 0.018 262);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.19 0.018 262);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.19 0.018 262);
-  --primary: oklch(0.46 0.2 275);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.958 0.005 253);
-  --secondary-foreground: oklch(0.3 0.02 262);
-  --muted: oklch(0.958 0.005 253);
-  --muted-foreground: oklch(0.52 0.018 262);
-  --accent: oklch(0.945 0.025 275);
-  --accent-foreground: oklch(0.4 0.19 275);
-  --destructive: oklch(0.5 0.19 27);
+  /* Brand — taken from the supplied mark: deep blue #025880 on cream #F9EEE4. */
+  --brand: oklch(0.42 0.095 235);
+  --brand-deep: oklch(0.27 0.06 238);
+  --brand-deeper: oklch(0.22 0.05 240);
+  --brand-cream: oklch(0.955 0.012 78);
+
+  /* Surfaces: one warm ivory canvas, paper for content, and the navy command surface.
+     Hierarchy comes from tone, not from borders. */
+  --background: oklch(0.958 0.014 82);
+  --foreground: oklch(0.21 0.022 245);
+  --card: oklch(0.992 0.005 85);
+  --card-foreground: oklch(0.21 0.022 245);
+  --popover: oklch(0.992 0.005 85);
+  --popover-foreground: oklch(0.21 0.022 245);
+  --primary: var(--brand);
+  --primary-foreground: oklch(0.985 0.004 80);
+  --secondary: oklch(0.935 0.014 82);
+  --secondary-foreground: oklch(0.3 0.02 245);
+  --muted: oklch(0.935 0.014 82);
+  --muted-foreground: oklch(0.49 0.022 245);
+  --accent: oklch(0.92 0.03 232);
+  --accent-foreground: oklch(0.34 0.09 235);
+  --destructive: oklch(0.48 0.14 25);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.905 0.007 253);
-  --input: oklch(0.885 0.008 253);
-  --ring: oklch(0.46 0.2 275);
-  --radius: 0.5rem;
+  --border: oklch(0.885 0.014 82);
+  --input: oklch(0.85 0.016 82);
+  --ring: var(--brand);
+  --radius: 0.4rem;
 
-  /* second-level surface: table headers, rails, footers */
-  --surface-2: oklch(0.968 0.004 253);
-  --surface-3: oklch(0.95 0.005 253);
+  /* second-level surfaces: table headers, rails, inset panels */
+  --surface-2: oklch(0.972 0.01 84);
+  --surface-3: oklch(0.925 0.014 82);
 
-  --success: oklch(0.5 0.12 160);
-  --success-soft: oklch(0.962 0.03 165);
-  --warning: oklch(0.56 0.13 65);
-  --warning-soft: oklch(0.97 0.032 85);
-  --danger: oklch(0.5 0.19 27);
-  --danger-soft: oklch(0.962 0.022 20);
-  --info: oklch(0.48 0.17 262);
-  --info-soft: oklch(0.958 0.022 255);
+  /* Semantic tones live inside the navy/ivory world: slate-teal, ochre, brick. */
+  --success: oklch(0.46 0.07 180);
+  --success-soft: oklch(0.945 0.02 180);
+  --warning: oklch(0.55 0.1 70);
+  --warning-soft: oklch(0.955 0.03 82);
+  --danger: oklch(0.48 0.14 25);
+  --danger-soft: oklch(0.95 0.025 25);
+  --info: var(--brand);
+  --info-soft: oklch(0.935 0.025 232);
 
-  --chart-1: oklch(0.46 0.2 275);
-  --chart-2: oklch(0.5 0.12 160);
-  --chart-3: oklch(0.56 0.13 65);
-  --chart-4: oklch(0.5 0.19 27);
-  --chart-5: oklch(0.6 0.02 262);
+  /* Charts are navy tints with ochre for attention — never green/orange. */
+  --chart-1: var(--brand);
+  --chart-2: oklch(0.55 0.1 70);
+  --chart-3: oklch(0.62 0.05 235);
+  --chart-4: oklch(0.48 0.14 25);
+  --chart-5: oklch(0.8 0.02 235);
 
-  --sidebar: oklch(0.99 0.002 250);
-  --sidebar-foreground: oklch(0.3 0.02 262);
-  --sidebar-primary: oklch(0.46 0.2 275);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.94 0.02 275);
-  --sidebar-accent-foreground: oklch(0.36 0.18 275);
-  --sidebar-border: oklch(0.905 0.007 253);
-  --sidebar-ring: oklch(0.46 0.2 275);
+  /* The sidebar is the branded dark surface. */
+  --sidebar: var(--brand-deep);
+  --sidebar-foreground: oklch(0.86 0.02 80);
+  --sidebar-primary: oklch(0.985 0.004 80);
+  --sidebar-primary-foreground: var(--brand-deep);
+  --sidebar-accent: oklch(1 0 0 / 0.1);
+  --sidebar-accent-foreground: oklch(0.985 0.004 80);
+  --sidebar-border: oklch(1 0 0 / 0.1);
+  --sidebar-ring: oklch(0.8 0.05 230);
 
-  --shadow-sm: 0 1px 2px oklch(0.19 0.018 262 / 0.06), 0 1px 1px oklch(0.19 0.018 262 / 0.03);
-  --shadow-md: 0 4px 12px -2px oklch(0.19 0.018 262 / 0.08), 0 2px 4px oklch(0.19 0.018 262 / 0.04);
-  --shadow-lg: 0 16px 40px -12px oklch(0.19 0.018 262 / 0.18), 0 4px 12px oklch(0.19 0.018 262 / 0.06);
+  --shadow-sm: 0 1px 2px oklch(0.2 0.02 245 / 0.06), 0 1px 1px oklch(0.2 0.02 245 / 0.03);
+  --shadow-md: 0 4px 12px -2px oklch(0.2 0.02 245 / 0.08), 0 2px 4px oklch(0.2 0.02 245 / 0.04);
+  --shadow-lg: 0 16px 40px -12px oklch(0.2 0.02 245 / 0.18), 0 4px 12px oklch(0.2 0.02 245 / 0.06);
 }
 
 @theme inline {
@@ -96,6 +107,10 @@
   --color-ring: var(--ring);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
+  --color-brand: var(--brand);
+  --color-brand-deep: var(--brand-deep);
+  --color-brand-deeper: var(--brand-deeper);
+  --color-brand-cream: var(--brand-cream);
 
   --color-success: var(--success);
   --color-success-soft: var(--success-soft);
@@ -182,13 +197,16 @@
 @layer components {
   /* Typography scale — one vocabulary for every page. */
   .t-page-title {
-    @apply text-[1.35rem] leading-tight font-semibold tracking-tight text-foreground;
+    @apply text-[1.7rem] leading-tight font-semibold tracking-[-0.022em] text-foreground;
+  }
+  .t-display {
+    @apply text-[2.25rem] leading-none font-semibold tracking-[-0.03em];
   }
   .t-section {
-    @apply text-[0.92rem] leading-snug font-semibold text-foreground;
+    @apply text-[0.95rem] leading-snug font-semibold tracking-[-0.01em] text-foreground;
   }
   .t-eyebrow {
-    @apply text-[0.66rem] font-semibold tracking-[0.08em] text-muted-foreground uppercase;
+    @apply text-[0.7rem] font-medium tracking-[0.02em] text-muted-foreground;
   }
   .t-label {
     @apply text-[0.74rem] font-medium text-muted-foreground;
@@ -197,7 +215,11 @@
     @apply text-[0.72rem] text-muted-foreground;
   }
   .t-metric {
-    @apply text-[1.6rem] leading-none font-semibold tracking-tight tabular-nums text-foreground;
+    @apply text-[1.6rem] leading-none font-semibold tracking-[-0.02em] tabular-nums text-foreground;
+  }
+  /* Editorial figure: the number a section is about. */
+  .t-figure {
+    @apply text-[2.6rem] leading-none font-semibold tracking-[-0.035em] tabular-nums;
   }
   .t-money {
     @apply font-medium tabular-nums;
@@ -206,12 +228,24 @@
     @apply font-mono text-[0.78rem] tracking-tight;
   }
 
-  /* Surfaces: hairline ring, no drop shadow unless it lifts on hover. */
+  /* Paper on ivory: a tonal step, no outline. */
   .surface {
-    @apply rounded-lg bg-card ring-1 ring-foreground/8;
+    @apply rounded-lg bg-card;
+  }
+  /* An inset, quieter region inside paper or on the canvas. */
+  .panel {
+    @apply rounded-md bg-surface-2;
+  }
+  /* A section that is simply a region of the canvas: a divider, no box. */
+  .band {
+    @apply border-t border-border pt-5;
+  }
+  /* The branded dark command surface. */
+  .dark-surface {
+    @apply rounded-lg bg-brand-deep text-brand-cream;
   }
   .surface-hover {
-    @apply transition-[box-shadow,transform,ring-color] duration-200 ease-out hover:shadow-md hover:ring-foreground/12;
+    @apply transition-[box-shadow,transform,background-color] duration-200 ease-out hover:shadow-md;
   }
   .row-hover {
     @apply transition-colors duration-150 hover:bg-surface-2;

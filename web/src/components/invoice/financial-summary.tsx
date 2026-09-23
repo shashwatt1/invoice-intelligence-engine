@@ -8,7 +8,9 @@ import { formatMoney } from "@/lib/format";
  * figures are computed from the persisted lines so a reviewer can see
  * at a glance whether the header and the lines agree.
  */
-export function FinancialSummary({ detail, by }: { detail: InvoiceDetail; by: string }) {
+export function FinancialSummary({
+  detail, by, readOnly = false,
+}: { detail: InvoiceDetail; by: string; readOnly?: boolean }) {
   const products = detail.line_items.filter((i) => i.line_type === "product");
   const merchandise = products.reduce((sum, i) => sum + (i.unit_price ?? 0) * i.quantity, 0);
   const deposits = products.reduce((sum, i) => sum + (i.unit_deposit ?? 0) * i.quantity, 0);
@@ -20,15 +22,15 @@ export function FinancialSummary({ detail, by }: { detail: InvoiceDetail; by: st
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] max-md:grid-cols-1">
         <div className="px-5 py-4">
           <div className="t-eyebrow mb-2">Printed totals</div>
-          <EditableTotal detail={detail} field="subtotal" by={by} />
-          <EditableTotal detail={detail} field="discount_amount" by={by} />
-          <EditableTotal detail={detail} field="deposit_total" by={by} />
-          <EditableTotal detail={detail} field="fuel_surcharge" by={by} />
-          <EditableTotal detail={detail} field="tax_amount" by={by} />
+          <EditableTotal detail={detail} field="subtotal" by={by} readOnly={readOnly} />
+          <EditableTotal detail={detail} field="discount_amount" by={by} readOnly={readOnly} />
+          <EditableTotal detail={detail} field="deposit_total" by={by} readOnly={readOnly} />
+          <EditableTotal detail={detail} field="fuel_surcharge" by={by} readOnly={readOnly} />
+          <EditableTotal detail={detail} field="tax_amount" by={by} readOnly={readOnly} />
           <div className="mt-2 border-t pt-2">
-            <EditableTotal detail={detail} field="grand_total" by={by} emphasized />
+            <EditableTotal detail={detail} field="grand_total" by={by} emphasized readOnly={readOnly} />
           </div>
-          <p className="t-meta mt-2">Click a figure to correct it; the extracted value stays in the history.</p>
+          {!readOnly ? <p className="t-meta mt-2">Click a figure to correct it; the extracted value stays in the history.</p> : null}
         </div>
         <div className="border-l bg-surface-2 px-5 py-4 max-md:border-t max-md:border-l-0">
           <div className="t-eyebrow mb-2">From the {products.length} product lines</div>

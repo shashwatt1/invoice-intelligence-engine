@@ -194,18 +194,24 @@ class TestPdiExport:
         assert detail_line[12:37].strip() == "NORTHWIND LAGER 12PK CAN"
         assert detail_line[58:62] == "0003"  # quantity 3
 
-    async def test_missing_product_code_produces_blank_item_code(
+    async def test_missing_product_code_blocks_pdi_export_as_unresolved_identity(
         self, api_client  # noqa: F811
     ):
-        # Default fixture line item has no product_code — proves the
-        # formatter degrades safely rather than failing when OCR/the model
-        # found no code on the document.
+        # Superseded contract (kept in history, not behavior): a codeless
+        # line used to export with the blank-item-code convention. That
+        # let an unresolved product identity reach a real PDI file with
+        # no way to product-match it — closed by
+        # items_with_unresolved_identity(): a product row with no
+        # canonical UPC/item code must not be EDI-ready. Default fixture
+        # line item has no product_code, so it must now be blocked.
         invoice_id = await processed_invoice_id(api_client)
         response = await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
         )
-        detail_line = response.text.splitlines()[1]
-        assert detail_line[1:12] == "00000" + " " * 6
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error"]["error_code"] == "ERR_VALIDATION_FAILED"
+        assert "resolved UPC" in body["error"]["message"]
 
     async def test_pdi_export_omits_trailer_records(self, api_client):  # noqa: F811
         invoice_id = await processed_invoice_id(api_client)
@@ -216,19 +222,23 @@ class TestPdiExport:
         assert "CPPT" not in response.text
 
     async def test_cppt_not_emitted_even_with_tax_amount_present(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         # A prior CPPT-from-tax_amount mapping was reverted: cross-file
         # analysis of real accepted PDI files showed CPPT tracks
         # cigarette-carton volume, not a generic tax total
         # (docs/PDI_DATA_CONTRACT.md §2.2) — so a present tax_amount must
-        # NOT produce a CPPT trailer through the real pipeline.
+        # NOT produce a CPPT trailer through the real pipeline. A resolved
+        # product_code (+ confirmed mapping) is given here only so the
+        # export is PDI-eligible at all — this test is about the CPPT/tax
+        # relationship, not product identity.
         from app.api.v1.invoices import get_pipeline
 
         taxed_invoice = extracted_invoice(
             line_items=[
                 ExtractedLineItem(
-                    description="Blue Widget", quantity=2.0, unit_price=9.45, line_total=18.9,
+                    description="Blue Widget", product_code="999000000027",
+                    quantity=2.0, unit_price=9.45, line_total=18.9,
                 )
             ],
             subtotal=18.9, tax_amount=7.78, grand_total=26.68,
@@ -241,6 +251,7 @@ class TestPdiExport:
             filename="taxed-invoice.pdf",
         )
         status = (await api_client.get(accepted["status_url"])).json()["data"]
+        await confirm_mapping(api_client, db_session, status["invoice_id"], item_code="99900000002")
 
         response = await api_client.get(
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
@@ -249,11 +260,33 @@ class TestPdiExport:
         assert "CPPT" not in response.text
         assert "CFUE" not in response.text
 
-    async def test_repeated_pdi_export_is_byte_identical(self, api_client):  # noqa: F811
+    async def test_repeated_pdi_export_is_byte_identical(
+        self, api_client, app, db_session  # noqa: F811
+    ):
         # Formatter is frozen pending real PDI validation — the property
         # that validation depends on is that re-exporting the same,
-        # already-persisted invoice never changes a single byte.
-        invoice_id = await processed_invoice_id(api_client)
+        # already-persisted invoice never changes a single byte. Needs a
+        # resolved product_code (+ confirmed mapping) to be PDI-eligible
+        # at all; this test isn't about product identity.
+        from app.api.v1.invoices import get_pipeline
+
+        sample_invoice = extracted_invoice(
+            line_items=[ExtractedLineItem(
+                description="Blue Widget", product_code="999000000034",
+                quantity=2.0, unit_price=9.45, line_total=18.9,
+            )],
+        )
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(sample_invoice)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["repeat invoice " + "pad " * 300]),
+            filename="repeat-invoice.pdf",
+        )
+        status = (await api_client.get(accepted["status_url"])).json()["data"]
+        invoice_id = status["invoice_id"]
+        await confirm_mapping(api_client, db_session, invoice_id, item_code="99900000003")
+
         first = await api_client.get(
             f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"}
         )
@@ -324,18 +357,21 @@ class TestPdiExport:
         assert detail_line[62:70] == "0" * 8  # cost tail: placeholder, never fabricated
 
     async def test_review_required_invoice_with_items_can_be_exported_as_pdi(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         # REVIEW_REQUIRED invoices are eligible as long as they have usable
         # extracted data — the frontend is responsible for confirming with
         # the user first; the backend's job is just to allow the request
         # once that's happened. See export_service.pdi_export_eligibility.
+        # A resolved product_code (+ confirmed mapping) is given so the
+        # invoice is PDI-eligible on the identity/mapping axis too — this
+        # test is specifically about the REVIEW_REQUIRED status rule.
         from app.api.v1.invoices import get_pipeline
 
         unreviewed = extracted_invoice(
             line_items=[ExtractedLineItem(
-                description="Mismatched item", quantity=2.0,
-                unit_price=5.0, line_total=18.9,  # 2 x 5.0 != 18.9
+                description="Mismatched item", product_code="999000000041",
+                quantity=2.0, unit_price=5.0, line_total=18.9,  # 2 x 5.0 != 18.9
             )],
         )
         app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
@@ -347,6 +383,7 @@ class TestPdiExport:
         )
         status = (await api_client.get(accepted["status_url"])).json()["data"]
         assert status["status"] == "REVIEW_REQUIRED"
+        await confirm_mapping(api_client, db_session, status["invoice_id"], item_code="99900000004")
 
         response = await api_client.get(
             f"/api/v1/invoices/{status['invoice_id']}/export", params={"format": "pdi"}
@@ -387,14 +424,33 @@ class TestPdiExport:
         assert "no extracted line items" in body["error"]["message"]
 
     async def test_invoice_detail_exposes_pdi_export_eligibility(
-        self, api_client, app  # noqa: F811
+        self, api_client, app, db_session  # noqa: F811
     ):
         # The frontend reads these fields instead of re-deriving the rule,
         # so it can never drift from what the export endpoint actually does.
+        # Both invoices below get a resolved product_code (+ confirmed
+        # mapping) so identity/mapping aren't what's under test here — this
+        # test is about the status-driven allowed/requires_confirmation
+        # fields.
         from app.api.v1.invoices import get_pipeline
 
         # VALIDATED: allowed, no confirmation needed.
-        invoice_id = await processed_invoice_id(api_client)
+        validated = extracted_invoice(
+            line_items=[ExtractedLineItem(
+                description="Blue Widget", product_code="999000000058",
+                quantity=2.0, unit_price=9.45, line_total=18.9,
+            )],
+        )
+        app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
+            structuring_service=FakeStructuring(validated)
+        )
+        accepted = await process_file(
+            api_client, content=build_pdf(["validated invoice " + "pad " * 300]),
+            filename="validated.pdf",
+        )
+        status0 = (await api_client.get(accepted["status_url"])).json()["data"]
+        invoice_id = status0["invoice_id"]
+        await confirm_mapping(api_client, db_session, invoice_id, item_code="99900000005")
         detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
         assert detail["status"] == "VALIDATED"
         assert detail["pdi_export_allowed"] is True
@@ -404,7 +460,8 @@ class TestPdiExport:
         # REVIEW_REQUIRED with items: allowed, but flagged for confirmation.
         unreviewed = extracted_invoice(
             line_items=[ExtractedLineItem(
-                description="Mismatched item", quantity=2.0, unit_price=5.0, line_total=18.9,
+                description="Mismatched item", product_code="999000000065",
+                quantity=2.0, unit_price=5.0, line_total=18.9,
             )],
         )
         app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
@@ -415,6 +472,7 @@ class TestPdiExport:
             filename="unreviewed2.pdf",
         )
         status = (await api_client.get(accepted["status_url"])).json()["data"]
+        await confirm_mapping(api_client, db_session, status["invoice_id"], item_code="99900000006")
         detail = (await api_client.get(f"/api/v1/invoices/{status['invoice_id']}")).json()["data"]
         assert detail["status"] == "REVIEW_REQUIRED"
         assert detail["pdi_export_allowed"] is True

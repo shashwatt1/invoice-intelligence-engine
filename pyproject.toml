@@ -42,7 +42,7 @@ dependencies = [
     # Utilities
     "structlog>=24.1.0",         # Structured logging
     "python-jose[cryptography]>=3.3.0",
-    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.0.0",              # password hashing (see app/core/security.py — not passlib, see its docstring)
     "httpx>=0.27.0",             # Async HTTP client (testing + future integrations)
     "tenacity>=8.3.0",           # Retry logic
 ]

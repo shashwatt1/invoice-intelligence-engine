@@ -318,27 +318,56 @@ def _checks(passed: int, failed: int) -> list[CheckResult]:
 
 
 class TestConfidenceScoring:
-    def test_weighted_formula(self):
+    """
+    The composite is EXTRACTION confidence — OCR and the model's own
+    signal — and nothing else. It used to fold in a 0.30 weight of the
+    validation pass ratio, so one unrelated failed check (a missing date)
+    dragged the score down and read as a bad extraction. Validation keeps
+    its own decision and review reasons; the pass ratio is still reported
+    in the breakdown, it just no longer moves the number.
+    """
+
+    def test_weighted_formula_uses_extraction_signals_only(self):
         breakdown = compute_confidence(0.9, 0.8, _checks(passed=3, failed=1))
-        expected = 0.30 * 0.9 + 0.40 * 0.8 + 0.30 * 0.75
+        expected = (0.30 * 0.9 + 0.40 * 0.8) / 0.70
         assert breakdown.composite == pytest.approx(expected, abs=1e-4)
-        assert breakdown.weights == {"ocr": 0.3, "ai": 0.4, "validation": 0.3}
+        assert breakdown.weights == {"ocr": pytest.approx(0.4286, abs=1e-4), "ai": pytest.approx(0.5714, abs=1e-4), "validation": 0.0}
+        assert breakdown.validation_score == pytest.approx(0.75)   # still reported
 
     def test_missing_ai_signal_renormalizes_weights(self):
         breakdown = compute_confidence(1.0, None, _checks(passed=4, failed=0))
-        # (0.30×1.0 + 0.30×1.0) / 0.60 — a perfect invoice isn't penalized
         assert breakdown.composite == pytest.approx(1.0)
         assert breakdown.weights["ai"] == 0.0
-        assert breakdown.weights["ocr"] == pytest.approx(0.5)
+        assert breakdown.weights["ocr"] == pytest.approx(1.0)
 
-    def test_failed_checks_drag_score_down(self):
+    def test_failed_checks_do_not_move_extraction_confidence(self):
         clean = compute_confidence(1.0, 0.95, _checks(passed=8, failed=0))
         dirty = compute_confidence(1.0, 0.95, _checks(passed=4, failed=4))
-        assert dirty.composite < clean.composite
+        assert dirty.composite == clean.composite
         assert dirty.validation_score == pytest.approx(0.5)
+        assert clean.validation_score == pytest.approx(1.0)
 
     def test_no_signals_scores_zero(self):
         assert compute_confidence(None, None, []).composite == 0.0
+
+    def test_missing_invoice_date_is_a_review_reason_not_a_confidence_penalty(self):
+        # Two identical extractions, one without a date: same extraction
+        # confidence; only the decision and its reasons differ.
+        dated = validate(invoice(confidence=0.95))                       # fixture's own printed date
+        undated = validate(invoice(invoice_date=None, confidence=0.95))
+        assert dated.report.decision is ProcessingDecision.VALIDATED
+        assert undated.report.decision is ProcessingDecision.REVIEW_REQUIRED
+        assert any(r.startswith("INVOICE_DATE_VALID") for r in undated.report.review_reasons)
+        assert undated.report.confidence.composite == dated.report.confidence.composite
+        assert undated.invoice.invoice_date is None   # never inferred
+
+    def test_a_genuinely_unreliable_extraction_still_routes_to_review(self):
+        # A weak model signal fails the threshold on its own — validation
+        # checks may all pass and the invoice still needs a person.
+        result = validate(invoice(confidence=0.3))
+        assert result.report.confidence.composite < 0.85
+        assert result.report.decision is ProcessingDecision.REVIEW_REQUIRED
+        assert any("below the" in r for r in result.report.review_reasons)
 
     def test_ai_confidence_falls_back_to_item_mean(self):
         result = validate(
@@ -418,4 +447,41 @@ class TestGrandTotalDepositConventions:
         result = self._check(subtotal="1000.00", deposit_total="50.00",
                              fuel_surcharge="10.00", discount_amount="25.00",
                              grand_total="985.00")
+        assert result.status.value == "PASSED"
+
+
+class TestZeroGrandTotalAgainstRealGoods:
+    """
+    Red Bull 2035546957: subtotal 329.53 (= Σ line totals, discount already
+    net), printed INVOICE 329.53, printed TOTAL DUE 0.00. With the due figure
+    read as the grand total the check must FAIL (validation is right to
+    refuse it) and tell the reviewer what a zero total on a stocked invoice
+    usually is. With the transaction total it passes — the discount is
+    already inside the net subtotal, which is one of the accepted conventions.
+    """
+
+    def _check(self, **kwargs):
+        from app.services.validation.checks import check_grand_total_math
+
+        invoice = NormalizedInvoice(
+            **{k: (Decimal(str(v)) if v is not None else None) for k, v in kwargs.items()}
+        )
+        return check_grand_total_math(invoice, Decimal("0.02"))[0]
+
+    def test_the_due_figure_read_as_grand_total_fails_and_says_why(self):
+        result = self._check(subtotal="329.53", discount_amount="56.00", deposit_total="0",
+                             tax_amount="0", grand_total="0.00")
+        assert result.status.value == "FAILED"
+        assert "balance due after payment" in result.message
+        assert result.actual == "0.00"
+
+    def test_the_printed_transaction_total_passes(self):
+        result = self._check(subtotal="329.53", discount_amount="56.00", deposit_total="0",
+                             tax_amount="0", grand_total="329.53")
+        assert result.status.value == "PASSED"
+        assert "discount already in subtotal" in result.message
+
+    def test_a_genuinely_zero_invoice_is_not_accused(self):
+        # No goods, nothing owed: the ordinary message, not the balance-due hint.
+        result = self._check(subtotal="0.00", grand_total="0.00")
         assert result.status.value == "PASSED"

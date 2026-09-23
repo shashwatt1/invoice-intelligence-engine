@@ -1,5 +1,5 @@
-import { Check, ChevronRight, Loader2 } from "lucide-react";
-import type { ReactNode } from "react";
+import { Check, Loader2 } from "lucide-react";
+import type { CSSProperties, ReactNode } from "react";
 
 import type { Tone } from "@/lib/status";
 import { cn } from "@/lib/utils";
@@ -14,46 +14,65 @@ export type PipelineStage = {
   state?: "done" | "active" | "blocked" | "idle";
 };
 
-const DOT: Record<Tone, string> = {
-  success: "bg-success",
-  warning: "bg-warning",
-  danger: "bg-danger",
-  info: "bg-info",
-  neutral: "bg-muted-foreground/40",
+type State = NonNullable<PipelineStage["state"]>;
+type Variant = "light" | "dark";
+
+const NODE: Record<Variant, Record<State, string>> = {
+  light: {
+    done: "border-brand bg-brand text-white",
+    active: "border-brand bg-card text-brand",
+    blocked: "border-warning bg-warning text-white",
+    idle: "border-border bg-card text-muted-foreground",
+  },
+  dark: {
+    done: "border-brand-cream bg-brand-cream text-brand-deep",
+    active: "border-brand-cream bg-transparent text-brand-cream",
+    blocked: "border-amber-300 bg-amber-300 text-brand-deep",
+    idle: "border-white/25 bg-transparent text-white/40",
+  },
+};
+
+const VALUE_TONE: Record<Variant, Record<Tone, string>> = {
+  light: { success: "text-foreground", warning: "text-warning", danger: "text-danger", info: "text-brand", neutral: "text-foreground" },
+  dark: { success: "text-white", warning: "text-amber-300", danger: "text-red-300", info: "text-white", neutral: "text-white" },
 };
 
 /**
- * The processing pipeline as a horizontal strip: UPLOAD → OCR →
- * EXTRACTION → VALIDATION → MASTER DATA → EDI, each with the real count
- * or state, or an explicit "not available" when the API has none.
+ * The processing pipeline as a rail: one line, a node per stage, the real
+ * count beneath each — or an explicit "not available" when the API has
+ * none. The line is the composition; there are no cells.
  */
-export function PipelineStrip({ stages, dense = false }: { stages: PipelineStage[]; dense?: boolean }) {
+export function PipelineStrip({ stages, dense = false, variant = "light" }: { stages: PipelineStage[]; dense?: boolean; variant?: Variant }) {
+  const dark = variant === "dark";
   return (
-    <ol className={cn("grid gap-px overflow-hidden rounded-lg bg-border ring-1 ring-foreground/8", `grid-cols-${stages.length}`)}
-        style={{ gridTemplateColumns: `repeat(${stages.length}, minmax(0, 1fr))` }}
-        aria-label="Processing pipeline">
+    <ol className={cn("relative grid grid-cols-[repeat(var(--cols),minmax(0,1fr))] max-md:grid-cols-3 max-md:gap-y-5", dense ? "gap-2" : "gap-3")}
+        style={{ "--cols": stages.length } as CSSProperties}
+        aria-label="Processing pipeline" data-testid="process-rail">
       {stages.map((stage, index) => {
+        const state = stage.state ?? "idle";
         const tone = stage.tone ?? "neutral";
+        const last = index === stages.length - 1;
         return (
-          <li key={stage.key} className={cn("relative flex min-w-0 flex-col bg-card", dense ? "px-3 py-2.5" : "px-4 py-3")}
-              data-state={stage.state ?? "idle"}>
-            <div className="flex items-center gap-1.5">
-              <span className={cn("t-eyebrow truncate")}>{stage.label}</span>
-              {stage.state === "done" ? <Check className="size-3 text-success" aria-label="complete" /> : null}
-              {stage.state === "active" ? <Loader2 className="size-3 animate-spin text-info" aria-label="in progress" /> : null}
-              {index < stages.length - 1 ? (
-                <ChevronRight className="absolute top-1/2 -right-1.5 z-10 size-3 -translate-y-1/2 text-muted-foreground/50" aria-hidden />
-              ) : null}
-            </div>
-            <div className={cn("mt-1 flex items-baseline gap-2", dense ? "text-[1rem]" : "text-[1.15rem]", "leading-none font-semibold tabular-nums")}>
-              {stage.value === null ? <span className="text-[0.78rem] font-normal text-muted-foreground">not available</span> : stage.value}
-            </div>
-            {stage.hint ? (
-              <div className="t-meta mt-1 flex items-center gap-1.5 truncate">
-                <span className={cn("size-1.5 shrink-0 rounded-full", DOT[tone])} aria-hidden />
-                <span className="truncate">{stage.hint}</span>
-              </div>
+          <li key={stage.key} className="relative min-w-0" data-state={state}>
+            {/* The rail segment leading to the next node. */}
+            {!last ? (
+              <span
+                className={cn("absolute top-[9px] right-0 left-[18px] h-px", state === "done" || state === "active" ? (dark ? "bg-brand-cream/40" : "bg-brand/50") : (dark ? "bg-white/15" : "bg-border"))}
+                aria-hidden
+              />
             ) : null}
+            <span className={cn("relative z-10 flex size-[19px] items-center justify-center rounded-full border-[1.5px]", NODE[variant][state])} aria-hidden={state === "idle" || state === "blocked"}>
+              {state === "done" ? <Check className="size-3" strokeWidth={2.6} aria-label="complete" /> : null}
+              {state === "active" ? <Loader2 className="size-3 animate-spin" aria-label="in progress" /> : null}
+              {state === "blocked" ? <span className={cn("size-1.5 rounded-full", dark ? "bg-brand-deep" : "bg-white")} /> : null}
+            </span>
+            <div className={cn("mt-2.5 pr-3", dense && "mt-2")}>
+              <div className={cn("truncate text-[0.74rem] font-medium", dark ? "text-brand-cream/60" : "text-muted-foreground")}>{stage.label}</div>
+              <div className={cn("mt-0.5 leading-none font-semibold tracking-[-0.02em] tabular-nums", dense ? "text-[1.05rem]" : "text-[1.35rem]", VALUE_TONE[variant][tone])}>
+                {stage.value === null ? <span className={cn("text-[0.78rem] font-normal tracking-normal", dark ? "text-brand-cream/50" : "text-muted-foreground")}>not available</span> : stage.value}
+              </div>
+              {stage.hint ? <div className={cn("mt-1 truncate text-[0.72rem]", dark ? "text-brand-cream/50" : "text-muted-foreground")}>{stage.hint}</div> : null}
+            </div>
           </li>
         );
       })}

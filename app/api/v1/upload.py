@@ -25,6 +25,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import JSONResponse
 
+from app.core.dependencies import require_authenticated_user
 from app.core.logging import get_logger
 from app.schemas.base import APIResponse
 from app.schemas.upload import UploadResponse
@@ -32,7 +33,9 @@ from app.services.storage_service import get_storage_service
 from app.services.upload_service import UploadService
 
 logger = get_logger(__name__)
-router = APIRouter(tags=["Upload"])
+# Superseded by POST /invoices/process, but it still writes a real file
+# to storage, so it takes a session like every other write endpoint.
+router = APIRouter(tags=["Upload"], dependencies=[Depends(require_authenticated_user)])
 
 
 def get_upload_service() -> UploadService:

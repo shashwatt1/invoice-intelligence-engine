@@ -5,6 +5,7 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 
 import { CommandBar } from "./command-bar";
 import { Sidebar } from "./sidebar";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
 
 const COLLAPSED_KEY = "ii.sidebar.collapsed";
@@ -18,6 +19,7 @@ const CRUMBS: { match: RegExp; trail: { label: string; to?: string }[] }[] = [
   { match: /^\/data-review\/proposals\//, trail: [{ label: "Master Data Review", to: "/data-review" }, { label: "Proposal" }] },
   { match: /^\/data-review\/products\//, trail: [{ label: "Master Data Review", to: "/data-review" }, { label: "Product history" }] },
   { match: /^\/data-review/, trail: [{ label: "Master Data Review" }] },
+  { match: /^\/requires-mapping/, trail: [{ label: "Requires Mapping" }] },
   { match: /^\/stores/, trail: [{ label: "Stores" }] },
   { match: /^\/settings/, trail: [{ label: "Settings" }] },
 ];
@@ -63,13 +65,16 @@ export function AppShell() {
   }, []);
 
   const trail = CRUMBS.find((c) => c.match.test(location.pathname))?.trail ?? [];
+  // On a phone the rail is always icons-only; the stored preference applies above that.
+  const narrow = useMediaQuery("(max-width: 767px)");
+  const railCollapsed = collapsed || narrow;
 
   return (
     <MotionConfig reducedMotion="user">
       <div className="min-h-screen">
-        <Sidebar collapsed={collapsed} onToggle={toggle} />
-        <div className={cn("transition-[padding] duration-200 ease-out", collapsed ? "pl-16" : "pl-60")}>
-          <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b bg-background/85 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+        <Sidebar collapsed={railCollapsed} onToggle={toggle} />
+        <div className={cn("transition-[padding] duration-200 ease-out", railCollapsed ? "pl-16" : "pl-60")}>
+          <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border/70 bg-background/90 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/75 max-md:px-4">
             <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-[0.8rem]">
               {trail.map((crumb, index) => (
                 <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
@@ -85,7 +90,7 @@ export function AppShell() {
             <button
               type="button"
               onClick={() => setCommandOpen(true)}
-              className="ml-auto flex h-8 w-64 items-center gap-2 rounded-md border bg-card px-2.5 text-[0.78rem] text-muted-foreground transition-colors hover:border-foreground/25 hover:text-foreground max-md:w-9 max-md:justify-center max-md:px-0"
+              className="ml-auto flex h-8 w-64 items-center gap-2 rounded-md bg-surface-3/70 px-2.5 text-[0.78rem] text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground max-md:w-9 max-md:justify-center max-md:px-0"
               aria-label="Search and commands"
               data-testid="command-trigger"
             >

@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router-dom";
 
 import { App } from "./App";
 import { Toaster } from "@/components/ui/sonner";
+import { AuthProvider } from "@/hooks/use-auth";
 
 import "./index.css";
 
@@ -22,8 +23,10 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <App />
-        <Toaster position="top-right" richColors />
+        <AuthProvider>
+          <App />
+          <Toaster position="top-right" richColors />
+        </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>
   </StrictMode>,

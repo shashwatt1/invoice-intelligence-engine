@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import require_manager
 from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
 from app.models.store import IDENTITY_CONFIRMED, IDENTITY_UNRESOLVED, SOURCE_DOCUMENT, Store
@@ -30,7 +31,7 @@ from app.schemas.processing import (
     StoreIdentityUpdate,
 )
 
-router = APIRouter(tags=["Stores"])
+router = APIRouter(tags=["Stores"], dependencies=[Depends(require_manager)])
 
 
 def _entry(store: Store, counts: dict[str, int]) -> StoreDirectoryEntry:

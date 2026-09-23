@@ -1,4 +1,5 @@
-import { Check, CircleDashed, Loader2, Minus, TriangleAlert, X } from "lucide-react";
+import { Check, Loader2, Minus, TriangleAlert, X } from "lucide-react";
+import type { ReactNode } from "react";
 
 import type { InvoiceDetail } from "@/api/types";
 import { workflowSteps } from "@/lib/workflow";
@@ -6,41 +7,54 @@ import { cn } from "@/lib/utils";
 
 import type { StepState } from "@/lib/workflow";
 
-const ICON: Record<StepState, React.ReactNode> = {
+const ICON: Record<StepState, ReactNode> = {
   done: <Check className="size-3" strokeWidth={3} />,
   warn: <TriangleAlert className="size-3" />,
   blocked: <X className="size-3" strokeWidth={3} />,
   active: <Loader2 className="size-3 animate-spin" />,
   idle: <Minus className="size-3" />,
 };
-const RING: Record<StepState, string> = {
-  done: "bg-success text-white",
-  warn: "bg-warning text-white",
-  blocked: "bg-danger text-white",
-  active: "bg-info text-white",
-  idle: "bg-surface-3 text-muted-foreground",
+const NODE: Record<StepState, string> = {
+  done: "border-brand bg-brand text-white",
+  warn: "border-warning bg-warning text-white",
+  blocked: "border-danger bg-danger text-white",
+  active: "border-brand bg-card text-brand",
+  idle: "border-border bg-card text-muted-foreground",
+};
+const DETAIL: Record<StepState, string> = {
+  done: "text-foreground",
+  warn: "text-warning",
+  blocked: "text-danger",
+  active: "text-brand",
+  idle: "text-muted-foreground",
 };
 
-/** OCR → Extraction → Validation → Master data → EDI, from the invoice's real state. */
+/**
+ * OCR → Extraction → Validation → Master data → EDI as one rail, from the
+ * invoice's real state: a node per step, the line between them, the
+ * outcome beneath. No cells.
+ */
 export function WorkflowTimeline({ detail }: { detail: InvoiceDetail }) {
   const steps = workflowSteps(detail);
   return (
-    <ol className="surface flex items-stretch overflow-hidden" aria-label="Invoice workflow" data-testid="workflow-timeline">
-      {steps.map((step, index) => (
-        <li key={step.key} className={cn("relative flex min-w-0 flex-1 items-center gap-3 px-4 py-3", index > 0 && "border-l")}>
-          <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-full", RING[step.state])} aria-hidden>
-            {ICON[step.state]}
-          </span>
-          <span className="min-w-0">
-            <span className="t-eyebrow block">{step.label}</span>
-            <span className={cn("block truncate text-[0.78rem] font-medium", step.state === "blocked" && "text-danger", step.state === "warn" && "text-warning", step.state === "idle" && "text-muted-foreground")}
-                  title={step.detail}>
-              {step.detail}
+    <ol className="grid gap-3" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}
+        aria-label="Invoice workflow" data-testid="workflow-timeline">
+      {steps.map((step, index) => {
+        const last = index === steps.length - 1;
+        const reached = step.state !== "idle";
+        return (
+          <li key={step.key} className="relative min-w-0" data-state={step.state}>
+            {!last ? <span className={cn("absolute top-[9px] right-0 left-[18px] h-px", reached ? "bg-brand/50" : "bg-border")} aria-hidden /> : null}
+            <span className={cn("relative z-10 flex size-[19px] items-center justify-center rounded-full border-[1.5px]", NODE[step.state])} aria-hidden>
+              {ICON[step.state]}
             </span>
-          </span>
-        </li>
-      ))}
-      <li className="sr-only"><CircleDashed /></li>
+            <div className="mt-2 pr-3">
+              <div className="t-label">{step.label}</div>
+              <div className={cn("mt-0.5 truncate text-[0.82rem] font-medium", DETAIL[step.state])} title={step.detail}>{step.detail}</div>
+            </div>
+          </li>
+        );
+      })}
     </ol>
   );
 }

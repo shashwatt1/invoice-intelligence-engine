@@ -18,10 +18,13 @@ from app.schemas.processing import HistoryRow, InvoiceReviewSummary, StageEntry,
 def to_history_row(
     document: Document, invoice: Invoice | None, store: Store | None = None,
     *, review: InvoiceReviewSummary | None = None, photo_count: int = 1,
+    mapping_required: int | None = None, edi_status: str | None = None,
 ) -> HistoryRow:
     return HistoryRow(
         review=review,
         photo_count=photo_count,
+        mapping_required=mapping_required,
+        edi_status=edi_status,
         document_id=document.id,
         invoice_id=invoice.id if invoice else None,
         filename=document.filename,

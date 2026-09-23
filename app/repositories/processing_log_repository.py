@@ -9,6 +9,7 @@ validation report, persistence identifiers, or failure details).
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -31,7 +32,18 @@ class ProcessingLogRepository:
         payload: dict[str, Any] | None = None,
         duration_ms: int | None = None,
     ) -> ProcessingLog:
-        """Append one stage entry (flush, no commit)."""
+        """
+        Append one stage entry (flush, no commit).
+
+        `created_at` is set here rather than left to the column's
+        server_default. In Postgres that default is now(), which is
+        TRANSACTION start time, so every entry written in one transaction
+        shared a timestamp to the microsecond — and `for_document`, which
+        orders by (created_at, id), then fell back to a random UUID. The
+        audit trail could show a rule's correction before the manual
+        correction that triggered it. A per-insert timestamp keeps the log
+        in the order the stages actually happened.
+        """
         entry = ProcessingLog(
             document_id=document_id,
             stage=stage,
@@ -39,6 +51,7 @@ class ProcessingLogRepository:
             message=message,
             payload=payload,
             duration_ms=duration_ms,
+            created_at=datetime.now(UTC),
         )
         self._session.add(entry)
         await self._session.flush()

@@ -201,7 +201,7 @@ export function EvidencePanel({ proposal }: { proposal: ProposalDetail }) {
 
       {best ? (
         <div>
-          <div className="mb-1 text-[0.72rem] font-semibold tracking-wide text-muted-foreground uppercase">
+          <div className="t-label mb-1">
             Best evidence
           </div>
           <BestEvidence best={best} invoiceCaseCost={invoiceCaseCost} />
@@ -210,7 +210,7 @@ export function EvidencePanel({ proposal }: { proposal: ProposalDetail }) {
 
       {agreeing !== null || dissenting.length > 0 ? (
         <div>
-          <div className="mb-1 text-[0.72rem] font-semibold tracking-wide text-muted-foreground uppercase">
+          <div className="t-label mb-1">
             Agreement
           </div>
           {agreeing !== null ? (

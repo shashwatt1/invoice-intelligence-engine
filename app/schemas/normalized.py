@@ -37,7 +37,8 @@ class NormalizedLineItem(BaseModel):
     # and never need a case mapping.
     line_type: str = "product"
     description: str | None = None
-    product_code: str | None = None          # UPC or vendor item #, exactly as printed
+    product_code: str | None = None          # canonical UPC/barcode ONLY, exactly as printed
+    supplier_item_id: str | None = None      # vendor's own ID-column code — never used as product_code
     pack_size: str | None = None             # e.g. "24/12OZ" — units per case lives here
     quantity: Decimal | None = None          # 4 dp
     unit_price: Decimal | None = None        # 4 dp — NET cost per unit
@@ -57,6 +58,9 @@ class NormalizedLineItem(BaseModel):
     # Set when the reconciliation engine replaced a gross (pre-discount)
     # unit_price with the net one it proved correct arithmetically.
     unit_price_reconciled: bool = False
+    # True when Rule E replaced a quantity the invoice's own arithmetic
+    # proved was corrupted (see reconciliation.py).
+    quantity_reconciled: bool = False
 
 
 class NormalizedInvoice(BaseModel):

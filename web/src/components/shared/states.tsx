@@ -22,14 +22,12 @@ export function EmptyState({
   compact?: boolean;
 }) {
   return (
-    <div className={cn("surface flex flex-col items-center justify-center gap-2 px-6 text-center", compact ? "py-8" : "py-14")}
+    <div className={cn("panel flex flex-col items-center justify-center gap-1.5 px-6 text-center", compact ? "py-7" : "py-10")}
          role="status">
-      <div className="flex size-9 items-center justify-center rounded-md bg-surface-2 ring-1 ring-foreground/8">
-        <Icon className="size-4 text-muted-foreground" aria-hidden />
-      </div>
-      <div className="text-[0.88rem] font-semibold">{title}</div>
-      {description ? <p className="max-w-sm text-[0.78rem] leading-relaxed text-muted-foreground">{description}</p> : null}
-      {action ? <div className="mt-2">{action}</div> : null}
+      <Icon className="mb-1 size-5 text-muted-foreground/70" aria-hidden />
+      <div className="text-[0.9rem] font-semibold tracking-[-0.01em]">{title}</div>
+      {description ? <p className="max-w-md text-[0.8rem] leading-relaxed text-muted-foreground">{description}</p> : null}
+      {action ? <div className="mt-2.5">{action}</div> : null}
     </div>
   );
 }
@@ -49,10 +47,8 @@ export function ErrorState({
   const code = error instanceof ApiError ? error.errorCode : null;
 
   return (
-    <div className="surface flex flex-col items-center justify-center gap-2 px-6 py-14 text-center" role="alert">
-      <div className="flex size-9 items-center justify-center rounded-md bg-danger-soft ring-1 ring-danger/15">
-        <AlertTriangle className="size-4 text-danger" aria-hidden />
-      </div>
+    <div className="panel flex flex-col items-center justify-center gap-2 px-6 py-10 text-center" role="alert">
+      <AlertTriangle className="mb-1 size-5 text-danger" aria-hidden />
       <div className="text-[0.88rem] font-semibold">{title}</div>
       <p className="max-w-md text-[0.78rem] leading-relaxed text-muted-foreground">{message}</p>
       {code ? <code className="t-mono rounded bg-surface-2 px-1.5 py-0.5 text-[0.68rem] text-muted-foreground">{code}</code> : null}

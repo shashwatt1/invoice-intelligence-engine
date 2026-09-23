@@ -5,8 +5,8 @@ import { toast } from "sonner";
 import type { CorrectionEntry, InvoiceDetail, LineItem, LineItemCreate } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useAddLineItem, useCorrectTotals, useVoidLineItem } from "@/hooks/use-api";
-import { formatDateTime, formatMoney } from "@/lib/format";
+import { useAddLineItem, useCorrectInvoiceDate, useCorrectTotals, useVoidLineItem } from "@/hooks/use-api";
+import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import { outcomeToast } from "@/lib/corrections";
 import { rememberReviewer } from "@/lib/reviewer";
 
@@ -143,7 +143,9 @@ const LABEL: Record<TotalField, string> = {
   fuel_surcharge: "Fuel / delivery", grand_total: "Grand total",
 };
 
-export function EditableTotal({ detail, field, by, emphasized }: { detail: InvoiceDetail; field: TotalField; by: string; emphasized?: boolean }) {
+export function EditableTotal({
+  detail, field, by, emphasized, readOnly = false,
+}: { detail: InvoiceDetail; field: TotalField; by: string; emphasized?: boolean; readOnly?: boolean }) {
   const correct = useCorrectTotals(detail.invoice_id);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -168,6 +170,17 @@ export function EditableTotal({ detail, field, by, emphasized }: { detail: Invoi
     );
   };
 
+  if (readOnly) {
+    return (
+      <div className={`flex items-center justify-between py-1 text-[0.82rem] ${emphasized ? "font-semibold" : ""}`} data-testid={`total-${field}`}>
+        <span className="flex items-center gap-1.5 text-muted-foreground">{LABEL[field]} <HistoryNote history={history} /></span>
+        <span className={`tabular-nums ${value === null ? "text-warning" : ""}`}>
+          {value === null ? "not extracted" : formatMoney(value, field === "grand_total" ? detail.currency : undefined)}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className={`flex items-center justify-between py-1 text-[0.82rem] ${emphasized ? "font-semibold" : ""}`} data-testid={`total-${field}`}>
       <span className="flex items-center gap-1.5 text-muted-foreground">{LABEL[field]} <HistoryNote history={history} /></span>
@@ -191,5 +204,77 @@ export function EditableTotal({ detail, field, by, emphasized }: { detail: Invoi
         </button>
       )}
     </div>
+  );
+}
+
+/**
+ * The invoice date as printed — entered by a person when extraction
+ * missed it, or left explicitly unknown when the document does not show
+ * it. Never inferred from upload, processing or file dates.
+ */
+export function EditableInvoiceDate({ detail, by, readOnly = false }: { detail: InvoiceDetail; by: string; readOnly?: boolean }) {
+  const correct = useCorrectInvoiceDate(detail.invoice_id);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const value = detail.invoice_date;
+  const corrected = detail.corrected_fields.includes("invoice_date");
+  const history = detail.correction_history.filter((h) => h.field === "invoice_date");
+
+  const submit = (next: string | null) => {
+    if (!by.trim()) return;
+    const what = next === null ? "Record the invoice date as unknown" : `Correct the invoice date to ${formatDate(next)}`;
+    const note = window.prompt(`${what}? Optional note (where on the document you read it):`) ?? null;
+    if (note === null) return;
+    correct.mutate(
+      { invoice_date: next, corrected_by: by.trim(), note: note.trim() || null },
+      {
+        onSuccess: (result) => {
+          rememberReviewer(by.trim());
+          setEditing(false);
+          outcomeToast(result);
+        },
+        onError: (e) => toast.error(e instanceof Error ? e.message : "Correction failed."),
+      },
+    );
+  };
+
+  if (readOnly) {
+    return (
+      <span className="t-meta inline-flex items-center gap-1.5">
+        {value === null ? "date unknown" : `dated ${formatDate(value)}`}
+        <HistoryNote history={history} />
+      </span>
+    );
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1" data-testid="invoice-date-editor">
+        <Input type="date" autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Invoice date"
+               className="h-7 w-36 text-[0.78rem]"
+               onKeyDown={(e) => { if (e.key === "Enter" && draft) submit(draft); if (e.key === "Escape") setEditing(false); }} />
+        <Button size="sm" className="h-7 px-2" disabled={!draft || correct.isPending || !by.trim()} onClick={() => submit(draft)}>Save</Button>
+        {value !== null ? (
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground" disabled={correct.isPending || !by.trim()}
+                  onClick={() => submit(null)} title="The document does not show a legible date">Mark unknown</Button>
+        ) : null}
+        <Button size="sm" variant="ghost" className="h-7 px-1" onClick={() => setEditing(false)} aria-label="Cancel">×</Button>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <button
+        type="button"
+        className={`t-meta inline-flex items-center gap-1 rounded-sm underline-offset-2 hover:underline ${value === null ? "font-medium text-warning" : ""} ${corrected ? "underline decoration-dotted" : ""}`}
+        title={!by.trim() ? "Enter your name in \"Correcting as\" to change the date" : corrected ? "Entered by hand — the extracted value is in the history" : "Click to correct the invoice date"}
+        onClick={() => { setDraft(value ?? ""); setEditing(true); }}
+        aria-label={value === null ? "Enter the invoice date" : "Edit the invoice date"}
+        data-testid="invoice-date"
+      >
+        {value === null ? "date unknown — enter it from the document" : `dated ${formatDate(value)}`}
+      </button>
+      <HistoryNote history={history} />
+    </span>
   );
 }

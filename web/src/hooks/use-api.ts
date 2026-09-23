@@ -16,26 +16,35 @@ import {
   assignInvoiceStore,
   bulkApproveProposals,
   bulkRejectProposals,
+  changeUserRole,
+  createUser,
   decideDuplicate,
   deferDocumentStore,
   confirmCaseMappings,
   confirmDocumentStore,
   createStore,
+  listUsers,
+  setUserActive,
   correctLineItem,
+  correctInvoiceDate,
   correctTotals,
   deleteInvoice,
   getDashboardSummary,
   getDocumentStatus,
   getInvoice,
   getInvoiceExport,
+  getMappingQueueSummary,
   getProductHistory,
   getProposal,
   listInvoices,
+  listMappingQueue,
   listProposals,
   listStores,
+  moveDocumentToBin,
   processInvoice,
   rejectProposal,
   reviseProposal,
+  stopDocument,
   voidLineItem,
   updateStoreIdentity,
 } from "@/api/endpoints";
@@ -45,13 +54,16 @@ import type {
   LineItemCorrection,
   BulkProposalDecision,
   DuplicateDecision,
+  InvoiceDateCorrection,
   InvoiceTotalsCorrection,
   LineItemCreate,
+  MappingQueueListParams,
   ProposalDecision,
   ProposalListParams,
   ProposalRevision,
   StoreCreate,
   StoreIdentityUpdate,
+  UserRole,
 } from "@/api/types";
 
 export function useDashboard() {
@@ -131,6 +143,10 @@ export function useConfirmCaseMappings(invoiceId: string | undefined) {
       confirmCaseMappings(invoiceId!, mappings),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      // A newly-queued proposal changes what Requires Mapping shows for
+      // this product (pending_proposal_id/pending_value), even though the
+      // gap itself is not resolved until a reviewer approves it.
+      void queryClient.invalidateQueries({ queryKey: ["requires-mapping"] });
     },
   });
 }
@@ -196,11 +212,13 @@ export function useProposalCounts() {
 }
 
 /** The number of proposals waiting for a decision — the sidebar's badge. */
-export function usePendingProposalCount() {
+export function usePendingProposalCount({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ["proposals", "pending-count"],
     queryFn: async () => (await listProposals({ status: "PENDING", page_size: 1 })).total,
     refetchInterval: 30_000,
+    // Master-data review is MANAGER+; a USER never asks for this count.
+    enabled,
   });
 }
 
@@ -217,6 +235,30 @@ export function useProductHistory(storeId: string | undefined, itemCode: string 
     queryKey: ["product-history", storeId, itemCode],
     queryFn: () => getProductHistory(storeId!, itemCode!),
     enabled: Boolean(storeId && itemCode),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Requires Mapping — the collaborative work queue. MANAGER/ADMIN only on
+// the backend; `enabled` lets a USER's sidebar/page never even ask.
+// ---------------------------------------------------------------------------
+
+export function useMappingQueue(params: MappingQueueListParams, options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ["requires-mapping", "list", params],
+    queryFn: () => listMappingQueue(params),
+    placeholderData: (previous) => previous,
+    enabled: options.enabled ?? true,
+  });
+}
+
+/** Precise counts (products / invoice occurrences / stores) for the sidebar badge and page header. */
+export function useMappingQueueSummary({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ["requires-mapping", "summary"],
+    queryFn: getMappingQueueSummary,
+    refetchInterval: 30_000,
+    enabled,
   });
 }
 
@@ -274,6 +316,10 @@ export function useDecideProposal() {
         queryKey: ["product-history", result.proposal.store.id, result.proposal.entity_key],
       });
       void queryClient.invalidateQueries({ queryKey: ["invoice"] });
+      // An approval clears (or a rejection leaves open) this product's gap
+      // in Requires Mapping — every viewer's queue must re-read it, not
+      // just the reviewer's own screen.
+      void queryClient.invalidateQueries({ queryKey: ["requires-mapping"] });
     },
   });
 }
@@ -292,6 +338,7 @@ export function useBulkDecideProposals() {
       void queryClient.invalidateQueries({ queryKey: ["proposal"] });
       void queryClient.invalidateQueries({ queryKey: ["product-history"] });
       void queryClient.invalidateQueries({ queryKey: ["invoice"] });
+      void queryClient.invalidateQueries({ queryKey: ["requires-mapping"] });
     },
   });
 }
@@ -359,6 +406,33 @@ export function useAssignInvoiceStore(invoiceId: string) {
   });
 }
 
+/** Cancels the document's active processing attempt. Backend-authoritative
+ * — the caller only navigates away once this call itself succeeds. */
+export function useStopDocument(documentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => stopDocument(documentId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+/** Moves the document out of the active workflow. Recoverable, never
+ * deletes anything; the UI must confirm before calling this. */
+export function useMoveDocumentToBin(documentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => moveDocumentToBin(documentId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
 /** Adds a store to the directory. */
 export function useCreateStore() {
   const queryClient = useQueryClient();
@@ -391,11 +465,53 @@ export function useVoidLineItem(invoiceId: string) {
   });
 }
 
+export function useCorrectInvoiceDate(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: InvoiceDateCorrection) => correctInvoiceDate(invoiceId, body),
+    onSuccess: () => invalidateInvoice(queryClient, invoiceId),
+  });
+}
+
 export function useCorrectTotals(invoiceId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: InvoiceTotalsCorrection) => correctTotals(invoiceId, body),
     onSuccess: () => invalidateInvoice(queryClient, invoiceId),
+  });
+}
+
+/**
+ * ADMIN user management. Every one of these is refused by the backend
+ * for any other role — the UI hiding them is convenience, not the rule.
+ */
+export function useUsers() {
+  return useQuery({ queryKey: ["users"], queryFn: listUsers });
+}
+
+export function useCreateUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ username, password, role }: { username: string; password: string; role: UserRole }) =>
+      createUser(username, password, role),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useChangeUserRole() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: UserRole }) => changeUserRole(userId, role),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useSetUserActive() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, isActive }: { userId: string; isActive: boolean }) =>
+      setUserActive(userId, isActive),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["users"] }),
   });
 }
 

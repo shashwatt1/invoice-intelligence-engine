@@ -10,15 +10,17 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.mappers import to_history_row
+from app.core.dependencies import require_manager
 from app.database.session import get_db
 from app.models.document import DocumentStatus
+from app.models.user import User, UserRole
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.stats_repository import StatsRepository
 from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse
 from app.schemas.processing import DashboardData
 
-router = APIRouter(tags=["Dashboard"])
+router = APIRouter(tags=["Dashboard"], dependencies=[Depends(require_manager)])
 
 
 @router.get(
@@ -33,6 +35,7 @@ router = APIRouter(tags=["Dashboard"])
 async def dashboard_summary(
     recent_limit: int = Query(default=8, ge=1, le=25),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
 ) -> APIResponse[DashboardData]:
     stats = StatsRepository(db)
 
@@ -66,4 +69,11 @@ async def dashboard_summary(
                                stores.get(invoice.store_id if invoice else document.store_id))
                 for document, invoice in recent_rows],
     )
+    if user.role != UserRole.ADMIN.value:
+        # Token/cost/duration are the pipeline's OWN technical diagnostics
+        # (see Settings page) — ADMIN-only; MANAGER keeps the business
+        # metrics (success rate, confidence, counts, recent activity).
+        data = data.model_copy(update={
+            "average_processing_ms": None, "total_tokens": 0, "total_estimated_cost_usd": 0.0,
+        })
     return APIResponse(data=data)

@@ -29,9 +29,9 @@ export function StatusPill({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-md font-medium whitespace-nowrap ring-1 ring-inset ring-current/10",
+        "inline-flex items-center gap-1 rounded-[5px] font-medium whitespace-nowrap",
         size === "xs" && "h-5 px-1.5 text-[0.68rem]",
-        size === "sm" && "h-6 px-2 text-[0.72rem]",
+        size === "sm" && "h-[22px] px-1.5 text-[0.72rem]",
         size === "md" && "h-7 px-2.5 text-[0.78rem]",
         TONE_CLASSES[tone],
         className,

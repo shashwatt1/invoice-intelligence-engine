@@ -46,6 +46,10 @@ export class ApiError extends Error {
 export const apiClient = axios.create({
   baseURL: "/api/v1",
   timeout: 30_000,
+  // The session lives in an httpOnly cookie set by POST /auth/login —
+  // never read or attached by this client's own code — so every request
+  // must ask the browser to send it.
+  withCredentials: true,
 });
 
 apiClient.interceptors.response.use(

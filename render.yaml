@@ -1,0 +1,88 @@
+# =============================================================================
+# Render Blueprint — Invoice Intelligence Platform (free internal pilot)
+#
+# Defines the application service only. Render Blueprints cannot create a
+# Supabase project, a Supabase Storage bucket, or fill in secret values —
+# those are manual steps documented in docs/PILOT_DEPLOYMENT.md. Every
+# envVar below marked `sync: false` must be entered by hand in the Render
+# dashboard after this Blueprint is applied; nothing here contains a real
+# secret.
+#
+# Apply with: Render Dashboard -> New -> Blueprint -> point at this repo.
+# =============================================================================
+
+services:
+  - type: web
+    name: invoice-intelligence-pilot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: oregon
+    healthCheckPath: /api/v1/health
+    # Quoted deliberately: YAML 1.1 parses a bare `off` as boolean false,
+    # but Render's schema expects the string "off" (vs "commit"/"checksPass").
+    autoDeployTrigger: "off"  # this is a pilot — deploy manually until it's stable
+
+    envVars:
+      # ---- Application ---------------------------------------------------
+      - key: APP_ENV
+        value: production
+      - key: APP_NAME
+        value: "Invoice Intelligence Platform (Pilot)"
+      - key: DEBUG
+        value: "false"
+      - key: API_PREFIX
+        value: /api/v1
+      # Same-origin deployment (see docs/PILOT_DEPLOYMENT.md) — the
+      # frontend and API share one Render URL, so CORS is not exercised
+      # by the browser at all. Leave blank unless a second origin is
+      # genuinely introduced later.
+      - key: ALLOWED_ORIGINS
+        value: ""
+
+      # ---- Database (Supabase Postgres) — set by hand, see docs ---------
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_SYNC
+        sync: false
+      - key: DATABASE_POOL_SIZE
+        value: "5"
+      - key: DATABASE_MAX_OVERFLOW
+        value: "5"
+
+      # ---- File storage (Supabase Storage) — set by hand, see docs ------
+      - key: STORAGE_BACKEND
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET_NAME
+        sync: false
+
+      # ---- OCR / AI structuring — set by hand, see docs ------------------
+      - key: OCR_PROVIDER
+        value: google_vision
+      - key: GOOGLE_VISION_API_KEY
+        sync: false
+      - key: LLM_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o
+
+      # ---- Security — SECRET_KEY set by hand, see docs -------------------
+      - key: SECRET_KEY
+        sync: false
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+
+      # ---- Logging --------------------------------------------------------
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_FORMAT
+        value: json
+      - key: LOG_FILE_ENABLED
+        value: "false"  # Render captures stdout/stderr directly; a container-local log file would not persist anyway.

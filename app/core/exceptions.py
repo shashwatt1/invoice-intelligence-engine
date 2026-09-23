@@ -210,3 +210,30 @@ class PermissionDeniedError(InvoiceBaseException):
     error_code = "ERR_FORBIDDEN"
     http_status = 403
     message = "You do not have permission to perform this action."
+
+
+# ---------------------------------------------------------------------------
+# Document Lifecycle Errors
+# ---------------------------------------------------------------------------
+
+
+class DocumentNotActiveError(InvoiceBaseException):
+    """Raised when STOP is requested but the document has no active attempt to cancel."""
+
+    error_code = "ERR_DOCUMENT_NOT_ACTIVE"
+    http_status = 422
+    message = "This document has no active processing attempt to stop."
+
+
+class DocumentWithdrawnError(InvoiceBaseException):
+    """
+    Raised INSIDE the pipeline when a document was STOPPED or BINNED
+    while a stage was in flight. Deliberately not caught by the
+    pipeline's own stage-failure handling (_fail): withdrawal is not a
+    failure, so it must never mark the document FAILED, only leave its
+    STOPPED/BINNED status exactly as the user action set it.
+    """
+
+    error_code = "ERR_DOCUMENT_WITHDRAWN"
+    http_status = 409
+    message = "This document was withdrawn from the active workflow; processing was halted."

@@ -13,9 +13,16 @@ per row, one reviewer name typed once, all-or-nothing like the CLI's
 approve-batch. `revise` is how a reviewer corrects a pending value from
 the table without editing history — a new proposal, the old one frozen.
 
-No authentication yet. `reviewed_by` is recorded as given, the same
-contract as the CLI's --by; it is a name on the record, not a proof of
-identity, and the UI says so.
+Decisions (approve/reject/bulk/revise) and full-evidence detail are
+MANAGER or ADMIN only per the role matrix — that's the proposal
+GOVERNANCE surface. USER may only list proposals, and only its own
+(filtered by proposed_by == its authenticated username): a data-team USER
+submits proposals via POST /invoices/{id}/case-mappings and needs to
+see their status, never anyone else's evidence and never a decision
+path. `reviewed_by` is still recorded as free text, the same contract
+as the CLI's --by (a name on the record, not a second identity check);
+the authenticated session is what gates access, this field is only
+attribution.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import require_authenticated_user, require_manager
 from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
 from app.models.product_data_proposal import (
@@ -33,6 +41,7 @@ from app.models.product_data_proposal import (
     VALID_STATUSES,
     ProductDataProposal,
 )
+from app.models.user import User, UserRole
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.repositories.product_data_proposal_repository import (
@@ -123,7 +132,9 @@ async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
     description=(
         "Every proposal, newest first, PENDING by default. Filter by status, source, "
         "item code, or invoice. This is the persistent, immutable review history — "
-        "a decision is never edited, a changed value is a new proposal."
+        "a decision is never edited, a changed value is a new proposal.\n\n"
+        "USER sees only proposals it submitted itself (matched by its authenticated "
+        "username); MANAGER and ADMIN see the whole queue."
     ),
 )
 async def list_proposals(
@@ -135,6 +146,7 @@ async def list_proposals(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
 ) -> PaginatedResponse[ProposalRow]:
     if status and status != "ALL" and status not in VALID_STATUSES:
         raise ValidationError(message=f"status must be one of {sorted(VALID_STATUSES)} or ALL.")
@@ -148,6 +160,8 @@ async def list_proposals(
         invoice_id=invoice_id,
         store_id=store_id,
     )
+    if user.role == UserRole.USER.value:
+        rows = [r for r in rows if r.proposed_by == user.username]
     rows = list(reversed(rows))                      # newest first for a queue
     start = (page - 1) * page_size
     cache: dict = {}
@@ -161,6 +175,7 @@ async def list_proposals(
     "/proposals/{proposal_id}",
     response_model=APIResponse[ProposalDetail],
     summary="One proposal with its full evidence",
+    dependencies=[Depends(require_manager)],
 )
 async def get_proposal(
     proposal_id: uuid.UUID, db: AsyncSession = Depends(get_db)
@@ -229,6 +244,7 @@ async def _decide_bulk(db: AsyncSession, body: BulkProposalDecision, approve: bo
         "names each offending id."
     ),
     responses={422: {"description": "A selected proposal is missing or already decided"}},
+    dependencies=[Depends(require_manager)],
 )
 async def bulk_approve_proposals(
     body: BulkProposalDecision, db: AsyncSession = Depends(get_db)
@@ -241,6 +257,7 @@ async def bulk_approve_proposals(
     response_model=APIResponse[BulkDecisionResult],
     summary="Reject several proposals in one transaction — master data untouched",
     responses={422: {"description": "A selected proposal is missing or already decided"}},
+    dependencies=[Depends(require_manager)],
 )
 async def bulk_reject_proposals(
     body: BulkProposalDecision, db: AsyncSession = Depends(get_db)
@@ -261,6 +278,7 @@ async def bulk_reject_proposals(
     ),
     responses={404: {"description": "Not found"},
                422: {"description": "Already reviewed, or the value is unchanged"}},
+    dependencies=[Depends(require_manager)],
 )
 async def revise_proposal(
     proposal_id: uuid.UUID, body: ProposalRevision, db: AsyncSession = Depends(get_db)
@@ -290,6 +308,7 @@ async def revise_proposal(
         "cannot be decided again; a changed value is a new proposal."
     ),
     responses={404: {"description": "Not found"}, 422: {"description": "Already reviewed"}},
+    dependencies=[Depends(require_manager)],
 )
 async def approve_proposal(
     proposal_id: uuid.UUID, body: ProposalDecision, db: AsyncSession = Depends(get_db)
@@ -302,6 +321,7 @@ async def approve_proposal(
     response_model=APIResponse[ProposalDecisionResult],
     summary="Reject a proposal — master data is untouched",
     responses={404: {"description": "Not found"}, 422: {"description": "Already reviewed"}},
+    dependencies=[Depends(require_manager)],
 )
 async def reject_proposal(
     proposal_id: uuid.UUID, body: ProposalDecision, db: AsyncSession = Depends(get_db)
@@ -320,6 +340,7 @@ async def reject_proposal(
         "store-specific: another store's decisions about the same barcode are not "
         "this store's history."
     ),
+    dependencies=[Depends(require_manager)],
 )
 async def product_history(
     item_code: str,

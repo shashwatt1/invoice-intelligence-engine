@@ -28,6 +28,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 
 from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings
@@ -39,6 +40,14 @@ from app.middleware.exception_handler import (
     unhandled_exception_handler,
     validation_exception_handler,
 )
+
+# The built React app (web/dist, produced by `npm run build`). Present in
+# the pilot container image (see Dockerfile's frontend build stage);
+# absent in local backend-only development, where the frontend is served
+# separately by `npm run dev` (Vite) on its own port instead — the static
+# route below is registered only when a real build exists, so neither
+# workflow interferes with the other.
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 
 # Logger is obtained after configure_logging() is called in create_app()
 logger = get_logger(__name__)
@@ -175,6 +184,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Routers
     # ------------------------------------------------------------------
     app.include_router(api_router, prefix=settings.api_prefix)
+
+    # ------------------------------------------------------------------
+    # Built frontend (same-origin pilot/production deployment)
+    #
+    # Registered LAST: Starlette matches routes in registration order, so
+    # every /api/v1/* route above always wins first regardless of this
+    # catch-all. Serves a real static asset (JS/CSS/fonts/favicon) when
+    # the request matches one on disk, and falls back to index.html for
+    # everything else — a client-side route like /invoices/<id> has no
+    # matching file, so a hard refresh on it still resolves to the SPA,
+    # which then renders that route itself (react-router's BrowserRouter).
+    # ------------------------------------------------------------------
+    if FRONTEND_DIST.is_dir():
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def serve_frontend(full_path: str) -> FileResponse:
+            candidate = (FRONTEND_DIST / full_path).resolve()
+            if (
+                full_path
+                and candidate.is_file()
+                and FRONTEND_DIST in candidate.parents
+            ):
+                return FileResponse(candidate)
+            return FileResponse(FRONTEND_DIST / "index.html")
+    else:
+        logger.info("frontend_build_not_found", path=str(FRONTEND_DIST))
 
     return app
 

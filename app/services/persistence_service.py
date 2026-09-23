@@ -27,7 +27,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.models.document import Document, DocumentStatus
+from app.models.document import Document
 from app.models.invoice import Invoice
 from app.models.processing_log import PipelineStage
 from app.models.vendor import Vendor
@@ -35,8 +35,9 @@ from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.repositories.vendor_repository import VendorRepository
+from app.services.document_lifecycle import document_status_for
 from app.services.structuring_service import InvoiceStructuringResult
-from app.services.validation.report import ProcessingDecision, ValidationResult
+from app.services.validation.report import ValidationResult
 
 logger = get_logger(__name__)
 
@@ -84,11 +85,7 @@ class PersistenceService:
             raw_extraction_json=structuring.raw_response,
         )
 
-        final_status = (
-            DocumentStatus.COMPLETED
-            if decision is ProcessingDecision.VALIDATED
-            else DocumentStatus.REVIEW_REQUIRED
-        )
+        final_status = document_status_for(decision)
         await documents.set_status(document, final_status)
 
         duration_ms = int((time.monotonic() - start) * 1000)

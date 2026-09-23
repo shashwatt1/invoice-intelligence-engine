@@ -121,12 +121,21 @@ class TestExportGate:
         )
         assert unmapped_item_codes(invoice, {}) == [RB_COCONUT, NESQ_CHOCO]
 
-    def test_line_without_a_product_code_does_not_block_export(self):
-        # Nothing to key a mapping on; blocking would make such an
-        # invoice permanently un-exportable.
+    def test_line_without_a_product_code_blocks_export_as_unresolved_identity(self):
+        # Superseded contract (kept here in history, not behavior): a
+        # codeless line used to be let through because there was nothing
+        # to key a mapping on. That let an unresolved product identity
+        # reach PDI under the blank-code convention — a real production
+        # gap, closed by items_with_unresolved_identity(). The mapping
+        # gate (unmapped_item_codes) is unaffected and still correctly
+        # has nothing to report here, since a missing code was never a
+        # mapping problem — it's now caught earlier, as an identity one.
         invoice = make_invoice(make_item(None, "NO CODE"))
         assert unmapped_item_codes(invoice, {}) == []
-        assert pdi_export_eligibility(invoice, {}).allowed is True
+        result = pdi_export_eligibility(invoice, {})
+        assert result.allowed is False
+        assert "NO CODE" in result.blocked_reason
+        assert "resolved UPC" in result.blocked_reason
 
     def test_empty_invoice_is_still_blocked_for_its_own_reason(self):
         invoice = make_invoice()

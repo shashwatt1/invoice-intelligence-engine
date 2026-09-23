@@ -150,6 +150,7 @@ def normalize_line_item(
         line_type=getattr(item, "line_type", "product") or "product",
         description=clean_text(item.description),
         product_code=clean_text(item.product_code),
+        supplier_item_id=clean_text(getattr(item, "supplier_item_id", None)),
         pack_size=clean_text(item.pack_size),
         quantity=quantity,
         unit_price=unit_price,

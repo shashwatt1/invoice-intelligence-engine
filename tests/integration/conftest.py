@@ -120,15 +120,36 @@ async def db_engine():
             text(
                 "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
                 "documents, product_case_mappings, store_product_references, product_data_proposals, "
-                "product_pricing, product_identifier, product_identity, store_identifiers, stores CASCADE"
+                "product_pricing, product_identifier, product_identity, store_identifiers, stores, "
+                "users CASCADE"
             )
         )
     await engine.dispose()
 
 
+# Well-known accounts seeded fresh into every test's database — one per
+# role, real bcrypt-hashed passwords, so a test can log in as whichever
+# role its scenario needs instead of carrying a raw user id. Usernames,
+# not email — these are disposable test/dev accounts, unrelated to the
+# real usernames (shashwatt1, barj, prabh, vivek) created via the CLI.
+ADMIN_USERNAME, ADMIN_PASSWORD = "testadmin", "AdminPass123!"
+MANAGER_USERNAME, MANAGER_PASSWORD = "testmanager", "ManagerPass123!"
+USER_USERNAME, USER_PASSWORD = "testuser", "UserPass123!"
+KNOWN_USERS: dict[str, uuid.UUID] = {}
+
+
+def user_id(role: str) -> uuid.UUID:
+    """The seeded test account's id for that role, in the current test."""
+    return KNOWN_USERS[role]
+
+
 @pytest_asyncio.fixture
 async def db_session(db_engine) -> AsyncSession:
     """A fresh session per test against an empty schema."""
+    from app.core.security import hash_password
+    from app.models.user import UserRole
+    from app.repositories.user_repository import UserRepository
+
     factory = async_sessionmaker(bind=db_engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         # Start from clean tables — pipeline tests commit real transactions.
@@ -136,7 +157,8 @@ async def db_session(db_engine) -> AsyncSession:
             text(
                 "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
                 "documents, product_case_mappings, store_product_references, product_data_proposals, "
-                "product_pricing, product_identifier, product_identity, store_identifiers, stores CASCADE"
+                "product_pricing, product_identifier, product_identity, store_identifiers, stores, "
+                "users CASCADE"
             )
         )
         await session.commit()
@@ -152,6 +174,17 @@ async def db_session(db_engine) -> AsyncSession:
                 store, SOURCE_ITEM_SALES, TYPE_STORE_CODE, code,
                 evidence={"origin": "test fixture", "verified": True})
             KNOWN_STORES[code] = store.id
+        await session.commit()
+
+        KNOWN_USERS.clear()
+        user_repo = UserRepository(session)
+        for role, username, password in (
+            (UserRole.ADMIN.value, ADMIN_USERNAME, ADMIN_PASSWORD),
+            (UserRole.MANAGER.value, MANAGER_USERNAME, MANAGER_PASSWORD),
+            (UserRole.USER.value, USER_USERNAME, USER_PASSWORD),
+        ):
+            account = await user_repo.create(username=username, password_hash=hash_password(password), role=role)
+            KNOWN_USERS[role] = account.id
         await session.commit()
         yield session
 

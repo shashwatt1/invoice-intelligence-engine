@@ -1,0 +1,58 @@
+# Keep the build context small and secret-free. Docker sends everything
+# NOT listed here to the daemon before any COPY instruction runs, so this
+# matters even for files the Dockerfile never explicitly copies.
+
+# Secrets — never let these reach the build context, let alone the image.
+.env
+.env.*
+*.secret
+
+# Version control / tooling
+.git/
+.github/
+.claude/
+.pre-commit-config.yaml
+.gitignore
+.dockerignore
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Node / frontend build artifacts (web/dist is rebuilt fresh in the
+# frontend-builder stage every time; never copy a stale local build in)
+web/node_modules/
+web/dist/
+node_modules/
+
+# Local persistent data — never bundled into the image; the whole point
+# of the storage/database abstractions is that these are NOT the source
+# of truth in the pilot deployment.
+uploads/
+logs/
+data/reference/
+
+# Real invoice documents dropped in locally for manual testing — never
+# committed, never shipped in an image either.
+/Invoices HO/
+/Store-Wise Invoices/
+
+# Editor / OS cruft
+.DS_Store
+.vscode/
+.idea/
+
+# Not needed inside the image
+docs/
+tests/
+Assets/
+*.md
+!README.md

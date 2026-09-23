@@ -7,6 +7,30 @@ OpenAPI surface are verifiable in the offline suite.
 
 from __future__ import annotations
 
+import uuid
+
+import pytest
+
+from app.core.dependencies import require_authenticated_user
+from app.models.user import User, UserRole
+
+
+@pytest.fixture(autouse=True)
+def _authenticated(app):
+    """
+    /invoices/process requires a session; this suite is offline (no DB,
+    no real login), so a fake authenticated USER is injected the
+    standard FastAPI-testing way — a dependency override — scoped to
+    this module only and cleared after each test.
+    """
+    fake_user = User(
+        id=uuid.uuid4(), username="offline-test", password_hash="x",
+        role=UserRole.USER.value, is_active=True,
+    )
+    app.dependency_overrides[require_authenticated_user] = lambda: fake_user
+    yield
+    del app.dependency_overrides[require_authenticated_user]
+
 
 class TestProcessValidation:
     async def test_unsupported_file_type_is_415(self, client):

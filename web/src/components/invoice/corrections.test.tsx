@@ -5,9 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { InvoiceDetail, LineItem } from "@/api/types";
 
-import { AddRowForm, EditableTotal, VoidRowButton } from "./corrections";
+import { AddRowForm, EditableInvoiceDate, EditableTotal, VoidRowButton } from "./corrections";
 
-vi.mock("@/api/endpoints", () => ({ addLineItem: vi.fn(), voidLineItem: vi.fn(), correctTotals: vi.fn() }));
+vi.mock("@/api/endpoints", () => ({ addLineItem: vi.fn(), voidLineItem: vi.fn(), correctTotals: vi.fn(), correctInvoiceDate: vi.fn() }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
 import * as api from "@/api/endpoints";
@@ -101,5 +101,46 @@ describe("voiding and correcting totals", () => {
     await waitFor(() => expect(api.correctTotals).toHaveBeenCalledWith("inv-1", {
       grand_total: "100.65", corrected_by: "data-team:shashwat", note: "read off photo 2",
     }));
+  });
+});
+
+
+describe("entering the invoice date", () => {
+  const base = { invoice_id: "inv-1", invoice_date: null, corrected_fields: [], correction_history: [] } as unknown as InvoiceDetail;
+
+  it("shows an unknown date as unknown — never a substitute — and lets a named person enter it", async () => {
+    vi.mocked(api.correctInvoiceDate).mockResolvedValue({
+      invoice_date: "2026-09-17", corrected_fields: ["invoice_date"], correction_history: [], status: "VALIDATED",
+      composite_confidence: 0.93, failed_checks: 0, review_reasons: [], pdi_export_allowed: true, pdi_export_blocked_reason: null,
+    });
+    vi.spyOn(window, "prompt").mockReturnValue("printed top right");
+    wrap(<EditableInvoiceDate detail={base} by="data-team:shashwat" />);
+    expect(screen.getByTestId("invoice-date")).toHaveTextContent("date unknown");
+    await userEvent.click(screen.getByTestId("invoice-date"));
+    await userEvent.type(screen.getByLabelText("Invoice date"), "2026-09-17");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.correctInvoiceDate).toHaveBeenCalledWith("inv-1",
+      { invoice_date: "2026-09-17", corrected_by: "data-team:shashwat", note: "printed top right" }));
+    expect(toast.success).toHaveBeenCalled();
+  });
+
+  it("can record a printed-but-illegible date as unknown, and needs a name first", async () => {
+    vi.mocked(api.correctInvoiceDate).mockResolvedValue({
+      invoice_date: null, corrected_fields: ["invoice_date"], correction_history: [], status: "REVIEW_REQUIRED",
+      composite_confidence: 0.93, failed_checks: 1, review_reasons: ["INVOICE_DATE_VALID: Invoice date was not found on the document."],
+      pdi_export_allowed: true, pdi_export_blocked_reason: null,
+    });
+    vi.spyOn(window, "prompt").mockReturnValue("");
+    const dated = { ...base, invoice_date: "2026-09-17" } as InvoiceDetail;
+    const anonymous = wrap(<EditableInvoiceDate detail={dated} by="" />);
+    await userEvent.click(screen.getByTestId("invoice-date"));
+    expect(screen.getByRole("button", { name: "Mark unknown" })).toBeDisabled();   // no name, no correction
+    anonymous.unmount();
+    wrap(<EditableInvoiceDate detail={dated} by="data-team:shashwat" />);
+    await userEvent.click(screen.getByTestId("invoice-date"));
+    await userEvent.click(screen.getByRole("button", { name: "Mark unknown" }));
+    await waitFor(() => expect(api.correctInvoiceDate).toHaveBeenLastCalledWith("inv-1",
+      { invoice_date: null, corrected_by: "data-team:shashwat", note: null }));
+    expect(toast.warning).toHaveBeenCalled();
   });
 });

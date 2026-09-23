@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { StoreChip } from "@/components/shared/store-chip";
+import { DocumentActions } from "@/components/processing/document-actions";
 import { ProcessingTimeline } from "@/components/processing/processing-timeline";
 import { StoreConfirmation } from "@/components/processing/store-confirmation";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -51,6 +52,10 @@ export function DocumentStatusPage() {
             }
             actions={<StatusBadge status={data.status} />}
           />
+
+          <div className="mb-4">
+            <DocumentActions status={data} />
+          </div>
 
           {data.status === "FAILED" && data.error ? (
             <Card className="border-danger/30 bg-danger-soft/40 mb-4">

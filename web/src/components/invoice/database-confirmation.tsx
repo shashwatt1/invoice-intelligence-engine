@@ -21,8 +21,12 @@ function Flag({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
-/** Proof of persistence — what this run actually wrote to PostgreSQL. */
-export function DatabaseConfirmationCard({ database }: { database: DatabaseConfirmation }) {
+/** Proof of persistence — what this run actually wrote to PostgreSQL.
+ * ADMIN-only: `database` is null for MANAGER/USER (backend redaction),
+ * and this card is never mounted for them — this guard is defense in
+ * depth, not the gate itself. */
+export function DatabaseConfirmationCard({ database }: { database: DatabaseConfirmation | null }) {
+  if (!database) return null;
   return (
     <Card>
       <CardHeader>

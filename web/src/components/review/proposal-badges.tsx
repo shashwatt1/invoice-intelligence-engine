@@ -32,8 +32,8 @@ export function ProposalSourceBadge({ source, className }: { source: ProposalSou
   const Icon = SOURCE_ICON[source] ?? FileText;
   return (
     <span title={meta?.blurb}
-          className={cn("inline-flex h-5 items-center gap-1 rounded-md border bg-card px-1.5 text-[0.68rem] font-medium whitespace-nowrap text-foreground", className)}>
-      <Icon className="size-3 text-muted-foreground" aria-hidden />
+          className={cn("inline-flex items-center gap-1.5 text-[0.76rem] whitespace-nowrap text-foreground", className)}>
+      <Icon className="size-3.5 text-muted-foreground" aria-hidden />
       {meta?.label ?? titleCase(source)}
     </span>
   );

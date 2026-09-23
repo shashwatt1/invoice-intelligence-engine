@@ -69,7 +69,12 @@ class ColumnMapping(BaseModel):
         ),
     )
     extended_total_column: str | None = Field(
-        default=None, description="Header of the per-line extended total column, if present."
+        default=None,
+        description=(
+            "Header of the per-line extended total column you used for "
+            "line_total. When the table prints both a pre-tax amount and a "
+            "tax-inclusive total, this is the PRE-TAX column."
+        ),
     )
     discount_column: str | None = Field(
         default=None, description="Header of the per-line discount column, if present."
@@ -133,11 +138,30 @@ class ExtractedLineItem(BaseModel):
     product_code: str | None = Field(
         default=None,
         description=(
-            "The UPC or vendor item/SKU number printed on this line, exactly as "
-            "printed (keep dashes, leading zeros, and letters if present). If both "
-            "a UPC/barcode number and a separate vendor item number are printed, "
-            "prefer the UPC. If neither is printed, use null. Never infer, look up, "
-            "or construct a code that is not directly printed on the line."
+            "The retail barcode/UPC printed on this line — a long digit-only "
+            "number, typically 11-14 digits. This is NEVER a vendor's own "
+            "internal item/SKU/ID-column code (that goes in supplier_item_id "
+            "instead, not here). Keep it exactly as printed (dashes, leading "
+            "zeros). Some layouts print the barcode on its own line below the "
+            "description rather than beside the row's other figures; in the raw "
+            "OCR text that line can then appear to sit closer to the FOLLOWING "
+            "row's leading numbers than to its own row. Match barcodes to rows "
+            "by the order the rows themselves appear on the document — the k-th "
+            "barcode-shaped token belongs to the k-th product row — never by "
+            "which row's text block it happens to fall nearest to. If no barcode "
+            "is printed for a row, this is null: never substitute the vendor "
+            "item number, and never infer, look up, or construct a code that is "
+            "not directly printed."
+        ),
+    )
+    supplier_item_id: str | None = Field(
+        default=None,
+        description=(
+            "The vendor's own internal item/SKU/ID-column code for this line, "
+            "exactly as printed (e.g. a short or letter-prefixed code in an "
+            "ID/ITEM column) — distinct from product_code, which is the retail "
+            "barcode/UPC. A row can print both; capture both, never letting one "
+            "stand in for the other. Null if no such code is printed."
         ),
     )
     pack_size: str | None = Field(
@@ -156,7 +180,11 @@ class ExtractedLineItem(BaseModel):
             "24/12OZ', quantity is 1 and pack_size is '24/12OZ'. A row printed "
             "with quantity 0 (often annotated 'SHORT ON TRUCK', 'Out of Stock', "
             "'-1') is quantity 0 with line_total 0 — keep the row, never drop it "
-            "and never read the annotation's number as the quantity."
+            "and never read the annotation's number as the quantity. Take the "
+            "value from the QTY column's own column position — which on some "
+            "layouts precedes the item code — and never a value that belongs to "
+            "the row above, such as its trailing total. Null plus a concerns "
+            "entry when it cannot be attributed to this row with confidence."
         ),
     )
     unit_price: float | None = Field(
@@ -189,10 +217,22 @@ class ExtractedLineItem(BaseModel):
     line_total: float | None = Field(
         default=None,
         description=(
-            "Extended total for this line as printed. Must be consistent with "
-            "quantity x unit_price (some layouts additionally include the "
-            "deposit in this figure — if so, still report it as printed and "
-            "flag the discrepancy in concerns)."
+            "Extended total for this line as printed, BEFORE tax — the figure "
+            "that satisfies quantity x unit_price. When the row prints a "
+            "pre-tax extended amount (AMOUNT, EXT) AND a tax-inclusive total "
+            "(TOTAL = AMOUNT + TAX), this is the PRE-TAX one; the row's tax "
+            "goes in line_tax. Some layouts additionally fold the deposit into "
+            "this figure — if so, still report it as printed and flag the "
+            "discrepancy in concerns."
+        ),
+    )
+    line_tax: float | None = Field(
+        default=None,
+        description=(
+            "Tax charged on this line, as printed in a per-row TAX column. "
+            "This is NOT part of line_total: line_total is the pre-tax "
+            "extended amount and the invoice's tax is carried in tax_amount. "
+            "Null when the table prints no per-row tax column."
         ),
     )
     tax_rate: float | None = Field(
@@ -289,7 +329,28 @@ class ExtractedInvoice(BaseModel):
         ),
     )
     grand_total: float | None = Field(
-        default=None, description="Final amount payable as printed."
+        default=None,
+        description=(
+            "The invoice TRANSACTION total as printed: the value of this "
+            "invoice itself (labels such as 'Invoice Total', 'Invoice', 'Total', "
+            "'Grand Total', 'Total Invoice'). This is NOT the balance still owed "
+            "after payments or credits. When the document prints both a "
+            "transaction total and a due/balance figure ('Total Due', 'Amount "
+            "Due', 'Balance Due', 'Net Due') and they differ, grand_total is "
+            "the transaction total and the due figure goes in amount_due. Only "
+            "when the sole printed total is a due/balance figure is that the "
+            "grand_total."
+        ),
+    )
+    amount_due: float | None = Field(
+        default=None,
+        description=(
+            "The amount currently due / balance due as printed ('Total Due', "
+            "'Amount Due', 'Balance Due'), when the document prints it as a "
+            "separate figure from the invoice total — for example 0.00 after a "
+            "payment received on account. Null if not printed separately. Never "
+            "copy this into grand_total."
+        ),
     )
     line_items: list[ExtractedLineItem] = Field(
         description="All line items in the order they appear on the document."

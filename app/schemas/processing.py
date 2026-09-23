@@ -404,6 +404,31 @@ class InvoiceTotalsCorrection(BaseModel):
         return {f: getattr(self, f) for f in self.FIELDS if getattr(self, f) is not None}
 
 
+class InvoiceDateCorrection(BaseModel):
+    """
+    Body of PATCH /invoices/{id}/date — a person enters the invoice date
+    read off the document, or states that it cannot be determined (null).
+    The date is never inferred from upload, processing, file or payment
+    dates; if the document does not show it, it stays unknown.
+    """
+
+    invoice_date: date | None = None
+    corrected_by: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class InvoiceDateCorrectionResult(BaseModel):
+    invoice_date: date | None = None
+    corrected_fields: list[str] = Field(default_factory=list)
+    correction_history: list[CorrectionEntry] = Field(default_factory=list)
+    status: str
+    composite_confidence: float
+    failed_checks: int
+    review_reasons: list[str] = Field(default_factory=list)
+    pdi_export_allowed: bool
+    pdi_export_blocked_reason: str | None = None
+
+
 class InvoiceTotalsCorrectionResult(BaseModel):
     subtotal: float | None = None
     tax_amount: float | None = None
@@ -570,6 +595,55 @@ class ProductHistory(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Requires Mapping — the collaborative work queue
+# ---------------------------------------------------------------------------
+
+
+class MappingQueueOccurrence(BaseModel):
+    """One invoice line waiting on this product's mapping."""
+
+    invoice_id: uuid.UUID
+    document_id: uuid.UUID
+    invoice_number: str | None = None
+    description: str | None = None
+    quantity: float
+    unit_price: float | None = None
+    pack_size: str | None = None
+
+
+class MappingQueueRow(BaseModel):
+    """
+    One master-data gap: a (store, UPC) with a product line on some
+    invoice and no authoritative product_case_mappings row. Does not
+    require a proposal to exist — that is the point of this queue.
+    """
+
+    store: StoreRef
+    item_code: str
+    description: str | None = None
+    invoice_count: int = Field(description="Distinct invoices carrying this unresolved product.")
+    occurrences: list[MappingQueueOccurrence]
+    pending_proposal_id: str | None = Field(
+        default=None,
+        description="A submitted, not-yet-reviewed proposal already exists for this product, if any.",
+    )
+    pending_value: int | None = None
+    pending_proposed_by: str | None = Field(
+        default=None, description="Who submitted the pending proposal, when one exists.",
+    )
+
+
+class MappingQueueSummary(BaseModel):
+    """Precise counts for the Requires Mapping badge and page header."""
+
+    unique_products: int = Field(description="Distinct (store, UPC) pairs still needing a mapping.")
+    invoice_occurrences: int = Field(
+        description="Total invoice lines waiting on one of those products, across every invoice."
+    )
+    stores: int = Field(description="Distinct stores with at least one unresolved product.")
+
+
+# ---------------------------------------------------------------------------
 # Stores
 # ---------------------------------------------------------------------------
 
@@ -708,6 +782,24 @@ class StageEntry(BaseModel):
     duration_ms: int | None = None
     created_at: datetime
     payload: dict[str, Any] | None = None
+
+
+class ReprocessResultData(BaseModel):
+    """
+    Outcome of re-extracting a stored document under the active prompt.
+    The document and invoice ids are unchanged — that is the point.
+    """
+
+    document_id: uuid.UUID
+    invoice_id: uuid.UUID
+    attempt: int = Field(description="1 is the original run; each reprocess increments.")
+    run_id: str = Field(description="Stamped on every processing-log entry this attempt wrote.")
+    prompt_version: str
+    model: str | None = None
+    decision: str
+    document_status: str
+    line_item_count: int
+    review_reasons: list[str] = Field(default_factory=list)
 
 
 class DocumentStatusData(BaseModel):
@@ -889,7 +981,9 @@ class InvoiceDetailData(BaseModel):
 
     validation_report: dict[str, Any] | None = None
     llm_metadata: dict[str, Any] | None = None
-    database: DatabaseConfirmation
+    database: DatabaseConfirmation | None = Field(
+        default=None, description="ADMIN-only technical/persistence diagnostics; null for MANAGER/USER."
+    )
 
     # Developer panel
     ocr_text: str | None = None
@@ -919,6 +1013,22 @@ class HistoryRow(BaseModel):
     photo_count: int = Field(default=1, description="Photos in the intake; 1 for a single file.")
     review: InvoiceReviewSummary | None = Field(
         default=None, description="Master-data review state for this invoice, when it has one.",
+    )
+    mapping_required: int | None = Field(
+        default=None,
+        description=(
+            "Products on this invoice with no confirmed units-per-case mapping. Null when "
+            "not applicable (no invoice yet, store not yet assigned, or MANAGER/ADMIN-only "
+            "field hidden from this role)."
+        ),
+    )
+    edi_status: str | None = Field(
+        default=None,
+        description=(
+            "'ready' (exportable, no confirmation needed), 'needs_confirmation' (exportable "
+            "pending an explicit confirm — see pdi_export_requires_confirmation on invoice "
+            "detail), 'blocked' (not exportable yet), or null when not applicable."
+        ),
     )
     created_at: datetime
 

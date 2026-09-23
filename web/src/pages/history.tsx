@@ -11,6 +11,7 @@ import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/state
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody } from "@/components/ui/table";
+import { useAuth } from "@/hooks/use-auth";
 import { useInvoices } from "@/hooks/use-api";
 import { rowDestination } from "@/lib/routes";
 import { cn } from "@/lib/utils";
@@ -50,6 +51,8 @@ function useDebounced<T>(value: T, delayMs = 300): T {
  */
 export function HistoryPage() {
   const navigate = useNavigate();
+  const { hasRole } = useAuth();
+  const showMapping = hasRole("MANAGER");
   const [search, setSearch] = useSearchParams();
   const [searchInput, setSearchInput] = useState(search.get("q") ?? "");
   const [statusFilter, setStatusFilter] = useState(search.get("status") ?? "ALL");
@@ -135,9 +138,11 @@ export function HistoryPage() {
         <div className="space-y-3">
           <div className={cn("surface overflow-hidden transition-opacity", isPlaceholderData && "opacity-60")} aria-busy={isPlaceholderData}>
             <Table>
-              <InvoiceTableHead />
+              <InvoiceTableHead showMapping={showMapping} />
               <TableBody>
-                {data.items.map((row) => <InvoiceRow key={row.document_id} row={row} onOpen={() => navigate(rowDestination(row))} />)}
+                {data.items.map((row) => (
+                  <InvoiceRow key={row.document_id} row={row} onOpen={() => navigate(rowDestination(row))} showMapping={showMapping} />
+                ))}
               </TableBody>
             </Table>
           </div>

@@ -36,7 +36,7 @@ function ValueComparison({ proposal: p }: { proposal: ProposalDetail }) {
   return (
     <div className="grid gap-3 sm:grid-cols-3">
       <div className="rounded-md border px-3 py-2.5">
-        <div className="mb-1 flex items-center gap-1.5 text-[0.7rem] font-semibold tracking-wide text-muted-foreground uppercase">
+        <div className="t-label mb-1 flex items-center gap-1.5">
           <Database className="size-3.5" /> Master data now
         </div>
         <div className="text-lg">
@@ -54,7 +54,7 @@ function ValueComparison({ proposal: p }: { proposal: ProposalDetail }) {
         </p>
       </div>
       <div className={cn("rounded-md border px-3 py-2.5", p.status === "PENDING" && "border-warning/50 bg-warning-soft/40")}>
-        <div className="mb-1 flex items-center gap-1.5 text-[0.7rem] font-semibold tracking-wide text-muted-foreground uppercase">
+        <div className="t-label mb-1 flex items-center gap-1.5">
           <ArrowRight className="size-3.5" /> Proposed
         </div>
         <div className="text-lg">
@@ -68,7 +68,7 @@ function ValueComparison({ proposal: p }: { proposal: ProposalDetail }) {
         </p>
       </div>
       <div className="rounded-md border px-3 py-2.5">
-        <div className="mb-1 flex items-center gap-1.5 text-[0.7rem] font-semibold tracking-wide text-muted-foreground uppercase">
+        <div className="t-label mb-1 flex items-center gap-1.5">
           <Lock className="size-3.5" /> Outcome
         </div>
         <div className="text-[0.85rem]">
