@@ -3,7 +3,7 @@
  * these serialize params, call the API, and return typed payloads.
  */
 
-import { apiClient } from "./client";
+import { apiClient, PROCESS_TIMEOUT_MS } from "./client";
 import type {
   ApiEnvelope,
   LineItemCorrection,
@@ -102,6 +102,8 @@ export async function processInvoice(
   const { data } = await apiClient.post<ApiEnvelope<ProcessAccepted>>(
     "/invoices/process",
     form,
+    // This one request has to survive a cold-started instance; see PROCESS_TIMEOUT_MS.
+    { timeout: PROCESS_TIMEOUT_MS },
   );
   return data.data!;
 }

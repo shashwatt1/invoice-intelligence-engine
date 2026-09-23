@@ -43,6 +43,34 @@ export class ApiError extends Error {
   }
 }
 
+/** The upload endpoint's own timeout. A spun-down Render free instance
+ * delays the request before the application ever sees it — measured at
+ * ~24s on the first pilot upload, and Render documents 50s or more — on
+ * top of the ~5s the server then takes to store the file and return 202.
+ * Only this endpoint waits that long; every other call keeps the 30s
+ * default, so a genuinely dead backend still fails fast. */
+export const PROCESS_TIMEOUT_MS = 90_000;
+
+const PROCESS_PATH = "/invoices/process";
+
+/** A timeout on the upload is not proof of failure: the invoice may already
+ * have been stored and processed. Never tell the operator to just retry —
+ * that is how duplicates get made. */
+export const PROCESS_TIMEOUT_MESSAGE =
+  "Processing is taking longer than expected. Your invoice may already have been received. " +
+  "Check the invoice list before trying again.";
+
+const TIMEOUT_MESSAGE =
+  "The server took too long to respond. The request was not retried — check before sending it again.";
+
+const NETWORK_MESSAGE = "Cannot reach the backend API. Is the server running?";
+
+/** Axios reports a client-side timeout as ECONNABORTED (and ETIMEDOUT on
+ * some adapters); neither means the server was unreachable. */
+function isTimeout(error: AxiosError): boolean {
+  return error.code === "ECONNABORTED" || error.code === "ETIMEDOUT";
+}
+
 export const apiClient = axios.create({
   baseURL: "/api/v1",
   timeout: 30_000,
@@ -62,9 +90,17 @@ apiClient.interceptors.response.use(
         null;
       throw new ApiError(error.response.status, error.response.data?.error ?? null, requestId);
     }
+    // No response at all. Giving up on our side and never being heard are
+    // different failures and must not share one message.
+    if (isTimeout(error)) {
+      throw new ApiError(0, {
+        error_code: "ERR_TIMEOUT",
+        message: error.config?.url?.includes(PROCESS_PATH) ? PROCESS_TIMEOUT_MESSAGE : TIMEOUT_MESSAGE,
+      });
+    }
     throw new ApiError(0, {
       error_code: "ERR_NETWORK",
-      message: "Cannot reach the backend API. Is the server running?",
+      message: NETWORK_MESSAGE,
     });
   },
 );

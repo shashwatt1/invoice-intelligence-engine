@@ -135,6 +135,32 @@ async def _run_pipeline_background(
             logger.exception("background_pipeline_crashed", document_id=str(document_id))
 
 
+async def _discard_stored_uploads(pages: list[PageUpload], reason: str) -> None:
+    """
+    Delete the objects THIS request just stored, after intake refused them.
+
+    Safe to call for any intake failure: handle_upload() mints a fresh
+    document_uuid per file, so these keys belong to this request alone and
+    can never be an existing document's object — and intake raises before
+    it creates any row, so nothing references them. A duplicate therefore
+    loses only the copy just uploaded; the original document keeps its file.
+
+    Cleanup failure is logged, never raised: it must not replace the error
+    that triggered it (the operator needs "duplicate", not "cleanup failed").
+    """
+    try:
+        storage = get_storage_service()
+    except Exception:
+        logger.warning("upload_cleanup_unavailable", reason=reason, file_count=len(pages))
+        return
+    for page in pages:
+        try:
+            await storage.delete(page.file_path)
+            logger.info("upload_discarded", file_path=page.file_path, reason=reason)
+        except Exception:
+            logger.warning("upload_cleanup_failed", file_path=page.file_path, reason=reason)
+
+
 async def resolve_chosen_store(db: AsyncSession, value: str | None) -> uuid.UUID | None:
     """
     The store the operator chose up front, if any — as a Store id that
@@ -220,7 +246,11 @@ async def process_invoice(
     try:
         document = await pipeline.intake_pages(db, pages, store_id=chosen, uploaded_by_user_id=user.id)
     except InvoiceBaseException:
-        raise                                   # duplicate etc. — already a safe, typed error
+        # A safe, typed error (duplicate etc.) — re-raised unchanged. The files
+        # were stored before intake could check, so this request's copies are
+        # orphans the moment it refuses; the existing document keeps its own.
+        await _discard_stored_uploads(pages, reason="intake_rejected")
+        raise
     except Exception as exc:
         # Intake is the one synchronous stage: a failure here (the schema, the
         # database, the disk) must reach the operator as "nothing was
@@ -228,11 +258,7 @@ async def process_invoice(
         # traceback goes to the log under the same request id.
         await db.rollback()
         logger.exception("intake_failed", filenames=[p.filename for p in pages])
-        for page in pages:                      # the files were stored before intake; do not leave orphans
-            try:
-                await get_storage_service().delete(page.file_path)
-            except StorageError:
-                logger.warning("intake_failed_file_cleanup_failed", file_path=page.file_path)
+        await _discard_stored_uploads(pages, reason="intake_failed")
         raise DatabaseError(
             message=(
                 "Invoice processing failed while recording the upload. Nothing was "
