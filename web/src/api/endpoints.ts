@@ -6,6 +6,13 @@
 import { apiClient, PROCESS_TIMEOUT_MS } from "./client";
 import type {
   ApiEnvelope,
+  CommercialCandidateDetail,
+  CommercialCandidateParams,
+  CommercialCandidateRow,
+  CommercialProposalRequest,
+  CommercialReviewRequest,
+  CommercialReviewSummary,
+  IdentityUnresolvedRow,
   LineItemCorrection,
   LineItemCorrectionResult,
   CaseMappingConfirmation,
@@ -414,5 +421,69 @@ export async function correctTotals(
   body: InvoiceTotalsCorrection,
 ): Promise<InvoiceTotalsCorrectionResult> {
   const { data } = await apiClient.patch<ApiEnvelope<InvoiceTotalsCorrectionResult>>(`/invoices/${invoiceId}/totals`, body);
+  return data.data!;
+}
+
+// ---- Product Master commercial review (MANAGER/ADMIN) ----------------------
+
+export async function listCommercialCandidates(
+  params: CommercialCandidateParams,
+): Promise<Paginated<CommercialCandidateRow>> {
+  const { data } = await apiClient.get<ApiEnvelope<Paginated<CommercialCandidateRow>>>(
+    "/product-master/commercial",
+    { params },
+  );
+  return data.data!;
+}
+
+export async function getCommercialSummary(): Promise<CommercialReviewSummary> {
+  const { data } = await apiClient.get<ApiEnvelope<CommercialReviewSummary>>(
+    "/product-master/commercial/summary",
+  );
+  return data.data!;
+}
+
+export async function getCommercialCandidate(id: string): Promise<CommercialCandidateDetail> {
+  const { data } = await apiClient.get<ApiEnvelope<CommercialCandidateDetail>>(
+    `/product-master/commercial/${id}`,
+  );
+  return data.data!;
+}
+
+/** Any authenticated account may propose; only MANAGER/ADMIN may approve. */
+export async function proposeCommercialCandidate(
+  id: string,
+  body: CommercialProposalRequest,
+) {
+  const { data } = await apiClient.post<ApiEnvelope<unknown>>(
+    `/product-master/commercial/${id}/propose`,
+    body,
+  );
+  return data.data;
+}
+
+export async function approveCommercialCandidate(
+  id: string,
+  body: CommercialReviewRequest,
+) {
+  const { data } = await apiClient.post<ApiEnvelope<unknown>>(
+    `/product-master/commercial/${id}/approve`,
+    body,
+  );
+  return data.data;
+}
+
+export async function rejectCommercialCandidate(id: string, body: CommercialReviewRequest) {
+  const { data } = await apiClient.post<ApiEnvelope<unknown>>(
+    `/product-master/commercial/${id}/reject`,
+    body,
+  );
+  return data.data;
+}
+
+export async function listIdentityUnresolved(): Promise<IdentityUnresolvedRow[]> {
+  const { data } = await apiClient.get<ApiEnvelope<IdentityUnresolvedRow[]>>(
+    "/product-master/identity-unresolved",
+  );
   return data.data!;
 }

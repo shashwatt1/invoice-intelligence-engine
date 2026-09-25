@@ -11,6 +11,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/api/client";
 
 import {
+  approveCommercialCandidate,
+  getCommercialCandidate,
+  getCommercialSummary,
+  listCommercialCandidates,
+  listIdentityUnresolved,
+  proposeCommercialCandidate,
+  rejectCommercialCandidate,
   addLineItem,
   approveProposal,
   assignInvoiceStore,
@@ -49,6 +56,9 @@ import {
   updateStoreIdentity,
 } from "@/api/endpoints";
 import type {
+  CommercialCandidateParams,
+  CommercialProposalRequest,
+  CommercialReviewRequest,
   CaseMappingConfirmation,
   InvoiceListParams,
   LineItemCorrection,
@@ -525,5 +535,73 @@ export function useApiHealth() {
     },
     refetchInterval: 30_000,
     retry: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Product Master commercial review (MANAGER/ADMIN)
+// ---------------------------------------------------------------------------
+
+export function useCommercialCandidates(params: CommercialCandidateParams) {
+  return useQuery({
+    queryKey: ["product-master", "commercial", params],
+    queryFn: () => listCommercialCandidates(params),
+  });
+}
+
+export function useCommercialSummary() {
+  return useQuery({
+    queryKey: ["product-master", "commercial", "summary"],
+    queryFn: getCommercialSummary,
+  });
+}
+
+export function useCommercialCandidate(id: string | undefined) {
+  return useQuery({
+    queryKey: ["product-master", "commercial", "detail", id],
+    queryFn: () => getCommercialCandidate(id!),
+    enabled: Boolean(id),
+  });
+}
+
+export function useIdentityUnresolved() {
+  return useQuery({
+    queryKey: ["product-master", "identity-unresolved"],
+    queryFn: listIdentityUnresolved,
+  });
+}
+
+/** Proposing is open to any authenticated account; it writes no authoritative mapping. */
+export function useProposeCommercialCandidate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CommercialProposalRequest }) =>
+      proposeCommercialCandidate(id, body),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["product-master"] });
+    },
+  });
+}
+
+/** Approving is master-data governance only — it does not change EDI. */
+export function useApproveCommercialCandidate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CommercialReviewRequest }) =>
+      approveCommercialCandidate(id, body),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["product-master"] });
+    },
+  });
+}
+
+export function useRejectCommercialCandidate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CommercialReviewRequest }) =>
+      rejectCommercialCandidate(id, body),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["product-master"] });
+    },
   });
 }

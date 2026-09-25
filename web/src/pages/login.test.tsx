@@ -138,6 +138,10 @@ describe("Sidebar role gating", () => {
     expect(rail()).not.toHaveTextContent("Dashboard");
     expect(rail()).not.toHaveTextContent("Requires Mapping");
     expect(rail()).not.toHaveTextContent("Master Data Review");
+    // Phase 3: a USER reviews mapping evidence and proposes values, so the
+    // entry is shown rather than leading to a 403 page. Approving stays
+    // MANAGER/ADMIN and is enforced by the backend.
+    expect(rail()).toHaveTextContent("Product Master");
     expect(rail()).not.toHaveTextContent("Stores");
     expect(rail()).not.toHaveTextContent("Users");
     expect(rail()).not.toHaveTextContent("Settings");
@@ -151,6 +155,7 @@ describe("Sidebar role gating", () => {
     mount(<Sidebar collapsed={false} onToggle={() => {}} />);
 
     await screen.findByTestId("account");
+    expect(rail()).toHaveTextContent("Product Master");
     expect(rail()).toHaveTextContent("Dashboard");
     expect(rail()).toHaveTextContent("Requires Mapping");
     expect(rail()).toHaveTextContent("Master Data Review");

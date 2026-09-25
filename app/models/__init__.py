@@ -13,6 +13,14 @@ from app.models.invoice_item import InvoiceItem
 from app.models.processing_log import LogStatus, PipelineStage, ProcessingLog
 from app.models.product_case_mapping import ProductCaseMapping
 from app.models.product_data_proposal import ProductDataProposal
+from app.models.product_master import (
+    MasterCommercialMapping,
+    MasterCommercialReview,
+    MasterPackComposition,
+    MasterProduct,
+    MasterProductDescription,
+    MasterProductIdentifier,
+)
 from app.models.product_reference import ProductIdentifier, ProductIdentity, ProductPricing
 from app.models.store import Store, StoreIdentifier
 from app.models.store_product_reference import StoreProductReference
@@ -21,6 +29,12 @@ from app.models.vendor import Vendor
 
 __all__ = [
     "Document",
+    "MasterCommercialMapping",
+    "MasterCommercialReview",
+    "MasterPackComposition",
+    "MasterProduct",
+    "MasterProductDescription",
+    "MasterProductIdentifier",
     "DocumentPage",
     "DocumentStatus",
     "Invoice",

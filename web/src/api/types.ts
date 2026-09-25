@@ -803,3 +803,118 @@ export interface UserAccount {
   created_at: string;
   updated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Product Master — commercial review (Phase 2D)
+// ---------------------------------------------------------------------------
+
+/** A current product_case_mappings row: the live EDI authority, shown as context. */
+export interface LegacyMappingRef {
+  item_code: string;
+  units_per_case: number;
+  description: string | null;
+  source: string;
+}
+
+export interface CommercialCandidateRow {
+  id: string;
+  product_id: string;
+  canonical_identifier: string | null;
+  pdi_item_code: string | null;
+  store_id: string;
+  store_label: string;
+  store_identity_status: string;
+  commercial_unit_basis: string;
+  units_accounted_for: number | null;
+  case_cost: number | null;
+  cost_basis: string | null;
+  approval_state: string;
+  evidence_state: string;
+  is_conflict: boolean;
+  requires_resolution: boolean;
+  review_status: string;
+  legacy_agreement: string;
+  conflict_explanation: string | null;
+  proposed_units_accounted_for: number | null;
+  proposed_by: string | null;
+  proposed_note: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  legacy_mappings: LegacyMappingRef[];
+}
+
+export interface EvidenceView {
+  notes: string | null;
+  source_statements: Record<string, unknown>[];
+  governed_units_observed: number[];
+  supporting_rows: Record<string, unknown>[];
+  source_file: string | null;
+  source_sheet: string | null;
+  source_row: number | null;
+  source_snapshot_rows: Record<string, unknown>[];
+  admissible_evidence: string[];
+  inadmissible_evidence: string[];
+}
+
+export interface ReviewHistoryEntry {
+  decision: string;
+  previous_approval_state: string;
+  new_approval_state: string;
+  previous_commercial_unit_basis: string;
+  new_commercial_unit_basis: string;
+  previous_units_accounted_for: number | null;
+  new_units_accounted_for: number | null;
+  reviewer: string;
+  note: string | null;
+  decided_at: string;
+}
+
+export interface CommercialCandidateDetail {
+  candidate: CommercialCandidateRow;
+  evidence: EvidenceView;
+  history: ReviewHistoryEntry[];
+}
+
+export interface CommercialReviewSummary {
+  review_required: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  conflicts: number;
+  total: number;
+}
+
+export interface CommercialProposalRequest {
+  units_accounted_for: number;
+  note?: string | null;
+}
+
+export interface CommercialReviewRequest {
+  note?: string | null;
+  commercial_unit_basis?: string | null;
+  units_accounted_for?: number | null;
+}
+
+export interface CommercialCandidateParams {
+  approval_state?: string;
+  review_status?: string;
+  commercial_unit_basis?: string;
+  conflicts_only?: boolean;
+  store_id?: string;
+  cost_basis?: string;
+  search?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface IdentityUnresolvedRow {
+  raw_identifier: string | null;
+  source_system: string;
+  source_store_identifier: string | null;
+  source_file: string;
+  source_sheet: string;
+  source_row: number;
+  description: string | null;
+  reason: string;
+  units_statement: string | null;
+}

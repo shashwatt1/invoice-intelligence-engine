@@ -63,3 +63,8 @@ out/
 # live in web/public/ (favicon.ico, favicon-16/32.png, apple-touch-icon.png)
 # and the brand marks in web/public/brand/.
 Fevicon HOR.png
+
+# Master-data analysis output. Derived from data/reference/, so it carries the
+# same real store product data — UPCs, descriptions and costs — and is excluded
+# for the same reason. Regenerate with scripts/analyze_product_master.py.
+analysis/

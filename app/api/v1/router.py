@@ -22,6 +22,7 @@ from app.api.v1 import (
     health,
     invoices,
     mapping_queue,
+    product_master,
     proposals,
     stores,
     upload,
@@ -48,3 +49,4 @@ api_router.include_router(dashboard.router, prefix="")
 api_router.include_router(proposals.router, prefix="")
 api_router.include_router(mapping_queue.router, prefix="")
 api_router.include_router(stores.router, prefix="")
+api_router.include_router(product_master.router, prefix="")
