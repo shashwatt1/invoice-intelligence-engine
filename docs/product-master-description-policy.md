@@ -122,3 +122,56 @@ shadow EDI keeps using invoice descriptions — which makes description differen
 non-issue — or a genuine product-master description source (a PDI Product Master export, or
 operator-entered wording) has to be obtained first. That is a data-acquisition question, not
 an engineering one, and it is recorded as a cutover blocker rather than solved by guessing.
+
+## 6. Display names in the review workflow
+
+A reviewer needs to recognise a product without decoding its UPC. The review queue, the
+evidence panel and the human review package therefore show a **display name**, decided by
+one function (`app/services/product_master/display_name.py`) so all three agree.
+
+A display name is a **label for reading, never an identity**. It is not read by identity
+resolution, deduplication, identifier matching, the commercial decision or the seed, and it
+is never written back. Nothing in §4 changes: a source wording shown here is still an alias,
+not a canonical description.
+
+### Rules, in order
+
+| Basis | When | What is shown |
+| --- | --- | --- |
+| `CANONICAL` | the product has a canonical description (§4 Tier 1) | that description |
+| `SOURCE` | no canonical description, and the compared source wordings are effectively **one wording** | that wording, labelled source-derived, with its source row |
+| `AMBIGUOUS_SOURCE` | the compared source wordings **differ materially** | "Multiple source names", with **every** distinct wording and the rows it came from; none is chosen |
+| `UNAVAILABLE` | no description at all | "Product name unavailable" |
+
+### Which source wordings are compared
+
+Only what this policy already states is used:
+
+1. **Distributor product sheets** (`Sheet1`–`Sheet3`), if the product has any — §4 names them
+   the only purpose-built product reference.
+2. Otherwise **all other distributor price-sheet wordings together** (Monarch, Zink and any
+   other sheet). **No precedence among them is assumed** — this policy does not rank Monarch
+   against Zink, so a disagreement between them is shown, not resolved.
+3. **Item Sales POS descriptions** only when nothing else describes the product — §3 calls
+   them transaction shorthand.
+
+### When two wordings are the same wording
+
+Only when they differ in **formatting**: letter case, spacing, punctuation other than the
+`/` and `.` that carry pack and size notation (`18/12`, `19.2OZ`), or Zink's doubled
+brand-and-name (`MICHELOB ULTRA MICHELOB ULTRA`, see §2). **Any difference in a word or a
+number is material.** Flavour (`OBERON ALE` / `OBERON ECLIPSE RASPBERRY`), size (`11.2OZ` /
+`12OZ`), pack (`C12` / `C24`, `B12` / `B15`), variety pack (`BRUNCH` / `POOL PARTY`) and an
+added word (`FOEDER FIEND` / `FOEDER FIEND MANGO`) all mean the wordings may describe
+different products, so no word is treated as harmless. Where one wording is shown, the
+spelling displayed is chosen deterministically among its formatting-equivalent spellings;
+that choice is cosmetic.
+
+### What this found in the pilot
+
+Of the 414 commercial candidates: 56 `CANONICAL`, 324 `SOURCE`, **34 `AMBIGUOUS_SOURCE`**,
+0 `UNAVAILABLE`. The 34 are one UPC carrying different flavours, sizes, packs or variety
+packs in the price sheets — consistent with breweries reusing a UPC for rotating or seasonal
+slots, but not proven to be that. They include both commercial `CONFLICT` candidates, whose
+disputed `C12` / `C24` pack sizes appear in their names. Which product each of these UPCs is
+remains a human question; the display name deliberately does not answer it.

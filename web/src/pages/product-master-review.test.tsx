@@ -35,7 +35,11 @@ vi.mock("@/api/endpoints", async (importOriginal) => ({
 const { ProductMasterReviewPage } = await import("./product-master-review");
 
 const SETTLED: CommercialCandidateRow = {
-  id: "c1", product_id: "p1", canonical_identifier: "018200001154", pdi_item_code: "01820000115",
+  id: "c1", product_id: "p1",
+  product_name: "TEST LAGER 4/6 16OZ", product_name_basis: "CANONICAL",
+  product_name_source: null, product_name_reference: "Sheet1 row 4",
+  product_name_variant_count: 0, product_name_variants: [],
+  canonical_identifier: "018200001154", pdi_item_code: "01820000115",
   store_id: "s1", store_label: "Store 47708760", store_identity_status: "unresolved",
   commercial_unit_basis: "UNIT_IS_SELLING_UNIT", units_accounted_for: 4,
   case_cost: 26.45, cost_basis: "DISTRIBUTOR_CASE_PRICE",
@@ -48,7 +52,18 @@ const SETTLED: CommercialCandidateRow = {
 
 const CONFLICT: CommercialCandidateRow = {
   ...SETTLED,
-  id: "c2", canonical_identifier: "018200967214", pdi_item_code: "01820096721",
+  id: "c2", product_id: "p2",
+  // A commercial CONFLICT whose disputed pack size shows in the names too.
+  product_name: "Multiple source names", product_name_basis: "AMBIGUOUS_SOURCE",
+  product_name_source: "distributor price sheet", product_name_reference: null,
+  product_name_variant_count: 2,
+  product_name_variants: [
+    { description: "TEST GUMBALL C12 19.2OZ", source_class: "distributor price sheet",
+      references: ["Monarch Frontline row 14"] },
+    { description: "TEST GUMBALL C24 19.2OZ", source_class: "distributor price sheet",
+      references: ["Monarch Package row 59"] },
+  ],
+  canonical_identifier: "018200967214", pdi_item_code: "01820096721",
   commercial_unit_basis: "CONFLICT", units_accounted_for: null,
   case_cost: null, cost_basis: "CONFLICTING_SOURCES",
   is_conflict: true, requires_resolution: true,
@@ -59,6 +74,37 @@ const CONFLICT: CommercialCandidateRow = {
     { item_code: "01820096721", units_per_case: 1, description: "MICH ULTRA", source: "APPROVED" },
     { item_code: "01820096721", units_per_case: 18, description: "MICH ULTRA", source: "APPROVED" },
   ],
+};
+
+const NAMELESS: CommercialCandidateRow = {
+  ...SETTLED,
+  id: "c3", product_id: "p3",
+  product_name: null, product_name_basis: "UNAVAILABLE",
+  product_name_source: null, product_name_reference: null,
+  product_name_variant_count: 0, product_name_variants: [],
+  canonical_identifier: "070000000017", pdi_item_code: "07000000001",
+};
+
+const SOURCE_ONE: CommercialCandidateRow = {
+  ...SETTLED,
+  id: "c4", product_id: "p4",
+  product_name: "TEST CIDER C24 12OZ 6P", product_name_basis: "SOURCE",
+  product_name_source: "distributor price sheet", product_name_reference: "Monarch Package row 171",
+  product_name_variant_count: 0, product_name_variants: [],
+  canonical_identifier: "087000000011", pdi_item_code: "08700000001",
+};
+
+const FIVE_FLAVOURS: CommercialCandidateRow = {
+  ...SETTLED,
+  id: "c5", product_id: "p5",
+  product_name: "Multiple source names", product_name_basis: "AMBIGUOUS_SOURCE",
+  product_name_source: "distributor price sheet", product_name_reference: null,
+  product_name_variant_count: 5,
+  product_name_variants: ["APRICOT", "BLUEBERRY", "CHERRY", "DATE", "ELDERFLOWER"].map((flavour, i) => ({
+    description: `TEST BREWERY ${flavour} C24 12OZ 6P`, source_class: "distributor price sheet",
+    references: [`Monarch Package row ${100 + i}`],
+  })),
+  canonical_identifier: "083000000019", pdi_item_code: "08300000001",
 };
 
 function renderPage() {
@@ -93,6 +139,12 @@ beforeEach(() => {
       }],
       admissible_evidence: ["distributor items/case column"],
       inadmissible_evidence: ["physical pack composition", "package notation", "description text", "frequency of source rows"],
+      descriptions: [
+        { role: "SOURCE", description: "TEST ULTRA 18PK CAN", source_system: "distributor_price_sheet",
+          source_file: "Beer Inventory.xlsx", source_sheet: "Monarch Package", source_row: 12 },
+        { role: "SOURCE", description: "Test ultra 18cans", source_system: "item_sales_summary",
+          source_file: "Item_Sales_Summary.xlsx", source_sheet: "data", source_row: 88 },
+      ],
     },
     history: [],
   });
@@ -100,6 +152,110 @@ beforeEach(() => {
   rejectCommercialCandidate.mockResolvedValue({});
   proposeCommercialCandidate.mockResolvedValue({});
   currentRole = "MANAGER";
+});
+
+describe("Product Master product names", () => {
+  it("shows the product name as its own column, ahead of the identifiers", async () => {
+    renderPage();
+    expect(await screen.findByText("TEST LAGER 4/6 16OZ")).toBeInTheDocument();
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers.slice(0, 2)).toEqual(["Product name", "UPC / PDI item"]);
+    // The identifiers stay visible beside the name — the name is not the identity.
+    const row = screen.getByText("TEST LAGER 4/6 16OZ").closest("tr")!;
+    expect(within(row).getByText("018200001154")).toBeInTheDocument();
+    expect(within(row).getByText("01820000115")).toBeInTheDocument();
+  });
+
+  it("marks a canonical name as canonical", async () => {
+    renderPage();
+    const row = (await screen.findByText("TEST LAGER 4/6 16OZ")).closest("tr")!;
+    expect(within(row).getByText("Canonical")).toBeInTheDocument();
+    expect(within(row).queryByText(/source-derived|multiple source names/i)).not.toBeInTheDocument();
+  });
+
+  it("marks a single source wording as source-derived", async () => {
+    listCommercialCandidates.mockResolvedValue({ items: [SOURCE_ONE], total: 1, page: 1, page_size: 25 });
+    renderPage();
+    const row = (await screen.findByText("TEST CIDER C24 12OZ 6P")).closest("tr")!;
+    expect(within(row).getByText("Source-derived")).toBeInTheDocument();
+  });
+
+  it("shows materially different source names as themselves and picks none", async () => {
+    renderPage();
+    const row = (await screen.findByText("TEST GUMBALL C12 19.2OZ")).closest("tr")!;
+    expect(within(row).getByText("Multiple source names — review")).toBeInTheDocument();
+    // Both disputed pack sizes are on the row; neither is presented as the name.
+    expect(within(row).getByText("TEST GUMBALL C24 19.2OZ")).toBeInTheDocument();
+    expect(row).toHaveAttribute("data-conflict");
+    expect(within(row).getByText("Conflicting evidence")).toBeInTheDocument();
+  });
+
+  it("lists several flavours in the queue and points to the rest", async () => {
+    listCommercialCandidates.mockResolvedValue({ items: [FIVE_FLAVOURS], total: 1, page: 1, page_size: 25 });
+    renderPage();
+    const row = (await screen.findByText("TEST BREWERY APRICOT C24 12OZ 6P")).closest("tr")!;
+    expect(within(row).getByText("TEST BREWERY BLUEBERRY C24 12OZ 6P")).toBeInTheDocument();
+    expect(within(row).getByText("TEST BREWERY CHERRY C24 12OZ 6P")).toBeInTheDocument();
+    expect(within(row).getByText("and 2 more — open Review to see all 5")).toBeInTheDocument();
+  });
+
+  it("says plainly when no name exists rather than inventing one", async () => {
+    listCommercialCandidates.mockResolvedValue({ items: [NAMELESS], total: 1, page: 1, page_size: 25 });
+    renderPage();
+    const row = (await screen.findByText("Product name unavailable")).closest("tr")!;
+    expect(within(row).getByText("No name on record")).toBeInTheDocument();
+    expect(within(row).getByText("070000000017")).toBeInTheDocument();
+  });
+
+  it("searches by name as well as UPC", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("TEST LAGER 4/6 16OZ");
+    await user.type(screen.getByPlaceholderText(/search upc, item code or name/i), "lager");
+    await vi.waitFor(() => {
+      expect(listCommercialCandidates).toHaveBeenLastCalledWith(
+        expect.objectContaining({ search: "lager" }),
+      );
+    });
+  });
+
+  it("lists every source name with its provenance in the evidence panel", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const row = (await screen.findByText("TEST GUMBALL C12 19.2OZ")).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: /review/i }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByRole("heading", { name: "Multiple source names" })).toBeInTheDocument();
+    // The UPC identifies the product: in the header, the Product section and the source row.
+    expect(within(dialog).getAllByText("018200967214").length).toBeGreaterThanOrEqual(2);
+    expect(within(dialog).getByText("Source names for this UPC")).toBeInTheDocument();
+    expect(within(dialog).getByText("Monarch Frontline row 14")).toBeInTheDocument();
+    expect(within(dialog).getByText("Monarch Package row 59")).toBeInTheDocument();
+    expect(within(dialog).getByText(/2 materially different names .* none is chosen/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/no single name is shown/i)).toBeInTheDocument();
+    // Every description on record, canonical and source kept apart.
+    expect(await within(dialog).findByText("Descriptions on record")).toBeInTheDocument();
+    expect(within(dialog).getByText("Test ultra 18cans")).toBeInTheDocument();
+    expect(within(dialog).getByText(/identified by its UPC/)).toBeInTheDocument();
+    // SOURCE → DERIVED evidence is still there.
+    expect(within(dialog).getByText(/Source values/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Derived, not printed in the workbook/i)).toBeInTheDocument();
+  });
+
+  it("shows a USER the same names and evidence, with no approve or reject", async () => {
+    currentRole = "USER";
+    const user = userEvent.setup();
+    renderPage();
+    const row = (await screen.findByText("TEST GUMBALL C12 19.2OZ")).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: /review/i }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Source names for this UPC")).toBeInTheDocument();
+    expect(await within(dialog).findByText("Descriptions on record")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /approve candidate/i })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /submit proposal/i })).toBeInTheDocument();
+  });
 });
 
 describe("Product Master commercial review", () => {

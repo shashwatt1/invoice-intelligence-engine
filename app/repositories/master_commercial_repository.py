@@ -25,6 +25,7 @@ from app.models.product_master import (
     MasterCommercialMapping,
     MasterCommercialReview,
     MasterProduct,
+    MasterProductDescription,
 )
 from app.models.store import Store
 
@@ -105,6 +106,12 @@ class MasterCommercialRepository:
                 MasterProduct.canonical_upc.ilike(term),
                 MasterCommercialMapping.pdi_item_code.ilike(term),
                 MasterProduct.canonical_key.ilike(term),
+                # Any description on record, canonical or source — so a
+                # reviewer can find a product by the name they know it by.
+                select(MasterProductDescription.id).where(
+                    MasterProductDescription.product_id == MasterProduct.id,
+                    MasterProductDescription.description.ilike(term),
+                ).exists(),
             ))
         return statement
 
@@ -165,6 +172,21 @@ class MasterCommercialRepository:
         grouped: dict[str, list[ProductCaseMapping]] = {}
         for row in rows:
             grouped.setdefault(row.item_code, []).append(row)
+        return grouped
+
+    async def descriptions_for(
+        self, product_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, list[MasterProductDescription]]:
+        """Every description on record for these products. Read only."""
+        if not product_ids:
+            return {}
+        rows = (await self._session.execute(
+            select(MasterProductDescription)
+            .where(MasterProductDescription.product_id.in_(product_ids))
+        )).scalars().all()
+        grouped: dict[uuid.UUID, list[MasterProductDescription]] = {}
+        for row in rows:
+            grouped.setdefault(row.product_id, []).append(row)
         return grouped
 
     async def history_for(self, mapping_id: uuid.UUID) -> Sequence[MasterCommercialReview]:

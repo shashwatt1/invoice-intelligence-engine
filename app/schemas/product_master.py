@@ -25,9 +25,37 @@ class LegacyMappingRef(BaseModel):
     source: str
 
 
+class ProductDescriptionView(BaseModel):
+    """One description on record for the product — canonical or as a source wrote it."""
+
+    role: str
+    description: str
+    source_system: str
+    source_file: str | None = None
+    source_sheet: str | None = None
+    source_row: int | None = None
+
+
+class ProductNameVariant(BaseModel):
+    """One materially distinct source wording, and every row that carried it."""
+
+    description: str
+    source_class: str
+    references: list[str] = Field(default_factory=list)
+
+
 class CommercialCandidateRow(BaseModel):
     id: uuid.UUID
     product_id: uuid.UUID
+    # What a reviewer reads to recognise the product. A label, never the
+    # identity: see app/services/product_master/display_name.py.
+    # "Multiple source names" when the sources disagree materially.
+    product_name: str | None = None
+    product_name_basis: str = "UNAVAILABLE"  # CANONICAL | SOURCE | AMBIGUOUS_SOURCE | UNAVAILABLE
+    product_name_source: str | None = None        # source class compared, e.g. "distributor price sheet"
+    product_name_reference: str | None = None     # e.g. "Monarch Frontline row 12"
+    product_name_variant_count: int = 0           # distinct wordings when AMBIGUOUS_SOURCE
+    product_name_variants: list[ProductNameVariant] = Field(default_factory=list)
     canonical_identifier: str | None
     pdi_item_code: str | None
     store_id: uuid.UUID
@@ -67,6 +95,9 @@ class EvidenceView(BaseModel):
     source_snapshot_rows: list[dict[str, Any]] = Field(default_factory=list)
     admissible_evidence: list[str] = Field(default_factory=list)
     inadmissible_evidence: list[str] = Field(default_factory=list)
+    # Every description on record for the product, canonical first. Kept
+    # beside the chosen display name so it can always be checked.
+    descriptions: list[ProductDescriptionView] = Field(default_factory=list)
 
 
 class ReviewHistoryEntry(BaseModel):

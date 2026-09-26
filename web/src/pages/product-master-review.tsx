@@ -8,6 +8,7 @@ import { FilterBar } from "@/components/shared/filter-bar";
 import { MetricStrip } from "@/components/shared/metric-strip";
 import { Pagination } from "@/components/shared/pagination";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -31,6 +32,70 @@ export function basisLabel(basis: string): string {
     default:
       return basis;
   }
+}
+
+export const PRODUCT_NAME_UNAVAILABLE = "Product name unavailable";
+export const MULTIPLE_SOURCE_NAMES = "Multiple source names";
+
+/** How many materially different source wordings are listed in the queue itself. */
+const VARIANTS_SHOWN_INLINE = 3;
+
+/**
+ * The kind of name, stated on every row. The name is a label chosen by the
+ * description policy — never the identity, which stays the UPC beside it.
+ */
+export function ProductNameBasisBadge({ basis }: { basis: CommercialCandidateRow["product_name_basis"] }) {
+  switch (basis) {
+    case "CANONICAL":
+      return <Badge variant="outline">Canonical</Badge>;
+    case "SOURCE":
+      return <Badge variant="secondary">Source-derived</Badge>;
+    case "AMBIGUOUS_SOURCE":
+      return (
+        <Badge className="border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          <AlertTriangle aria-hidden />
+          Multiple source names — review
+        </Badge>
+      );
+    default:
+      return <Badge variant="outline">No name on record</Badge>;
+  }
+}
+
+/** The product's display name. Ambiguity is shown as the names themselves, not a count. */
+export function ProductName({ row, className }: { row: CommercialCandidateRow; className?: string }) {
+  if (row.product_name_basis === "AMBIGUOUS_SOURCE") {
+    const shown = row.product_name_variants.slice(0, VARIANTS_SHOWN_INLINE);
+    const more = row.product_name_variants.length - shown.length;
+    return (
+      <div className={cn("space-y-1", className)}>
+        <ProductNameBasisBadge basis={row.product_name_basis} />
+        <ul className="space-y-0.5 text-xs leading-snug" aria-label="Source names">
+          {shown.map((variant) => (
+            <li key={variant.description}>{variant.description}</li>
+          ))}
+        </ul>
+        {more > 0 && (
+          <div className="text-xs text-muted-foreground">
+            and {more} more — open Review to see all {row.product_name_variant_count}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className={cn("space-y-1", className)}>
+      <div
+        className={cn(
+          "font-medium leading-snug",
+          row.product_name_basis === "UNAVAILABLE" && "font-normal italic text-muted-foreground",
+        )}
+      >
+        {row.product_name ?? PRODUCT_NAME_UNAVAILABLE}
+      </div>
+      <ProductNameBasisBadge basis={row.product_name_basis} />
+    </div>
+  );
 }
 
 export function costLabel(basis: string | null): string {
@@ -104,10 +169,10 @@ export function ProductMasterReviewPage() {
 
       <FilterBar>
         <Input
-          placeholder="Search UPC or item code"
+          placeholder="Search UPC, item code or name"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          className="max-w-[240px]"
+          className="max-w-[260px]"
         />
         <Select value={state} onValueChange={setState}>
           <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
@@ -155,10 +220,11 @@ export function ProductMasterReviewPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Product</TableHead>
+                <TableHead>Product name</TableHead>
+                <TableHead>UPC / PDI item</TableHead>
                 <TableHead>Store</TableHead>
                 <TableHead>Commercial unit</TableHead>
-                <TableHead className="text-right">Multiplier</TableHead>
+                <TableHead className="text-right">Units/case</TableHead>
                 <TableHead className="text-right">Case cost</TableHead>
                 <TableHead>Legacy (EDI)</TableHead>
                 <TableHead>State</TableHead>
@@ -172,6 +238,9 @@ export function ProductMasterReviewPage() {
                   className={cn(row.is_conflict && "bg-muted/40")}
                   data-conflict={row.is_conflict || undefined}
                 >
+                  <TableCell className="min-w-[220px] max-w-[320px] text-sm">
+                    <ProductName row={row} />
+                  </TableCell>
                   <TableCell className="font-mono text-xs">
                     {row.canonical_identifier ?? "—"}
                     <div className="text-muted-foreground">{row.pdi_item_code ?? ""}</div>

@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_authenticated_user, require_manager
 from app.database.session import get_db
-from app.models.product_master import COMMERCIAL_CONFLICT, STATE_REVIEW_REQUIRED
+from app.models.product_master import COMMERCIAL_CONFLICT, DESC_CANONICAL, STATE_REVIEW_REQUIRED
 from app.models.user import User
 from app.repositories.master_commercial_repository import MasterCommercialRepository
 from app.schemas.base import APIResponse, PaginatedResponse
@@ -43,9 +43,12 @@ from app.schemas.product_master import (
     EvidenceView,
     IdentityUnresolvedRow,
     LegacyMappingRef,
+    ProductDescriptionView,
+    ProductNameVariant,
     ReviewHistoryEntry,
 )
 from app.services import master_commercial_review_service as review_service
+from app.services.product_master.display_name import NAME_AMBIGUOUS, resolve_display_name
 
 # Viewing and proposing are open to any authenticated account; approving
 # and rejecting are MANAGER/ADMIN and are guarded per-route below. The
@@ -65,12 +68,24 @@ INADMISSIBLE_EVIDENCE = [
 ]
 
 
-def _row(mapping, product, store, legacy: list) -> CommercialCandidateRow:
+def _row(mapping, product, store, legacy: list,
+         descriptions: list | None = None) -> CommercialCandidateRow:
     legacy_units = {row.units_per_case for row in legacy}
     evidence = mapping.evidence or {}
+    name = resolve_display_name(descriptions or [])
     return CommercialCandidateRow(
         id=mapping.id,
         product_id=product.id,
+        product_name=name.label if name.basis == NAME_AMBIGUOUS else name.name,
+        product_name_basis=name.basis,
+        product_name_source=name.source_class,
+        product_name_reference=name.source_reference,
+        product_name_variant_count=name.variant_count,
+        product_name_variants=[
+            ProductNameVariant(description=w.description, source_class=w.source_class,
+                               references=list(w.references))
+            for w in name.wordings
+        ] if name.basis == NAME_AMBIGUOUS else [],
         canonical_identifier=product.canonical_upc,
         pdi_item_code=mapping.pdi_item_code,
         store_id=store.id,
@@ -138,9 +153,11 @@ async def list_commercial_candidates(
     legacy = await repository.legacy_mappings_for(
         [mapping.pdi_item_code for mapping, _, _ in rows if mapping.pdi_item_code]
     )
+    descriptions = await repository.descriptions_for([product.id for _, product, _ in rows])
     return PaginatedResponse(
         items=[
-            _row(mapping, product, store, legacy.get(mapping.pdi_item_code, []))
+            _row(mapping, product, store, legacy.get(mapping.pdi_item_code, []),
+                 descriptions.get(product.id, []))
             for mapping, product, store in rows
         ],
         total=total, page=page, page_size=page_size,
@@ -191,9 +208,11 @@ async def get_commercial_candidate(
     )
     history = await repository.history_for(mapping_id)
     evidence = mapping.evidence or {}
+    descriptions = (await repository.descriptions_for([product.id])).get(product.id, [])
 
     return APIResponse(data=CommercialCandidateDetail(
-        candidate=_row(mapping, product, store, legacy.get(mapping.pdi_item_code, [])),
+        candidate=_row(mapping, product, store, legacy.get(mapping.pdi_item_code, []),
+                       descriptions),
         evidence=EvidenceView(
             notes=evidence.get("notes"),
             source_statements=evidence.get("source_statements", []),
@@ -209,6 +228,18 @@ async def get_commercial_candidate(
                 "existing governed mapping (corroboration or dissent only)",
             ],
             inadmissible_evidence=INADMISSIBLE_EVIDENCE,
+            descriptions=[
+                ProductDescriptionView(
+                    role=row.role, description=row.description,
+                    source_system=row.source_system, source_file=row.source_file,
+                    source_sheet=row.source_sheet, source_row=row.source_row,
+                )
+                for row in sorted(
+                    descriptions,
+                    key=lambda d: (d.role != DESC_CANONICAL, d.source_sheet or "",
+                                   d.source_row or 0, d.description),
+                )
+            ],
         ),
         history=[
             ReviewHistoryEntry(

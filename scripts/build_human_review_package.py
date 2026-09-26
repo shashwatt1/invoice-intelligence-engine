@@ -33,6 +33,7 @@ from app.services.master_commercial_review_service import (  # noqa: E402
     LEGACY_AGREES,
     LEGACY_DISSENTS,
 )
+from app.services.product_master.display_name import resolve_display_name  # noqa: E402
 from scripts.review_product_master_candidates import (  # noqa: E402
     derive_review_status,
     legacy_agreement,
@@ -51,13 +52,30 @@ GROUP_5 = "5_APPROVED"
 GROUP_6 = "6_REJECTED"
 GROUPS = [GROUP_1, GROUP_2, GROUP_3, GROUP_4, GROUP_5, GROUP_6]
 
+# Business-facing first: what the product is called, how it is identified,
+# where and how it is sold, then the evidence. `product_name` is a label
+# from the description policy (display_name.py), never the identity;
+# `product_name_basis` says whether it is canonical, source-derived, or
+# AMBIGUOUS_SOURCE — "Multiple source names", with every distinct wording
+# and where it came from in `product_name_variants`.
 COLUMNS = [
-    "group", "review_status", "canonical_upc", "pdi_item_code", "store_id",
-    "store_identity_status", "commercial_unit_basis", "units_accounted_for",
-    "case_cost", "cost_basis", "evidence_source", "source_file", "source_sheet",
-    "source_row", "legacy_units_per_case", "legacy_agreement", "evidence_notes",
-    "why_ready_or_conflicted",
+    "group", "product_name", "product_name_basis", "product_name_variants",
+    "canonical_upc", "pdi_item_code", "store", "units_accounted_for", "case_cost",
+    "cost_basis", "review_status", "commercial_unit_basis", "evidence_source",
+    "source_file", "source_sheet", "source_row", "product_name_variant_count",
+    "product_name_source", "product_name_reference", "store_id",
+    "store_identity_status", "legacy_units_per_case", "legacy_agreement",
+    "evidence_notes", "why_ready_or_conflicted",
 ]
+
+
+def variants_cell(name) -> str | None:
+    """Every distinct source wording, with where each came from — one cell."""
+    if name.basis != "AMBIGUOUS_SOURCE":
+        return None
+    return " || ".join(
+        f"{w.description} [{'; '.join(w.references) or w.source_class}]" for w in name.wordings
+    )
 
 
 def group_for(review_status: str, agreement: str) -> str:
@@ -110,10 +128,22 @@ def load(dsn: str) -> list[dict]:
             legacy.setdefault(item_code, set()).add(units)
 
         cursor.execute("""
+            SELECT d.product_id, d.role, d.description, d.source_system,
+                   d.source_file, d.source_sheet, d.source_row
+            FROM master_product_descriptions d
+            WHERE d.product_id IN (SELECT product_id FROM master_commercial_mappings)
+        """)
+        descriptions: dict[str, list[dict]] = {}
+        for product_id, role, text, system, file, sheet, row in cursor.fetchall():
+            descriptions.setdefault(str(product_id), []).append({
+                "role": role, "description": text, "source_system": system,
+                "source_file": file, "source_sheet": sheet, "source_row": row})
+
+        cursor.execute("""
             SELECT p.canonical_upc, m.pdi_item_code, m.store_id, s.identity_status,
                    m.commercial_unit_basis, m.units_accounted_for, m.case_cost,
                    m.cost_basis, m.approval_state, m.source_file, m.source_sheet,
-                   m.source_row, m.evidence
+                   m.source_row, m.evidence, m.product_id, s.display_name
             FROM master_commercial_mappings m
             JOIN master_products p ON p.id = m.product_id
             JOIN stores s ON s.id = m.store_id
@@ -121,16 +151,26 @@ def load(dsn: str) -> list[dict]:
         rows: list[dict] = []
         for (upc, code, store_id, identity_status, basis, units, cost, cost_basis,
              approval_state, source_file, source_sheet, source_row,
-             evidence) in cursor.fetchall():
+             evidence, product_id, store_name) in cursor.fetchall():
             evidence = evidence or {}
             status = derive_review_status(approval_state, basis, units)
             agreement = legacy_agreement(units, legacy.get(code, set()))
             statements = evidence.get("source_statements") or []
+            name = resolve_display_name(descriptions.get(str(product_id), []))
             rows.append({
                 "group": group_for(status, agreement),
+                "product_name": name.label,
+                "product_name_basis": name.basis,
+                "product_name_variants": variants_cell(name),
+                "product_name_variant_count": name.variant_count,
+                "product_name_source": name.source_class,
+                "product_name_reference": name.source_reference,
                 "review_status": status,
                 "canonical_upc": upc,
                 "pdi_item_code": code,
+                # The same label the review workbench shows for the store.
+                "store": store_name or (
+                    f"Store {evidence.get('source_store_identifier', '')}".strip()),
                 "store_id": str(store_id),
                 "store_identity_status": identity_status,
                 "commercial_unit_basis": basis,

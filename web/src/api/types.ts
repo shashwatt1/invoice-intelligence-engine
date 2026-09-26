@@ -816,9 +816,34 @@ export interface LegacyMappingRef {
   source: string;
 }
 
+/** Where a product's display name came from. A label, never the product's identity. */
+export type ProductNameBasis = "CANONICAL" | "SOURCE" | "AMBIGUOUS_SOURCE" | "UNAVAILABLE";
+
+/** One materially distinct source wording, and every row that carried it. */
+export interface ProductNameVariant {
+  description: string;
+  source_class: string;
+  references: string[];
+}
+
+export interface ProductDescriptionView {
+  role: string;
+  description: string;
+  source_system: string;
+  source_file: string | null;
+  source_sheet: string | null;
+  source_row: number | null;
+}
+
 export interface CommercialCandidateRow {
   id: string;
   product_id: string;
+  product_name: string | null;
+  product_name_basis: ProductNameBasis;
+  product_name_source: string | null;
+  product_name_reference: string | null;
+  product_name_variant_count: number;
+  product_name_variants: ProductNameVariant[];
   canonical_identifier: string | null;
   pdi_item_code: string | null;
   store_id: string;
@@ -853,6 +878,7 @@ export interface EvidenceView {
   source_row: number | null;
   source_snapshot_rows: Record<string, unknown>[];
   admissible_evidence: string[];
+  descriptions?: ProductDescriptionView[];
   inadmissible_evidence: string[];
 }
 
