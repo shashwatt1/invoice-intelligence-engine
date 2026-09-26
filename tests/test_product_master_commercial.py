@@ -259,8 +259,11 @@ class TestSeedSafety:
         import re
 
         source = self._source()
-        constructed = set(re.findall(r"session\.add\((\w+)\(", source))
-        assert constructed == {"MasterCommercialMapping"}
+        # Rows are written either as added instances or as one bulk insert.
+        written = set(re.findall(r"session\.add\((\w+)\(", source))
+        written |= set(re.findall(r"bulk_insert\(\s*session,\s*(\w+)", source))
+        written |= set(re.findall(r"insert\((\w+)\)", source))
+        assert written == {"MasterCommercialMapping"}
 
     def test_the_seed_does_not_touch_export_or_edi_code(self):
         source = self._source()

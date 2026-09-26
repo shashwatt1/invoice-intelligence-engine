@@ -47,7 +47,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import insert, select  # noqa: E402
 
 from app.models.product_master import (  # noqa: E402
     STATE_AUTO_MATCHED,
@@ -108,32 +108,25 @@ def seedable(product) -> bool:
     return product.identity_state == STATE_AUTO_MATCHED
 
 
-async def run_seed(args) -> dict:
-    from app.core.config import get_settings
-    from app.database.session import get_session_factory
-
-    settings = get_settings()
-    from scripts.pilot_seed_guard import seed_target_host
-
-    host = seed_target_host(settings.database_url, args)
-    print(f"Database host: {host}  — local development, seeding permitted\n")
-
-    records = load_raw_records()
-    rows = to_master_rows(records, args.store)
-    graph = build_candidates(rows)
-
+def identity_inputs(records, store: str | None):
+    """Source records -> candidate graph and the candidates that may become rows."""
+    graph = build_candidates(to_master_rows(records, store))
     products = {k: p for k, p in graph.products.items() if seedable(p)}
+    return graph, products
+
+
+def new_identity_report(graph, products, *, dry_run: bool, host: str,
+                        store: str | None) -> dict:
     skipped_unresolved = sum(
         1 for p in graph.products.values() if p.identity_state == STATE_UNRESOLVED
     )
     skipped_conflict = sum(
         1 for p in graph.products.values() if p.identity_state == STATE_CONFLICT
     )
-
-    report = {
-        "dry_run": bool(args.dry_run),
+    return {
+        "dry_run": bool(dry_run),
         "database_host": host,
-        "store_filter": args.store,
+        "store_filter": store,
         "candidates_total": len(graph.products),
         "candidates_seedable": len(products),
         "skipped_unresolved_candidates": skipped_unresolved,
@@ -153,39 +146,35 @@ async def run_seed(args) -> dict:
         "errors": [],
     }
 
+
+async def run_seed(args) -> dict:
+    from app.core.config import get_settings
+    from app.database.session import get_session_factory
+
+    settings = get_settings()
+    from scripts.pilot_seed_guard import seed_target_host
+
+    host = seed_target_host(settings.database_url, args)
+    print(f"Database host: {host}  — local development, seeding permitted\n")
+
+    graph, products = identity_inputs(load_raw_records(), args.store)
+    report = new_identity_report(graph, products, dry_run=args.dry_run, host=host,
+                                 store=args.store)
+
     factory = get_session_factory()
     async with factory() as session:
         try:
             # One transaction: any failure below leaves the database exactly
             # as it was.
-            existing_products = dict(
-                (
-                    await session.execute(
-                        select(MasterProduct.canonical_key, MasterProduct.id)
-                    )
-                ).all()
-            )
+            existing_products = await load_existing_products(session)
             report["already_present"]["products"] = len(
                 set(existing_products) & set(products)
             )
 
             product_ids: dict[str, object] = dict(existing_products)
-            for key in sorted(products):
-                if key in product_ids:
-                    continue
-                candidate = products[key]
-                row = MasterProduct(
-                    canonical_key=key,
-                    canonical_upc=candidate.canonical_upc,
-                    identity_basis=candidate.identity_basis,
-                    identity_state=candidate.identity_state,
-                    # Left unset: no rule for choosing one is sanctioned.
-                    canonical_description=None,
-                )
-                session.add(row)
-                await session.flush()
-                product_ids[key] = row.id
-                report["products_created"] += 1
+            planned_products = plan_products(products, existing_products)
+            product_ids.update(await _insert_products(session, planned_products))
+            report["products_created"] += len(planned_products)
 
             report.update(await _seed_identifiers(session, products, product_ids, report))
             report.update(await _seed_descriptions(session, products, product_ids, report))
@@ -206,9 +195,18 @@ async def run_seed(args) -> dict:
     return report
 
 
-async def _seed_identifiers(session, products, product_ids, report) -> dict:
-    """Raw source values are stored as they were written, never replaced."""
-    existing = {
+# ---------------------------------------------------------------------------
+# Existing rows, read by natural key. Shared by the seed and the pilot plan.
+# ---------------------------------------------------------------------------
+
+async def load_existing_products(session) -> dict[str, object]:
+    return dict(
+        (await session.execute(select(MasterProduct.canonical_key, MasterProduct.id))).all()
+    )
+
+
+async def load_existing_identifiers(session) -> set[tuple]:
+    return {
         (str(pid), itype, raw, system)
         for pid, itype, raw, system in (
             await session.execute(select(
@@ -219,7 +217,59 @@ async def _seed_identifiers(session, products, product_ids, report) -> dict:
             ))
         ).all()
     }
-    created = present = collapsed = 0
+
+
+async def load_existing_descriptions(session) -> set[tuple]:
+    return {
+        (str(pid), normalized, role, system)
+        for pid, normalized, role, system in (
+            await session.execute(select(
+                MasterProductDescription.product_id,
+                MasterProductDescription.normalized_description,
+                MasterProductDescription.role,
+                MasterProductDescription.source_system,
+            ))
+        ).all()
+    }
+
+
+async def load_existing_pack_compositions(session) -> set[tuple]:
+    return {
+        (str(parent), str(child) if child else None, quantity, system)
+        for parent, child, quantity, system in (
+            await session.execute(select(
+                MasterPackComposition.parent_product_id,
+                MasterPackComposition.child_product_id,
+                MasterPackComposition.child_quantity,
+                MasterPackComposition.source_system,
+            ))
+        ).all()
+    }
+
+
+# ---------------------------------------------------------------------------
+# Planning: what each table would receive. Pure — no session, no writes. The
+# seed turns each planned row into exactly one model instance.
+# ---------------------------------------------------------------------------
+
+def plan_products(products, existing_products) -> list[dict]:
+    return [
+        {
+            "canonical_key": key,
+            "canonical_upc": products[key].canonical_upc,
+            "identity_basis": products[key].identity_basis,
+            "identity_state": products[key].identity_state,
+            # Left unset: no rule for choosing one is sanctioned.
+            "canonical_description": None,
+        }
+        for key in sorted(products) if key not in existing_products
+    ]
+
+
+def plan_identifiers(products, product_ids, existing) -> tuple[list[dict], int, int]:
+    """Raw source values are stored as they were written, never replaced."""
+    rows: list[dict] = []
+    present = collapsed = 0
     seen: set[tuple] = set()
     for key in sorted(products):
         product_id = product_ids[key]
@@ -235,41 +285,27 @@ async def _seed_identifiers(session, products, product_ids, report) -> dict:
                 collapsed += 1
                 continue
             seen.add(natural)
-            session.add(MasterProductIdentifier(
-                product_id=product_id,
-                raw_value=identifier["raw_value"][:128],
-                normalized_value=identifier["normalized_value"],
-                identifier_type=identifier["identifier_type"],
-                derivation=identifier["derivation"],
-                derivation_detail=identifier["derivation_detail"],
-                evidence_state=identifier["evidence_state"],
-                source_system=identifier["source_system"],
-                source_distributor=identifier["source_distributor"],
-                source_file=identifier["source_file"],
-                source_sheet=identifier["source_sheet"],
-                source_row=identifier["source_row"],
-            ))
-            created += 1
-    await session.flush()
-    report["already_present"]["identifiers"] = present
-    return {"identifiers_created": created,
-            "duplicate_candidates_collapsed": report["duplicate_candidates_collapsed"] + collapsed}
+            rows.append({
+                "product_id": product_id,
+                "raw_value": identifier["raw_value"][:128],
+                "normalized_value": identifier["normalized_value"],
+                "identifier_type": identifier["identifier_type"],
+                "derivation": identifier["derivation"],
+                "derivation_detail": identifier["derivation_detail"],
+                "evidence_state": identifier["evidence_state"],
+                "source_system": identifier["source_system"],
+                "source_distributor": identifier["source_distributor"],
+                "source_file": identifier["source_file"],
+                "source_sheet": identifier["source_sheet"],
+                "source_row": identifier["source_row"],
+            })
+    return rows, present, collapsed
 
 
-async def _seed_descriptions(session, products, product_ids, report) -> dict:
+def plan_descriptions(products, product_ids, existing) -> tuple[list[dict], int]:
     """Every source description is kept; none is promoted to canonical."""
-    existing = {
-        (str(pid), normalized, role, system)
-        for pid, normalized, role, system in (
-            await session.execute(select(
-                MasterProductDescription.product_id,
-                MasterProductDescription.normalized_description,
-                MasterProductDescription.role,
-                MasterProductDescription.source_system,
-            ))
-        ).all()
-    }
-    created = present = 0
+    rows: list[dict] = []
+    present = 0
     seen: set[tuple] = set()
     for key in sorted(products):
         product_id = product_ids[key]
@@ -280,42 +316,29 @@ async def _seed_descriptions(session, products, product_ids, report) -> dict:
                 present += natural in existing
                 continue
             seen.add(natural)
-            session.add(MasterProductDescription(
-                product_id=product_id,
-                description=description["description"][:255],
-                normalized_description=description["normalized_description"][:255],
-                role=description["role"],
-                evidence_state=description["evidence_state"],
-                source_system=description["source_system"],
-                source_file=description["source_file"],
-                source_sheet=description["source_sheet"],
-                source_row=description["source_row"],
-                observed_count=description["observed_count"],
-            ))
-            created += 1
-    await session.flush()
-    report["already_present"]["descriptions"] = present
-    return {"descriptions_created": created}
+            rows.append({
+                "product_id": product_id,
+                "description": description["description"][:255],
+                "normalized_description": description["normalized_description"][:255],
+                "role": description["role"],
+                "evidence_state": description["evidence_state"],
+                "source_system": description["source_system"],
+                "source_file": description["source_file"],
+                "source_sheet": description["source_sheet"],
+                "source_row": description["source_row"],
+                "observed_count": description["observed_count"],
+            })
+    return rows, present
 
 
-async def _seed_pack_compositions(session, graph, product_ids, report) -> dict:
+def plan_pack_compositions(graph, product_ids, existing) -> tuple[list[dict], int, int]:
     """
     Only compositions the preview already evidenced: a parent barcode, a
     child barcode and an explicit package notation. Nothing is parsed from a
     description here, and units-per-case is never used as a substitute.
     """
-    existing = {
-        (str(parent), str(child) if child else None, quantity, system)
-        for parent, child, quantity, system in (
-            await session.execute(select(
-                MasterPackComposition.parent_product_id,
-                MasterPackComposition.child_product_id,
-                MasterPackComposition.child_quantity,
-                MasterPackComposition.source_system,
-            ))
-        ).all()
-    }
-    created = present = skipped = 0
+    rows: list[dict] = []
+    present = skipped = 0
     seen: set[tuple] = set()
     for composition in sorted(
         graph.pack_compositions,
@@ -337,23 +360,103 @@ async def _seed_pack_compositions(session, graph, product_ids, report) -> dict:
         if natural in seen:
             continue
         seen.add(natural)
-        session.add(MasterPackComposition(
-            parent_product_id=parent_id,
-            child_product_id=child_id,
-            child_quantity=composition["child_quantity"],
-            composition_basis=composition["composition_basis"],
-            evidence_state=STATE_REVIEW_REQUIRED,
-            evidence=composition["evidence"],
-            source_system=composition["source_system"],
-            source_file=composition["source_file"],
-            source_sheet=composition["source_sheet"],
-            source_row=composition["source_row"],
-        ))
-        created += 1
-    await session.flush()
+        rows.append({
+            "parent_product_id": parent_id,
+            "child_product_id": child_id,
+            "child_quantity": composition["child_quantity"],
+            "composition_basis": composition["composition_basis"],
+            "evidence_state": STATE_REVIEW_REQUIRED,
+            "evidence": composition["evidence"],
+            "source_system": composition["source_system"],
+            "source_file": composition["source_file"],
+            "source_sheet": composition["source_sheet"],
+            "source_row": composition["source_row"],
+        })
+    return rows, present, skipped
+
+
+# ---------------------------------------------------------------------------
+# Writing: the planned rows, one model instance each.
+# ---------------------------------------------------------------------------
+
+async def bulk_insert(session, model, rows: list[dict]) -> None:
+    """
+    Insert planned rows as one batched INSERT, without RETURNING.
+
+    Adding model instances and flushing costs one remote round trip per row:
+    the unit of work fetches each server-generated id and timestamp back
+    with RETURNING, and cannot batch that for a UUID key. Nothing after
+    these inserts reads those values back from the session, so none is
+    requested and SQLAlchemy sends the rows in multi-row pages. Same rows,
+    same columns, same transaction.
+
+    SQLAlchemy leaves None values out of a bulk INSERT, so rows with
+    different empty fields would split into separate statements.
+    `render_nulls` sends them as NULL and keeps one batch. That is only used
+    when no column with a default receives None: an omitted value lets the
+    default apply, exactly as adding the instance did, and that is kept.
+    """
+    if not rows:
+        return
+    defaulted = [column.key for column in model.__table__.columns
+                 if column.default is not None or column.server_default is not None]
+    safe_to_render_nulls = not any(
+        key in row and row[key] is None for row in rows for key in defaulted)
+    statement = insert(model)
+    if safe_to_render_nulls:
+        statement = statement.execution_options(render_nulls=True)
+    await session.execute(statement, rows)
+
+
+async def _insert_products(session, planned: list[dict]) -> dict[str, object]:
+    """
+    Insert the planned products and return canonical_key -> generated id.
+
+    One batched INSERT ... RETURNING rather than a flush per product: the
+    unit of work cannot batch RETURNING for a server-generated UUID key, so
+    that path cost one remote round trip per product. Returned rows are
+    matched to products by canonical_key (unique), never by position. The
+    ids and timestamps are still generated by the database.
+    """
+    if not planned:
+        return {}
+    result = await session.execute(
+        insert(MasterProduct).returning(MasterProduct.canonical_key, MasterProduct.id),
+        planned,
+    )
+    returned = result.all()
+    created = dict(returned)
+    expected = {fields["canonical_key"] for fields in planned}
+    if len(returned) != len(planned) or set(created) != expected:
+        raise RuntimeError(
+            f"product insert returned {len(returned)} rows for {len(planned)} planned products")
+    return created
+
+
+async def _seed_identifiers(session, products, product_ids, report) -> dict:
+    existing = await load_existing_identifiers(session)
+    rows, present, collapsed = plan_identifiers(products, product_ids, existing)
+    await bulk_insert(session, MasterProductIdentifier, rows)
+    report["already_present"]["identifiers"] = present
+    return {"identifiers_created": len(rows),
+            "duplicate_candidates_collapsed": report["duplicate_candidates_collapsed"] + collapsed}
+
+
+async def _seed_descriptions(session, products, product_ids, report) -> dict:
+    existing = await load_existing_descriptions(session)
+    rows, present = plan_descriptions(products, product_ids, existing)
+    await bulk_insert(session, MasterProductDescription, rows)
+    report["already_present"]["descriptions"] = present
+    return {"descriptions_created": len(rows)}
+
+
+async def _seed_pack_compositions(session, graph, product_ids, report) -> dict:
+    existing = await load_existing_pack_compositions(session)
+    rows, present, skipped = plan_pack_compositions(graph, product_ids, existing)
+    await bulk_insert(session, MasterPackComposition, rows)
     report["already_present"]["pack_compositions"] = present
     report["pack_compositions_skipped_unseedable_end"] = skipped
-    return {"pack_compositions_created": created}
+    return {"pack_compositions_created": len(rows)}
 
 
 def write_reports(report: dict) -> None:

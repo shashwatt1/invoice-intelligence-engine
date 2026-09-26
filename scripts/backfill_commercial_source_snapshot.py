@@ -75,6 +75,55 @@ def snapshot_for(statements: list[dict], rows_by_reference: dict) -> dict:
     return snapshot
 
 
+def snapshot_inputs(graph, master_rows) -> tuple[dict, dict]:
+    """Candidates by canonical key, and source rows by (file, sheet, row)."""
+    rows_by_reference = {}
+    for row in master_rows:
+        rows_by_reference[(row.source_file, row.source_sheet, row.source_row)] = row
+
+    by_key: dict[str, list[dict]] = {}
+    for candidate in graph.commercial_candidates:
+        by_key.setdefault(candidate["canonical_key"], []).append(candidate)
+    return by_key, rows_by_reference
+
+
+def new_snapshot_report(*, dry_run: bool) -> dict:
+    return {"dry_run": bool(dry_run), "examined": 0, "written": 0,
+            "already_present": 0, "no_source_found": 0, "fields": {}}
+
+
+def plan_snapshots(pairs, by_key, rows_by_reference, report) -> list[tuple[object, dict]]:
+    """
+    The snapshot each (mapping, product) pair would receive. Pure — fills
+    `report`, assigns nothing.
+    """
+    fields: Counter = Counter()
+    planned: list[tuple[object, dict]] = []
+    for mapping, product in pairs:
+        report["examined"] += 1
+        if mapping.source_snapshot:
+            report["already_present"] += 1
+            continue
+        candidates = by_key.get(product.canonical_key, [])
+        if not candidates:
+            report["no_source_found"] += 1
+            continue
+        statements = [
+            {**{k: c.get(k) for k in
+                ("source_file", "source_sheet", "source_row", "evidence")},
+             "statement": (c.get("evidence") or {}).get("statement")}
+            for c in candidates
+        ]
+        snapshot = snapshot_for(statements, rows_by_reference)
+        planned.append((mapping, snapshot))
+        report["written"] += 1
+        for entry in snapshot["source_rows"]:
+            for key in entry:
+                fields[key] += 1
+    report["fields"] = dict(fields)
+    return planned
+
+
 async def run(args) -> dict:
     from app.core.config import get_settings
     from app.database.session import get_session_factory
@@ -83,17 +132,10 @@ async def run(args) -> dict:
     print(f"Database host: {host}  — local development\n")
 
     graph = build_candidates(to_master_rows(load_raw_records(), None))
-    rows_by_reference = {}
-    for row in to_master_rows(load_raw_records(), None):
-        rows_by_reference[(row.source_file, row.source_sheet, row.source_row)] = row
+    by_key, rows_by_reference = snapshot_inputs(
+        graph, to_master_rows(load_raw_records(), None))
 
-    by_key: dict[str, list[dict]] = {}
-    for candidate in graph.commercial_candidates:
-        by_key.setdefault(candidate["canonical_key"], []).append(candidate)
-
-    report = {"dry_run": bool(args.dry_run), "examined": 0, "written": 0,
-              "already_present": 0, "no_source_found": 0, "fields": {}}
-    fields: Counter = Counter()
+    report = new_snapshot_report(dry_run=args.dry_run)
 
     async with get_session_factory()() as session:
         try:
@@ -101,29 +143,9 @@ async def run(args) -> dict:
                 select(MasterCommercialMapping, MasterProduct)
                 .join(MasterProduct, MasterProduct.id == MasterCommercialMapping.product_id)
             )).all()
-            for mapping, product in rows:
-                report["examined"] += 1
-                if mapping.source_snapshot:
-                    report["already_present"] += 1
-                    continue
-                candidates = by_key.get(product.canonical_key, [])
-                if not candidates:
-                    report["no_source_found"] += 1
-                    continue
-                statements = [
-                    {**{k: c.get(k) for k in
-                        ("source_file", "source_sheet", "source_row", "evidence")},
-                     "statement": (c.get("evidence") or {}).get("statement")}
-                    for c in candidates
-                ]
-                snapshot = snapshot_for(statements, rows_by_reference)
+            for mapping, snapshot in plan_snapshots(rows, by_key, rows_by_reference, report):
                 mapping.source_snapshot = snapshot
-                report["written"] += 1
-                for entry in snapshot["source_rows"]:
-                    for key in entry:
-                        fields[key] += 1
 
-            report["fields"] = dict(fields)
             await session.flush()
             if args.dry_run:
                 await session.rollback()

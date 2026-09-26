@@ -1,5 +1,12 @@
 # Product Master — Live Pilot Deployment Plan
 
+> **Superseded in part.** The pilot has since been migrated to `0024`. It is seeded by
+> `scripts/pilot_seed.py` (verified target, in-memory `--dry-run` plan), not by the
+> individual commands in step 5. The pilot starts with **0** `product_case_mappings`, not
+> 132, so its commercial baseline is **412 READY / 2 CONFLICT**, not the local 410 / 4.
+> Seeding it also needs a store for Item Sales code `47708760`. See
+> `docs/product-master-pilot-baseline.md`.
+
 **Status: PLAN ONLY. Nothing was executed against the pilot.** No migration was run
 remotely, no Supabase row was written, and no Render deploy was triggered.
 

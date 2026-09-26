@@ -60,7 +60,10 @@ from scripts.pilot_seed_guard import seed_target_host  # noqa: E402
 from scripts.preview_product_master_seed import _load_store_index, to_master_rows  # noqa: E402
 
 # Re-exported so this command's guard is verifiably the identity seed's guard.
-from scripts.seed_product_master_identity import assert_local_database  # noqa: E402,F401
+from scripts.seed_product_master_identity import (  # noqa: E402
+    assert_local_database,  # noqa: F401
+    bulk_insert,
+)
 
 OUTPUT_DIR = ROOT / "analysis" / "master-data"
 REVIEW_CSV = OUTPUT_DIR / "product_master_commercial_review.csv"
@@ -75,23 +78,13 @@ REVIEW_COLUMNS = [
 ]
 
 
-async def run_seed(args) -> tuple[dict, list[dict]]:
-    from app.core.config import get_settings
-    from app.database.session import get_session_factory
-
-    settings = get_settings()
-    host = seed_target_host(settings.database_url, args)
-    print(f"Database host: {host}  — local development, seeding permitted\n")
-
-    records = load_raw_records()
-    rows = to_master_rows(records, args.store)
-    graph = build_candidates(rows)
-
-    store_index, store_error = _load_store_index()
+def group_commercial_candidates(graph, store_index):
+    """
+    Resolve each candidate's store, then group: one mapping per
+    (product, store). Cost and description never key it; several source rows
+    supporting one mapping contribute evidence to it.
+    """
     store_tally = resolve_commercial_candidates(graph.commercial_candidates, store_index)
-
-    # One mapping per (product, store). Cost and description never key it;
-    # several source rows supporting one mapping contribute evidence to it.
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     unattached = 0
     for candidate in graph.commercial_candidates:
@@ -99,9 +92,13 @@ async def run_seed(args) -> tuple[dict, list[dict]]:
             unattached += 1
             continue
         grouped[(candidate["canonical_key"], candidate["store_id"])].append(candidate)
+    return grouped, unattached, store_tally
 
-    report = {
-        "dry_run": bool(args.dry_run),
+
+def new_commercial_report(graph, grouped, unattached, store_tally, store_error, *,
+                          dry_run: bool, host: str) -> dict:
+    return {
+        "dry_run": bool(dry_run),
         "database_host": host,
         "candidates_examined": len(graph.commercial_candidates),
         "store_resolution": store_tally,
@@ -122,144 +119,37 @@ async def run_seed(args) -> tuple[dict, list[dict]]:
         "legacy_case_mappings_read": 0,
         "errors": [],
     }
+
+
+async def run_seed(args) -> tuple[dict, list[dict]]:
+    from app.core.config import get_settings
+    from app.database.session import get_session_factory
+
+    settings = get_settings()
+    host = seed_target_host(settings.database_url, args)
+    print(f"Database host: {host}  — local development, seeding permitted\n")
+
+    records = load_raw_records()
+    rows = to_master_rows(records, args.store)
+    graph = build_candidates(rows)
+
+    store_index, store_error = _load_store_index()
+    grouped, unattached, store_tally = group_commercial_candidates(graph, store_index)
+    report = new_commercial_report(graph, grouped, unattached, store_tally, store_error,
+                                   dry_run=args.dry_run, host=host)
     review: list[dict] = []
 
     factory = get_session_factory()
     async with factory() as session:
         try:
-            products = {
-                key: (pid, upc)
-                for key, pid, upc in (
-                    await session.execute(select(
-                        MasterProduct.canonical_key, MasterProduct.id,
-                        MasterProduct.canonical_upc,
-                    ))
-                ).all()
-            }
-
-            # Governed values are read to DISSENT only — never to supply a
-            # multiplier. product_case_mappings is not written to here.
-            governed: dict[str, set[int]] = defaultdict(set)
-            for item_code, units in (
-                await session.execute(select(
-                    ProductCaseMapping.item_code, ProductCaseMapping.units_per_case,
-                ))
-            ).all():
-                governed[item_code].add(units)
+            products = await load_master_products(session)
+            governed = await load_governed_units(session)
             report["legacy_case_mappings_read"] = sum(len(v) for v in governed.values())
+            existing = await load_existing_pairs(session)
 
-            existing = {
-                (str(pid), str(sid))
-                for pid, sid in (
-                    await session.execute(select(
-                        MasterCommercialMapping.product_id,
-                        MasterCommercialMapping.store_id,
-                    ))
-                ).all()
-            }
-
-            basis_counter: Counter = Counter()
-            cost_counter: Counter = Counter()
-
-            for (canonical_key, store_id) in sorted(grouped):
-                statements = grouped[(canonical_key, store_id)]
-                product = products.get(canonical_key)
-                if product is None:
-                    # Identity never resolved, so there is no product to carry
-                    # a commercial fact. Reported, not invented.
-                    report["skipped_no_master_product"] += 1
-                    continue
-                product_id, canonical_upc = product
-                pdi_item_code = canonical_upc[:-1] if canonical_upc else None
-
-                decision = decide_commercial_unit(
-                    statements,
-                    governed_units=governed.get(pdi_item_code) if pdi_item_code else None,
-                )
-                case_cost, cost_basis = decide_case_cost(statements)
-
-                basis_counter[decision.commercial_unit_basis] += 1
-                cost_counter[cost_basis] += 1
-                if decision.units_accounted_for is None:
-                    report["without_resolved_units"] += 1
-                else:
-                    report["with_resolved_units"] += 1
-                if case_cost is None:
-                    report["cost_unresolved"] += 1
-                else:
-                    report["cost_recorded"] += 1
-
-                first = statements[0]
-                review.append({
-                    "master_product_id": str(product_id),
-                    "store_id": store_id,
-                    "source_store_identifier": first.get("store_context"),
-                    "canonical_identifier": canonical_upc,
-                    "pdi_item_code": pdi_item_code,
-                    "unit_identifier": None,
-                    "units_accounted_for": decision.units_accounted_for,
-                    "commercial_unit_basis": decision.commercial_unit_basis,
-                    "case_cost": str(case_cost) if case_cost is not None else None,
-                    "cost_basis": cost_basis,
-                    "approval_state": decision.approval_state,
-                    "evidence_state": STATE_REVIEW_REQUIRED,
-                    "physical_store_identity_status": first.get("store_identity_status"),
-                    "source_file": first.get("source_file"),
-                    "source_sheet": first.get("source_sheet"),
-                    "source_row": first.get("source_row"),
-                    "supporting_source_rows": " || ".join(
-                        f"{s.get('source_sheet')}:{s.get('source_row')}" for s in statements
-                    ),
-                    "notes": decision.notes,
-                })
-
-                if (str(product_id), str(store_id)) in existing:
-                    report["already_present"] += 1
-                    continue
-
-                session.add(MasterCommercialMapping(
-                    product_id=product_id,
-                    store_id=store_id,
-                    pdi_item_code=pdi_item_code or "",
-                    commercial_unit_basis=decision.commercial_unit_basis,
-                    units_accounted_for=decision.units_accounted_for,
-                    case_cost=case_cost,
-                    # Cost status is reviewed independently of the commercial
-                    # unit, so it is a column, not an evidence key.
-                    cost_basis=cost_basis,
-                    approval_state=decision.approval_state,
-                    evidence={
-                        **decision.evidence,
-                        "notes": decision.notes,
-                        "cost_basis": cost_basis,
-                        "source_store_identifier": first.get("store_context"),
-                        "physical_store_identity_status": first.get("store_identity_status"),
-                        "supporting_rows": [
-                            {"source_file": s.get("source_file"),
-                             "source_sheet": s.get("source_sheet"),
-                             "source_row": s.get("source_row"),
-                             "raw_value": (s.get("evidence") or {}).get("raw_value")
-                             if isinstance(s.get("evidence"), dict) else None}
-                            for s in statements
-                        ],
-                    },
-                    source_system=first.get("source_system", "distributor_price_sheet"),
-                    source_file=first.get("source_file"),
-                    source_sheet=first.get("source_sheet"),
-                    source_row=first.get("source_row"),
-                ))
-                report["mappings_created"] += 1
-
-            report["basis_counts"] = dict(basis_counter)
-            report["cost_basis_counts"] = dict(cost_counter)
-            report["review_required"] = sum(
-                1 for r in review if r["approval_state"] == STATE_REVIEW_REQUIRED
-            )
-            report["approved"] = sum(
-                1 for r in review if r["approval_state"] == "APPROVED"
-            )
-            report["unknown_basis"] = basis_counter.get(COMMERCIAL_UNKNOWN, 0)
-            report["conflict_basis"] = basis_counter.get(COMMERCIAL_CONFLICT, 0)
+            planned, review = plan_commercial_mappings(
+                grouped, products, governed, existing, report)
+            await bulk_insert(session, MasterCommercialMapping, planned)
 
             await session.flush()
             if args.dry_run:
@@ -273,6 +163,156 @@ async def run_seed(args) -> tuple[dict, list[dict]]:
             report["errors"].append(f"{type(exc).__name__}: {exc}")
             print(f"FAILED — rolled back, database unchanged: {type(exc).__name__}: {exc}")
     return report, review
+
+
+async def load_master_products(session) -> dict[str, tuple]:
+    return {
+        key: (pid, upc)
+        for key, pid, upc in (
+            await session.execute(select(
+                MasterProduct.canonical_key, MasterProduct.id,
+                MasterProduct.canonical_upc,
+            ))
+        ).all()
+    }
+
+
+async def load_governed_units(session) -> dict[str, set[int]]:
+    # Governed values are read to DISSENT only — never to supply a
+    # multiplier. product_case_mappings is not written to here.
+    governed: dict[str, set[int]] = defaultdict(set)
+    for item_code, units in (
+        await session.execute(select(
+            ProductCaseMapping.item_code, ProductCaseMapping.units_per_case,
+        ))
+    ).all():
+        governed[item_code].add(units)
+    return governed
+
+
+async def load_existing_pairs(session) -> set[tuple[str, str]]:
+    return {
+        (str(pid), str(sid))
+        for pid, sid in (
+            await session.execute(select(
+                MasterCommercialMapping.product_id,
+                MasterCommercialMapping.store_id,
+            ))
+        ).all()
+    }
+
+
+def plan_commercial_mappings(grouped, products, governed, existing,
+                             report) -> tuple[list[dict], list[dict]]:
+    """
+    The mappings the seed would create, and the review rows describing every
+    candidate. Pure — fills `report` and returns rows; writes nothing.
+    """
+    planned: list[dict] = []
+    review: list[dict] = []
+    basis_counter: Counter = Counter()
+    cost_counter: Counter = Counter()
+
+    for (canonical_key, store_id) in sorted(grouped):
+        statements = grouped[(canonical_key, store_id)]
+        product = products.get(canonical_key)
+        if product is None:
+            # Identity never resolved, so there is no product to carry
+            # a commercial fact. Reported, not invented.
+            report["skipped_no_master_product"] += 1
+            continue
+        product_id, canonical_upc = product
+        pdi_item_code = canonical_upc[:-1] if canonical_upc else None
+
+        decision = decide_commercial_unit(
+            statements,
+            governed_units=governed.get(pdi_item_code) if pdi_item_code else None,
+        )
+        case_cost, cost_basis = decide_case_cost(statements)
+
+        basis_counter[decision.commercial_unit_basis] += 1
+        cost_counter[cost_basis] += 1
+        if decision.units_accounted_for is None:
+            report["without_resolved_units"] += 1
+        else:
+            report["with_resolved_units"] += 1
+        if case_cost is None:
+            report["cost_unresolved"] += 1
+        else:
+            report["cost_recorded"] += 1
+
+        first = statements[0]
+        review.append({
+            "master_product_id": str(product_id),
+            "store_id": store_id,
+            "source_store_identifier": first.get("store_context"),
+            "canonical_identifier": canonical_upc,
+            "pdi_item_code": pdi_item_code,
+            "unit_identifier": None,
+            "units_accounted_for": decision.units_accounted_for,
+            "commercial_unit_basis": decision.commercial_unit_basis,
+            "case_cost": str(case_cost) if case_cost is not None else None,
+            "cost_basis": cost_basis,
+            "approval_state": decision.approval_state,
+            "evidence_state": STATE_REVIEW_REQUIRED,
+            "physical_store_identity_status": first.get("store_identity_status"),
+            "source_file": first.get("source_file"),
+            "source_sheet": first.get("source_sheet"),
+            "source_row": first.get("source_row"),
+            "supporting_source_rows": " || ".join(
+                f"{s.get('source_sheet')}:{s.get('source_row')}" for s in statements
+            ),
+            "notes": decision.notes,
+        })
+
+        if (str(product_id), str(store_id)) in existing:
+            report["already_present"] += 1
+            continue
+
+        planned.append({
+            "product_id": product_id,
+            "store_id": store_id,
+            "pdi_item_code": pdi_item_code or "",
+            "commercial_unit_basis": decision.commercial_unit_basis,
+            "units_accounted_for": decision.units_accounted_for,
+            "case_cost": case_cost,
+            # Cost status is reviewed independently of the commercial
+            # unit, so it is a column, not an evidence key.
+            "cost_basis": cost_basis,
+            "approval_state": decision.approval_state,
+            "evidence": {
+                **decision.evidence,
+                "notes": decision.notes,
+                "cost_basis": cost_basis,
+                "source_store_identifier": first.get("store_context"),
+                "physical_store_identity_status": first.get("store_identity_status"),
+                "supporting_rows": [
+                    {"source_file": s.get("source_file"),
+                     "source_sheet": s.get("source_sheet"),
+                     "source_row": s.get("source_row"),
+                     "raw_value": (s.get("evidence") or {}).get("raw_value")
+                     if isinstance(s.get("evidence"), dict) else None}
+                    for s in statements
+                ],
+            },
+            "source_system": first.get("source_system", "distributor_price_sheet"),
+            "source_file": first.get("source_file"),
+            "source_sheet": first.get("source_sheet"),
+            "source_row": first.get("source_row"),
+        })
+        report["mappings_created"] += 1
+
+    report["basis_counts"] = dict(basis_counter)
+    report["cost_basis_counts"] = dict(cost_counter)
+    report["review_required"] = sum(
+        1 for r in review if r["approval_state"] == STATE_REVIEW_REQUIRED
+    )
+    report["approved"] = sum(
+        1 for r in review if r["approval_state"] == "APPROVED"
+    )
+    report["unknown_basis"] = basis_counter.get(COMMERCIAL_UNKNOWN, 0)
+    report["conflict_basis"] = basis_counter.get(COMMERCIAL_CONFLICT, 0)
+    return planned, review
 
 
 def write_outputs(report: dict, review: list[dict]) -> None:

@@ -3,7 +3,7 @@ One-time pilot seed — scripts/pilot_seed.py
 
 Populates the Product Master tables on the pilot database, once.
 
-    # rehearsal — verifies, runs every stage, rolls each one back
+    # plan — verifies, reads, computes every row it would write; writes none
     python scripts/pilot_seed.py --pilot-seed \
         --expect-database postgres --expect-host-contains supabase --dry-run
 
@@ -27,6 +27,12 @@ or any other legacy table, invoices, invoice_items, documents, processing
 logs, stores, store_identifiers. It approves nothing, rejects nothing,
 proposes nothing and creates no review rows — every seeded candidate arrives
 awaiting a human. Re-running it adds nothing it has already added.
+
+`--dry-run` does not run the stages at all. It runs their planning logic in
+memory, each stage fed the previous stage's planned rows, against what the
+database already holds, read in a READ ONLY transaction (see pilot_seed_plan).
+It issues no INSERT, UPDATE or DELETE, and reports every row that would make
+the real seed fail. The target verification before it is identical.
 """
 
 from __future__ import annotations
@@ -73,17 +79,35 @@ async def run_stages(target, dry_run: bool, store: str | None) -> dict:
         if isinstance(outcome, tuple):
             outcome = outcome[0]
         results[name] = outcome
-        if outcome.get("error"):
-            print(f"\nSTOPPING: {name} failed — {outcome['error']}")
+        failure = stage_failure(outcome)
+        if failure:
+            not_run = [n for n, _, _ in STAGES][len(results):]
+            print(f"\nSTOPPING: stage '{name}' failed — {failure}")
+            print(f"Not run: {', '.join(not_run) or 'none'}")
             break
     return results
+
+
+def stage_failure(outcome: dict) -> str | None:
+    """
+    The failure a stage reported, or None.
+
+    Stages report failure in one of two shapes: `error` (a string) or
+    `errors` (a list). Either, when non-empty, is a failed stage.
+    """
+    if outcome.get("error"):
+        return str(outcome["error"])
+    errors = outcome.get("errors")
+    if errors:
+        return " | ".join(str(error) for error in errors)
+    return None
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="One-time Product Master seed for the verified pilot database.")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Run every stage and roll each one back.")
+                        help="Plan the whole seed in memory and report it. Writes nothing.")
     parser.add_argument("--store", default=None, help="Limit to one source store code.")
     add_pilot_arguments(parser)
     args = parser.parse_args()
@@ -101,17 +125,66 @@ def main() -> None:
 
     print(f"Verified pilot target: database {target.database!r} on a host matching "
           f"{args.expect_host_contains!r}, Alembic revision {target.revision}.")
-    print("Mode: DRY RUN (every stage rolls back)\n" if args.dry_run else "Mode: WRITE\n")
+
+    if args.dry_run:
+        print("Mode: DRY RUN (plan only — no INSERT, UPDATE or DELETE is issued)\n")
+        from scripts.pilot_seed_plan import plan_pipeline
+
+        plan = asyncio.run(plan_pipeline(target, args.store))
+        write_report({"dry_run": True, "database": target.database,
+                      "revision": target.revision, "plan": plan, "stages": plan["stages"]})
+        print_plan(plan)
+        if not plan["ready_for_live_seed"]:
+            sys.exit(1)
+        return
+
+    print("Mode: WRITE\n")
 
     results = asyncio.run(run_stages(target, args.dry_run, args.store))
 
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(json.dumps(
-        {"dry_run": bool(args.dry_run), "database": target.database,
-         "revision": target.revision, "stages": results}, indent=2, default=str))
-    print(f"\nReport: {REPORT.relative_to(ROOT)}")
-    if any(r.get("error") for r in results.values()):
+    failed = next((name for name, outcome in results.items() if stage_failure(outcome)), None)
+    write_report({"dry_run": False, "database": target.database,
+                  "revision": target.revision, "stages": results,
+                  "failed_stage": failed,
+                  "not_run": [n for n, _, _ in STAGES if n not in results]})
+    if failed:
+        print(f"\nSEED FAILED at stage '{failed}'. Stages after it were not run.")
         sys.exit(1)
+    print("\nSeed completed: every stage committed.")
+
+
+def write_report(payload: dict) -> None:
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
+    REPORT.write_text(json.dumps(payload, indent=2, default=str))
+    print(f"\nReport: {REPORT.relative_to(ROOT)}")
+
+
+def print_plan(plan: dict) -> None:
+    def section(title: str, values: dict) -> None:
+        print(f"\n{title}")
+        for key, value in values.items():
+            print(f"  {key:<44} {value}")
+
+    section("Source", plan["source"])
+    section("Already in the database", plan["existing_rows"])
+    section("Would create", plan["would_create"])
+    section("Descriptions by role", plan["would_create_descriptions_by_role"])
+    section("Would update (Product Master only)", plan["would_update"])
+    section("Expected totals after the seed", plan["expected_totals_after"])
+    section("Skipped", plan["skipped"])
+    section("Commercial mappings", plan["commercial"])
+    section("Source snapshot", plan["source_snapshot"])
+    validation = plan["validation"]
+    print("\nWould fail the real seed")
+    for line in validation["would_fail"] or ["none"]:
+        print(f"  {line}")
+    print("\nWarnings")
+    for line in validation["warnings"] or ["none"]:
+        print(f"  {line}")
+    print("\nBLOCKING" if validation["blocking"] else "\nBlocking issues: none")
+    for line in validation["blocking"]:
+        print(f"  - {line}")
+    print(f"\nReady for the live seed: {'YES' if plan['ready_for_live_seed'] else 'NO'}")
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -42,6 +43,7 @@ from app.services.product_master.descriptions import (  # noqa: E402
     decide_canonical_description,
 )
 from scripts.pilot_seed_guard import seed_target_host  # noqa: E402
+from scripts.seed_product_master_identity import bulk_insert  # noqa: E402
 
 REPORT = ROOT / "analysis" / "master-data" / "product_master_description_seed_report.json"
 SYSTEM_ATTRIBUTION = "system:description-policy-v1"
@@ -54,82 +56,21 @@ async def run(args) -> dict:
     host = seed_target_host(get_settings().database_url, args)
     print(f"Database host: {host}  — local development, seeding permitted\n")
 
-    report = {
-        "dry_run": bool(args.dry_run),
-        "database_host": host,
-        "policy": "docs/product-master-description-policy.md",
-        "products_examined": 0,
-        "canonical_set": 0,
-        "already_canonical": 0,
-        "unresolved": 0,
-        "outcomes": {},
-        "source_distribution": {},
-        "examples": [],
-        "errors": [],
-    }
+    report = new_description_report(dry_run=args.dry_run, host=host)
 
     async with get_session_factory()() as session:
         try:
             products = (await session.execute(select(MasterProduct))).scalars().all()
             rows = (await session.execute(select(MasterProductDescription))).scalars().all()
 
-            by_product: dict = {}
-            existing_canonical: set = set()
-            for row in rows:
-                by_product.setdefault(row.product_id, []).append({
-                    "description": row.description, "source_sheet": row.source_sheet,
-                    "source_file": row.source_file, "source_row": row.source_row,
-                    "role": row.role, "source_system": row.source_system,
-                })
-                if row.role == DESC_CANONICAL:
-                    existing_canonical.add(row.product_id)
-
-            outcomes: Counter = Counter()
-            sources: Counter = Counter()
-            report["products_examined"] = len(products)
-
-            for product in products:
-                observed = [d for d in by_product.get(product.id, [])
-                            if d["role"] != DESC_CANONICAL]
-                decision = decide_canonical_description(observed)
-                outcomes[decision.outcome] += 1
-
-                if decision.outcome != OUTCOME_CANONICAL:
-                    report["unresolved"] += 1
-                    continue
-                if product.id in existing_canonical:
-                    report["already_canonical"] += 1
-                    continue
-
-                sources[decision.source_sheet or "?"] += 1
-                session.add(MasterProductDescription(
-                    product_id=product.id,
-                    description=decision.description,
-                    normalized_description=decision.description.upper(),
-                    role=DESC_CANONICAL,
-                    evidence_state=STATE_AUTO_MATCHED,
-                    # Attribution: derived by policy, not entered by a person.
-                    source_system=SYSTEM_ATTRIBUTION,
-                    source_file=decision.source_file,
-                    source_sheet=decision.source_sheet,
-                    source_row=decision.source_row,
-                    observed_count=1,
-                ))
+            planned = plan_canonical_descriptions(products, rows, report)
+            await bulk_insert(session, MasterProductDescription,
+                              [fields for _product, fields in planned])
+            for product, fields in planned:
                 # The canonical description is mirrored onto the product for
                 # fast reads; the alias rows remain untouched.
-                product.canonical_description = decision.description
-                report["canonical_set"] += 1
-                if len(report["examples"]) < 8:
-                    report["examples"].append({
-                        "canonical_upc": product.canonical_upc,
-                        "description": decision.description,
-                        "length": len(decision.description),
-                        "source_sheet": decision.source_sheet,
-                        "reason": decision.reason,
-                    })
+                product.canonical_description = fields["description"]
 
-            report["outcomes"] = dict(outcomes)
-            report["source_distribution"] = dict(sources)
             await session.flush()
             if args.dry_run:
                 await session.rollback()
@@ -142,6 +83,88 @@ async def run(args) -> dict:
             report["errors"].append(f"{type(exc).__name__}: {exc}")
             print(f"FAILED — rolled back: {exc}")
     return report
+
+
+def new_description_report(*, dry_run: bool, host: str) -> dict:
+    return {
+        "dry_run": bool(dry_run),
+        "database_host": host,
+        "policy": "docs/product-master-description-policy.md",
+        "products_examined": 0,
+        "canonical_set": 0,
+        "already_canonical": 0,
+        "unresolved": 0,
+        "outcomes": {},
+        "source_distribution": {},
+        "examples": [],
+        "errors": [],
+    }
+
+
+def plan_canonical_descriptions(products, rows, report) -> list[tuple[Any, dict]]:
+    """
+    Which products receive a canonical description, and the row for each.
+
+    `products` need `id` and `canonical_upc`; `rows` are existing description
+    rows (anything with the model's attributes). Pure — fills `report`,
+    touches neither argument.
+    """
+    by_product: dict = {}
+    existing_canonical: set = set()
+    for row in rows:
+        by_product.setdefault(row.product_id, []).append({
+            "description": row.description, "source_sheet": row.source_sheet,
+            "source_file": row.source_file, "source_row": row.source_row,
+            "role": row.role, "source_system": row.source_system,
+        })
+        if row.role == DESC_CANONICAL:
+            existing_canonical.add(row.product_id)
+
+    outcomes: Counter = Counter()
+    sources: Counter = Counter()
+    report["products_examined"] = len(products)
+    planned: list[tuple[Any, dict]] = []
+
+    for product in products:
+        observed = [d for d in by_product.get(product.id, [])
+                    if d["role"] != DESC_CANONICAL]
+        decision = decide_canonical_description(observed)
+        outcomes[decision.outcome] += 1
+
+        if decision.outcome != OUTCOME_CANONICAL:
+            report["unresolved"] += 1
+            continue
+        if product.id in existing_canonical:
+            report["already_canonical"] += 1
+            continue
+
+        sources[decision.source_sheet or "?"] += 1
+        planned.append((product, {
+            "product_id": product.id,
+            "description": decision.description,
+            "normalized_description": decision.description.upper(),
+            "role": DESC_CANONICAL,
+            "evidence_state": STATE_AUTO_MATCHED,
+            # Attribution: derived by policy, not entered by a person.
+            "source_system": SYSTEM_ATTRIBUTION,
+            "source_file": decision.source_file,
+            "source_sheet": decision.source_sheet,
+            "source_row": decision.source_row,
+            "observed_count": 1,
+        }))
+        report["canonical_set"] += 1
+        if len(report["examples"]) < 8:
+            report["examples"].append({
+                "canonical_upc": product.canonical_upc,
+                "description": decision.description,
+                "length": len(decision.description),
+                "source_sheet": decision.source_sheet,
+                "reason": decision.reason,
+            })
+
+    report["outcomes"] = dict(outcomes)
+    report["source_distribution"] = dict(sources)
+    return planned
 
 
 def main() -> None:
