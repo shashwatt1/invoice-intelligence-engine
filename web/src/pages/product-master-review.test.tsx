@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -434,5 +434,121 @@ describe("Product Master commercial review", () => {
         expect.objectContaining({ search: "018200967214" }),
       );
     });
+  });
+});
+
+describe("rows per page", () => {
+  type Asked = { page: number; page_size: number; review_status?: string; search?: string };
+  const asked = () => listCommercialCandidates.mock.calls.map(([params]) => params as Asked);
+  const lastAsked = () => asked()[asked().length - 1];
+
+  /** The server's paging, over a queue of `total` ready-for-review rows. */
+  function serverQueue(total: number) {
+    listCommercialCandidates.mockImplementation(async ({ page, page_size }: Asked) => {
+      const start = (page - 1) * page_size;
+      const count = Math.max(0, Math.min(page_size, total - start));
+      return {
+        items: Array.from({ length: count }, (_, i) => ({ ...SETTLED, id: `row-${start + i}` })),
+        total, page, page_size,
+      };
+    });
+  }
+
+  const rowsShown = () => screen.getAllByRole("button", { name: "Review" }).length;
+
+  async function choosePageSize(user: ReturnType<typeof userEvent.setup>, size: number) {
+    await user.click(await screen.findByRole("combobox", { name: "Rows per page" }));
+    await user.click(await screen.findByRole("option", { name: String(size) }));
+  }
+
+  async function goToPage2(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: "Next page" }));
+    await screen.findByText("26–50 of 412");
+    expect(lastAsked()).toMatchObject({ page: 2, page_size: 25 });
+  }
+
+  beforeEach(() => serverQueue(412));
+
+  it("defaults to 25 rows and offers exactly 25, 50, 100, 250 and 500", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByText("1–25 of 412")).toBeInTheDocument();
+    expect(asked()[0]).toMatchObject({ page: 1, page_size: 25, review_status: "READY_FOR_REVIEW" });
+    expect(rowsShown()).toBe(25);
+    expect(screen.getByRole("combobox", { name: "Rows per page" })).toHaveTextContent("25");
+    await user.click(screen.getByRole("combobox", { name: "Rows per page" }));
+    const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
+    expect(options).toEqual(["25", "50", "100", "250", "500"]);
+  });
+
+  it.each([
+    [50, "1–50 of 412"],
+    [100, "1–100 of 412"],
+    [250, "1–250 of 412"],
+  ])("asks the server for %i rows and shows %s", async (size, range) => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("1–25 of 412");
+    await choosePageSize(user, size);
+    expect(await screen.findByText(range)).toBeInTheDocument();
+    expect(lastAsked()).toMatchObject({ page: 1, page_size: size, review_status: "READY_FOR_REVIEW" });
+    expect(rowsShown()).toBe(size);
+    expect(screen.getByRole("button", { name: "Next page" })).toBeEnabled();
+  });
+
+  it("shows all 412 ready-for-review rows on one page at 500, and can go back to fewer", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("1–25 of 412");
+    await choosePageSize(user, 500);
+    expect(await screen.findByText("1–412 of 412")).toBeInTheDocument();
+    expect(lastAsked()).toMatchObject({ page: 1, page_size: 500 });
+    expect(rowsShown()).toBe(412);
+    // One page: no paging buttons, but the count and the choice stay.
+    expect(screen.queryByRole("button", { name: "Next page" })).not.toBeInTheDocument();
+    await choosePageSize(user, 25);
+    expect(await screen.findByText("1–25 of 412")).toBeInTheDocument();
+  });
+
+  it("returns to page 1 when the page size changes, with one request for the new size", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await goToPage2(user);
+    await choosePageSize(user, 100);
+    expect(await screen.findByText("1–100 of 412")).toBeInTheDocument();
+    expect(lastAsked()).toMatchObject({ page: 1, page_size: 100 });
+    expect(asked().filter((a) => a.page_size === 100)).toHaveLength(1);
+  });
+
+  it("keeps the chosen size while paging", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("1–25 of 412");
+    await choosePageSize(user, 100);
+    await screen.findByText("1–100 of 412");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByText("101–200 of 412")).toBeInTheDocument();
+    expect(lastAsked()).toMatchObject({ page: 2, page_size: 100 });
+  });
+
+  it("returns to page 1 when the search changes", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await goToPage2(user);
+    await user.type(screen.getByPlaceholderText("Search UPC, item code or name"), "LAGER");
+    await waitFor(() => expect(lastAsked()).toMatchObject({ page: 1, page_size: 25, search: "LAGER" }));
+  });
+
+  it.each([
+    ["review status", 0, "Conflict"],
+    ["commercial unit", 1, "Case is the selling unit"],
+    ["cost status", 2, "Cost established"],
+  ])("returns to page 1 when the %s filter changes", async (_name, index, option) => {
+    const user = userEvent.setup();
+    renderPage();
+    await goToPage2(user);
+    await user.click(screen.getAllByRole("combobox")[index]);
+    await user.click(await screen.findByRole("option", { name: option }));
+    await waitFor(() => expect(lastAsked()).toMatchObject({ page: 1, page_size: 25 }));
   });
 });

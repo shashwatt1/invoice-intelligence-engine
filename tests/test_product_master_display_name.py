@@ -469,6 +469,59 @@ class TestTheReviewApi:
         assert response.status_code == 403
 
 
+class TestTheQueuePageSize:
+    """The review queue pages on the server; a reviewer may choose up to 500 rows per page."""
+
+    @pytest.fixture
+    def asked(self, api, monkeypatch):
+        import app.api.v1.product_master as module
+
+        seen: list[dict] = []
+
+        class Recording(module.MasterCommercialRepository):  # the fixture's fake repository
+            async def list_candidates(self, **kwargs):
+                seen.append(kwargs)
+                return await super().list_candidates(**kwargs)
+
+        monkeypatch.setattr(module, "MasterCommercialRepository", Recording)
+        api.as_role("MANAGER")
+        return seen
+
+    @pytest.mark.parametrize("size", [25, 50, 100, 250, 500])
+    async def test_every_offered_page_size_is_served_from_the_server(self, client, asked, size):
+        response = await client.get("/api/v1/product-master/commercial",
+                                    params={"page": 1, "page_size": size, "review_status": "READY_FOR_REVIEW"})
+        assert response.status_code == 200
+        assert response.json()["page_size"] == size
+        assert (asked[-1]["page"], asked[-1]["page_size"], asked[-1]["review_status"]) == (
+            1, size, "READY_FOR_REVIEW")
+
+    async def test_the_default_stays_25(self, client, asked):
+        response = await client.get("/api/v1/product-master/commercial")
+        assert response.json()["page_size"] == 25 and asked[-1]["page_size"] == 25
+
+    @pytest.mark.parametrize("size", [0, 501, 1000])
+    async def test_a_page_size_outside_1_to_500_is_refused(self, client, asked, size):
+        response = await client.get("/api/v1/product-master/commercial", params={"page_size": size})
+        assert response.status_code == 422
+        assert asked == []
+
+    def test_the_shared_page_bound_is_exactly_500(self):
+        from pydantic import ValidationError
+
+        from app.schemas.base import PaginatedResponse
+
+        assert PaginatedResponse[int](items=[], total=0, page=1, page_size=500).page_size == 500
+        with pytest.raises(ValidationError):
+            PaginatedResponse[int](items=[], total=0, page=1, page_size=501)
+
+    @pytest.mark.parametrize(("path", "refused"), [
+        ("/api/v1/invoices", 101), ("/api/v1/proposals", 201), ("/api/v1/mapping-queue", 201),
+    ])
+    async def test_other_queues_keep_their_own_limits(self, client, asked, path, refused):
+        assert (await client.get(path, params={"page_size": refused})).status_code == 422
+
+
 class TestReviewStateDoesNotDependOnTheName:
 
     @pytest.mark.parametrize(("mapping", "status", "conflict"), [

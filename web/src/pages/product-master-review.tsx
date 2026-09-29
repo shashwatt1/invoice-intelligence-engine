@@ -16,7 +16,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useCommercialCandidates, useCommercialSummary } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
 
-const PAGE_SIZE = 25;
+// Rows per page a reviewer can choose; the server pages the queue (its limit is 500).
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500] as const;
+const DEFAULT_PAGE_SIZE = 25;
 
 /** How many sellable units PDI multiplies Item Retail by — not what is in the box. */
 export function basisLabel(basis: string): string {
@@ -129,9 +131,15 @@ export function ProductMasterReviewPage() {
   const [cost, setCost] = useState("ALL");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [selected, setSelected] = useState<CommercialCandidateRow | null>(null);
 
   useEffect(() => setPage(1), [state, basis, cost, search]);
+  // Reset in the same update as the size, so the new size is fetched once, from page 1.
+  const changePageSize = (size: number) => {
+    setPageSize(size);
+    setPage(1);
+  };
 
   const params = useMemo(() => ({
     review_status: state === "ALL" ? undefined : state,
@@ -140,8 +148,8 @@ export function ProductMasterReviewPage() {
     cost_basis: cost === "ALL" ? undefined : cost,
     search: search.trim() || undefined,
     page,
-    page_size: PAGE_SIZE,
-  }), [state, basis, cost, search, page]);
+    page_size: pageSize,
+  }), [state, basis, cost, search, page, pageSize]);
 
   const query = useCommercialCandidates(params);
   const summary = useCommercialSummary();
@@ -305,9 +313,11 @@ export function ProductMasterReviewPage() {
 
           <Pagination
             page={page}
-            pageSize={PAGE_SIZE}
+            pageSize={pageSize}
             total={query.data!.total}
             onPageChange={setPage}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageSizeChange={changePageSize}
           />
         </>
       )}

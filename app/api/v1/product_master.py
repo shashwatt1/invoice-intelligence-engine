@@ -134,7 +134,7 @@ async def list_commercial_candidates(
     cost_basis: str | None = Query(default=None),
     search: str | None = Query(default=None, max_length=64),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=1, le=100),
+    page_size: int = Query(default=25, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_authenticated_user),
 ) -> PaginatedResponse[CommercialCandidateRow]:

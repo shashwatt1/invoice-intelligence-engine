@@ -63,5 +63,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
     items: list[T]
     total: int = Field(description="Total number of records matching the query.")
     page: int = Field(ge=1, description="Current page number (1-indexed).")
-    page_size: int = Field(ge=1, le=200, description="Number of records per page.")
+    # The largest page any endpoint may serve; each endpoint's own Query limit
+    # decides what it actually accepts (at most this).
+    page_size: int = Field(ge=1, le=500, description="Number of records per page.")
     request_id: str | None = None
