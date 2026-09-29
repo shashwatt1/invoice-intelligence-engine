@@ -1,13 +1,16 @@
-import { MapPin, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Fingerprint, MapPin, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import type { StoreRef } from "@/api/types";
+import { SourceIdentityBadge } from "@/components/shared/source-identity-badge";
+import { PHYSICAL_STORE_NOT_IDENTIFIED, sourceIdentityView } from "@/lib/stores";
 import { cn } from "@/lib/utils";
 
 /**
  * The one way a store is shown: its confirmed name, or the source code
  * it is known by, marked "identity needs confirmation". Never a guessed
- * name. Links to the Store Directory.
+ * name. A source identity is shown as what it is — a source system's
+ * identifier, not a store. Links to the Store Directory.
  */
 export function StoreChip({
   store,
@@ -29,6 +32,31 @@ export function StoreChip({
             title="No store assigned yet">
         <MapPin className="size-3" aria-hidden /> Store pending
       </span>
+    );
+  }
+  const source = sourceIdentityView(store.kind, store.source_identity);
+  if (source) {
+    const sourceBody = (
+      <>
+        <Fingerprint className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="truncate font-mono">{source.name}</span>
+        {compact
+          ? <span className="text-[0.66rem] font-medium text-muted-foreground">source identity</span>
+          : <SourceIdentityBadge />}
+      </>
+    );
+    const sourceClasses = cn(
+      "inline-flex max-w-full items-center gap-1.5 text-[0.76rem] font-medium text-foreground",
+      compact ? "" : "rounded-md bg-surface-2 px-2 py-1",
+      className,
+    );
+    const sourceTitle = `${source.system} source identity — ${PHYSICAL_STORE_NOT_IDENTIFIED.toLowerCase()}.`;
+    return link ? (
+      <Link to={`/stores?store=${store.id}`} className={cn(sourceClasses, "transition-colors hover:bg-surface-3 hover:text-brand")} title={sourceTitle}>
+        {sourceBody}
+      </Link>
+    ) : (
+      <span className={sourceClasses} title={sourceTitle}>{sourceBody}</span>
     );
   }
   const unresolved = store.identity_status !== "confirmed";

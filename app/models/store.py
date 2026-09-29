@@ -59,6 +59,15 @@ NON_MATCHING_IDENTIFIER_TYPES = frozenset({TYPE_DIRECTORY_NAME, TYPE_STORE_ALIAS
 KIND_PHYSICAL = "physical"
 KIND_SOURCE_IDENTITY = "source_identity"
 
+# How each source system is named to a person, e.g. "Item Sales · 47708760".
+SOURCE_SYSTEM_LABELS = {
+    SOURCE_ITEM_SALES: "Item Sales",
+    SOURCE_DOCUMENT: "Invoice document",
+    SOURCE_OPERATOR: "Operator",
+    SOURCE_CSTOREPRO: "CStorePro",
+    SOURCE_STORE_MASTER: "Store Master",
+}
+
 
 class Store(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "stores"
@@ -134,6 +143,22 @@ class Store(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         if self.in_store_directory or self.display_name or self.address_line_1:
             return KIND_PHYSICAL
         return KIND_SOURCE_IDENTITY
+
+    @property
+    def source_identity(self) -> StoreIdentifier | None:
+        """
+        For a source identity, the source-system identifier it is known by —
+        an Item Sales store code first, else its first matchable identifier.
+        None for a physical store: its identifiers are evidence about a
+        location, not what it is.
+        """
+        if self.kind != KIND_SOURCE_IDENTITY:
+            return None
+        matchable = [i for i in self.identifiers if i.identifier_type not in NON_MATCHING_IDENTIFIER_TYPES]
+        preferred = [i for i in matchable
+                     if (i.source_system, i.identifier_type) == (SOURCE_ITEM_SALES, TYPE_STORE_CODE)]
+        chosen = preferred or matchable
+        return chosen[0] if chosen else None
 
     @property
     def address_summary(self) -> str | None:

@@ -15,6 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.processing import SourceIdentityRef
+
 
 class LegacyMappingRef(BaseModel):
     """A current `product_case_mappings` row — the live EDI authority, shown as context."""
@@ -61,6 +63,10 @@ class CommercialCandidateRow(BaseModel):
     store_id: uuid.UUID
     store_label: str
     store_identity_status: str
+    # The Store Master classification: a source identity is a source system's
+    # identifier (e.g. Item Sales 47708760), not a physical store.
+    store_kind: str = "physical"
+    store_source_identity: SourceIdentityRef | None = None
     commercial_unit_basis: str
     units_accounted_for: int | None
     case_cost: float | None

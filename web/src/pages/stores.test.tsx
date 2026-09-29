@@ -51,6 +51,9 @@ const CODE_47708760 = entry({
   id: "code-47708760", label: "Store 47708760 (location not yet confirmed)", source_codes: ["47708760"],
   kind: "source_identity", in_store_directory: false,
   identifiers: [{ source_system: "item_sales", identifier_type: "store_code", identifier_value: "47708760", verified: false }],
+  // As the API describes it: a source system's identifier, not a store.
+  source_identity: { source_system: "item_sales", source_label: "Item Sales", identifier_type: "store_code",
+                     identifier_value: "47708760", label: "Item Sales · 47708760" },
 });
 
 function mount() {
@@ -71,7 +74,10 @@ describe("StoresPage", () => {
 
     const section = await screen.findByTestId("source-identities");
     expect(within(section).getByText("Unresolved source identities")).toBeInTheDocument();
-    expect(within(section).getByText("Store 47708760")).toBeInTheDocument();
+    expect(within(section).getByText("Item Sales · 47708760")).toBeInTheDocument();
+    expect(within(section).getByText("Source identity")).toBeInTheDocument();
+    expect(within(section).getByText("Physical store not identified")).toBeInTheDocument();
+    expect(screen.queryByText("Store 47708760")).not.toBeInTheDocument();
     expect(within(section).queryByRole("button", { name: /confirm identity/i })).not.toBeInTheDocument();
     expect(within(section).getAllByText(/data-team decision/i).length).toBeGreaterThan(0);
 
@@ -112,7 +118,7 @@ describe("StoresPage", () => {
 
     // 47708760 appears only under unresolved source identities.
     expect(within(section).getAllByTestId("store-card")).toHaveLength(1);
-    expect(within(section).getByText("Store 47708760")).toBeInTheDocument();
+    expect(within(section).getByText("Item Sales · 47708760")).toBeInTheDocument();
     for (const card of physical) expect(within(card).queryByText(/47708760/)).not.toBeInTheDocument();
 
     // No alias is a store of its own: each appears only as an identifier on its canonical store.

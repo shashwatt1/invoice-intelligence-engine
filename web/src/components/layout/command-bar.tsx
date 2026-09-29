@@ -17,6 +17,7 @@ import { listInvoices, listStores } from "@/api/endpoints";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { formatMoney } from "@/lib/format";
 import { rowDestination } from "@/lib/routes";
+import { storeOptionLabel } from "@/lib/stores";
 import { cn } from "@/lib/utils";
 
 type Item = { id: string; group: string; label: string; hint?: string; icon?: LucideIcon; to: string; extra?: React.ReactNode };
@@ -65,7 +66,7 @@ export function CommandBar({ open, onOpenChange }: { open: boolean; onOpenChange
     const storeItems: Item[] = (stores.data ?? [])
       .filter((s) => needle && (s.label.toLowerCase().includes(needle) || (s.address ?? "").toLowerCase().includes(needle)))
       .slice(0, 4)
-      .map((s) => ({ id: `store-${s.id}`, group: "Stores", label: s.label, hint: s.address ?? undefined, icon: MapPin, to: `/stores?store=${s.id}` }));
+      .map((s) => ({ id: `store-${s.id}`, group: "Stores", label: storeOptionLabel(s), hint: s.address ?? undefined, icon: MapPin, to: `/stores?store=${s.id}` }));
     const invoiceItems: Item[] = (invoices.data?.items ?? []).map((row) => ({
       id: `inv-${row.document_id}`,
       group: "Invoices",

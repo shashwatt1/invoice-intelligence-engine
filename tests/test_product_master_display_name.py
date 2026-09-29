@@ -38,6 +38,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.models.store import Store, StoreIdentifier
 from app.services.product_master.display_name import (
     AMBIGUOUS_LABEL,
     CLASS_POS,
@@ -329,7 +330,10 @@ def _description(role, description, sheet, row, system="distributor_price_sheet"
 
 
 PRODUCT = SimpleNamespace(id=PRODUCT_ID, canonical_upc="018200001154")
-STORE = SimpleNamespace(id=STORE_ID, display_name=None, identity_status="unresolved")
+# The pilot's queue store: a source identity known only by its Item Sales code.
+STORE = Store(id=STORE_ID, display_name=None, identity_status="unresolved",
+              identifiers=[StoreIdentifier(source_system="item_sales", identifier_type="store_code",
+                                           identifier_value="47708760")])
 CANONICAL_ROWS = [
     _description("SOURCE", "Test lager 16oz", "data", 8, system="item_sales_summary"),
     _description("CANONICAL", "TEST LAGER 4/6 16OZ", "Sheet1", 4),

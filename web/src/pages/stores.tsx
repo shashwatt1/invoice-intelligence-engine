@@ -12,7 +12,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useCreateStore, useStores, useUpdateStoreIdentity } from "@/hooks/use-api";
 import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
+import { PHYSICAL_STORE_NOT_IDENTIFIED, sourceIdentityView } from "@/lib/stores";
 import { cn } from "@/lib/utils";
+import { SourceIdentityBadge } from "@/components/shared/source-identity-badge";
 
 /**
  * The Store Directory: every store the system knows, what it is called
@@ -73,6 +75,7 @@ function StoreCard({ store, highlighted, sourceIdentity = false }: {
   store: StoreDirectoryEntry; highlighted: boolean; sourceIdentity?: boolean;
 }) {
   const unresolved = store.identity_status !== "confirmed";
+  const source = sourceIdentity ? sourceIdentityView(store.kind, store.source_identity) : null;
   const [editing, setEditing] = useState(false);
   const hasReference = store.pricing_rows + store.catalogue_rows + store.identities > 0;
   return (
@@ -80,10 +83,12 @@ function StoreCard({ store, highlighted, sourceIdentity = false }: {
       <div className="flex flex-wrap items-start justify-between gap-3 px-6 pt-5 pb-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("text-[1rem] font-semibold tracking-tight", unresolved && !store.display_name && "font-mono")}>{store.label.replace(" (identity unconfirmed)", "").replace(" (location not yet confirmed)", "")}</span>
-            <StatusPill size="xs" tone={unresolved ? "warning" : "success"}
-                        label={unresolved ? "Identity needs confirmation" : "Identity confirmed"}
-                        meaning={unresolved ? "Known by a source identifier or by what documents say; a person has not confirmed the location." : "A person confirmed this store's name and address."} />
+            <span className={cn("text-[1rem] font-semibold tracking-tight", unresolved && !store.display_name && "font-mono")}>{source ? source.name : store.label.replace(" (identity unconfirmed)", "").replace(" (location not yet confirmed)", "")}</span>
+            {source ? <SourceIdentityBadge /> : (
+              <StatusPill size="xs" tone={unresolved ? "warning" : "success"}
+                          label={unresolved ? "Identity needs confirmation" : "Identity confirmed"}
+                          meaning={unresolved ? "Known by a source identifier or by what documents say; a person has not confirmed the location." : "A person confirmed this store's name and address."} />
+            )}
             {store.source_codes.length ? <span className="t-mono text-muted-foreground">#{store.source_codes.join(", ")}</span> : null}
             {!sourceIdentity && !store.in_store_directory ? (
               <StatusPill size="xs" tone="warning" label="Not in store directory"
@@ -91,7 +96,7 @@ function StoreCard({ store, highlighted, sourceIdentity = false }: {
             ) : null}
           </div>
           <div className="t-meta mt-1">
-            {store.address ?? (unresolved ? "No confirmed address." : "No address recorded.")}
+            {source ? PHYSICAL_STORE_NOT_IDENTIFIED : (store.address ?? (unresolved ? "No confirmed address." : "No address recorded."))}
             {store.customer_name ? <> · billed as <span className="font-medium text-foreground">{store.customer_name}</span></> : null}
           </div>
         </div>

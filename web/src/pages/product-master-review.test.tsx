@@ -40,7 +40,11 @@ const SETTLED: CommercialCandidateRow = {
   product_name_source: null, product_name_reference: "Sheet1 row 4",
   product_name_variant_count: 0, product_name_variants: [],
   canonical_identifier: "018200001154", pdi_item_code: "01820000115",
-  store_id: "s1", store_label: "Store 47708760", store_identity_status: "unresolved",
+  // As the API describes the pilot queue's store: an Item Sales source identity, not a physical store.
+  store_id: "s1", store_label: "Item Sales · 47708760", store_identity_status: "unresolved",
+  store_kind: "source_identity",
+  store_source_identity: { source_system: "item_sales", source_label: "Item Sales", identifier_type: "store_code",
+                           identifier_value: "47708760", label: "Item Sales · 47708760" },
   commercial_unit_basis: "UNIT_IS_SELLING_UNIT", units_accounted_for: 4,
   case_cost: 26.45, cost_basis: "DISTRIBUTOR_CASE_PRICE",
   approval_state: "REVIEW_REQUIRED", evidence_state: "REVIEW_REQUIRED",
@@ -641,5 +645,69 @@ describe("Product Master review — accountable decisions", () => {
     });
     const { dialog } = await openCandidate("018200001154");
     expect(await within(dialog).findByText(/propose by vivek \(User\)/)).toBeInTheDocument();
+  });
+});
+
+describe("source identity presentation", () => {
+  const PHYSICAL_ROW: CommercialCandidateRow = {
+    ...SETTLED, id: "c9", canonical_identifier: "049000000443", product_name: "TEST COLA 12OZ",
+    store_id: "s9", store_label: "AF McKinley", store_identity_status: "unresolved",
+    store_kind: "physical", store_source_identity: null,
+  };
+
+  it("shows a source identity by its source system and code, never as a store", async () => {
+    listCommercialCandidates.mockResolvedValue({ items: [SETTLED, PHYSICAL_ROW], total: 2, page: 1, page_size: 25 });
+    renderPage();
+    const sourceRow = (await screen.findByText("TEST LAGER 4/6 16OZ")).closest("tr")!;
+    expect(within(sourceRow).getByText("Item Sales · 47708760")).toBeInTheDocument();
+    expect(within(sourceRow).getByText("Source identity")).toBeInTheDocument();
+    expect(within(sourceRow).getByText("Physical store not identified")).toBeInTheDocument();
+    expect(within(sourceRow).queryByText(/location not confirmed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Store 47708760/)).not.toBeInTheDocument();
+
+    // A physical store is shown exactly as before.
+    const physicalRow = screen.getByText("TEST COLA 12OZ").closest("tr")!;
+    expect(within(physicalRow).getByText("AF McKinley")).toBeInTheDocument();
+    expect(within(physicalRow).getByText("location not confirmed")).toBeInTheDocument();
+    expect(within(physicalRow).queryByText("Source identity")).not.toBeInTheDocument();
+  });
+
+  it("presents any source identity the same way, whatever its code", async () => {
+    listCommercialCandidates.mockResolvedValue({
+      items: [{ ...SETTLED, store_label: "Item Sales · 12345678",
+                store_source_identity: { ...SETTLED.store_source_identity!, identifier_value: "12345678",
+                                         label: "Item Sales · 12345678" } }],
+      total: 1, page: 1, page_size: 25,
+    });
+    renderPage();
+    const row = (await screen.findByText("TEST LAGER 4/6 16OZ")).closest("tr")!;
+    expect(within(row).getByText("Item Sales · 12345678")).toBeInTheDocument();
+    expect(within(row).getByText("Physical store not identified")).toBeInTheDocument();
+  });
+
+  it("names the source identity in the review panel and says the physical store is not identified", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const row = (await screen.findByText("TEST LAGER 4/6 16OZ")).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: /review/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/Item Sales · 47708760 · source identity · physical store not identified/))
+      .toBeInTheDocument();
+    const context = within(dialog).getByTestId("store-context");
+    expect(context).toHaveTextContent("Source systemItem Sales");
+    expect(context).toHaveTextContent("Store code47708760");
+    expect(context).toHaveTextContent("Physical storeNot identified");
+    expect(within(dialog).queryByText(/Store 47708760/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a physical store's review panel as it was", async () => {
+    listCommercialCandidates.mockResolvedValue({ items: [PHYSICAL_ROW], total: 1, page: 1, page_size: 25 });
+    const user = userEvent.setup();
+    renderPage();
+    const row = (await screen.findByText("TEST COLA 12OZ")).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: /review/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/AF McKinley · location not confirmed/)).toBeInTheDocument();
+    expect(within(dialog).queryByTestId("store-context")).not.toBeInTheDocument();
   });
 });

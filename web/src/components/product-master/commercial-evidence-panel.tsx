@@ -24,6 +24,7 @@ import {
 } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { roleLabel, sellingUnitCost } from "@/lib/commercial";
+import { sourceIdentityView } from "@/lib/stores";
 import {
   PRODUCT_NAME_UNAVAILABLE,
   ProductNameBasisBadge,
@@ -79,6 +80,7 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
   // Decided rows are closed; a PENDING proposal is still open for a MANAGER/ADMIN decision.
   const settled = candidate.approval_state === "APPROVED" || candidate.approval_state === "REJECTED";
   const evidence = detail.data?.evidence;
+  const source = sourceIdentityView(candidate.store_kind, candidate.store_source_identity);
   const basisGiven = note.trim().length > 0;
   // The multiplier the decision would record: the reviewer's choice, else what was derived.
   const typedUnits = Number(units);
@@ -146,8 +148,14 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
           <AlertDialogDescription>
             <span className="font-mono text-xs">{candidate.canonical_identifier ?? "—"}</span>
             {" · "}
-            {candidate.store_label}
-            {candidate.store_identity_status !== "confirmed" && " · location not confirmed"}
+            {source ? (
+              <>{source.name} · source identity · physical store not identified</>
+            ) : (
+              <>
+                {candidate.store_label}
+                {candidate.store_identity_status !== "confirmed" && " · location not confirmed"}
+              </>
+            )}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -219,6 +227,24 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
 
           <section className="space-y-4 border-t pt-4">
             <h3 className="text-sm font-medium">Source evidence</h3>
+
+            {source && (
+              <div className="space-y-1" data-testid="store-context">
+                <h4 className="text-xs font-medium text-muted-foreground">Source identity</h4>
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-sm">
+                  <dt className="text-muted-foreground">Source system</dt>
+                  <dd>{source.system}</dd>
+                  <dt className="text-muted-foreground">{source.identifierLabel}</dt>
+                  <dd className="font-mono text-xs">{source.identifierValue ?? "—"}</dd>
+                  <dt className="text-muted-foreground">Physical store</dt>
+                  <dd>Not identified</dd>
+                </dl>
+                <p className="text-xs text-muted-foreground">
+                  These candidates come from this source system&apos;s records. Which physical store it
+                  corresponds to is a data-team decision; reviewing a candidate does not decide it.
+                </p>
+              </div>
+            )}
 
             <div className="space-y-2">
               <h4 className="text-xs font-medium text-muted-foreground">Source values (as the workbook holds them)</h4>

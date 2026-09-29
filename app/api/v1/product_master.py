@@ -33,6 +33,7 @@ from app.models.product_master import COMMERCIAL_CONFLICT, DESC_CANONICAL, STATE
 from app.models.user import User
 from app.repositories.master_commercial_repository import MasterCommercialRepository
 from app.schemas.base import APIResponse, PaginatedResponse
+from app.schemas.processing import SourceIdentityRef
 from app.schemas.product_master import (
     CommercialCandidateDetail,
     CommercialCandidateRow,
@@ -73,6 +74,7 @@ def _row(mapping, product, store, legacy: list,
     legacy_units = {row.units_per_case for row in legacy}
     evidence = mapping.evidence or {}
     name = resolve_display_name(descriptions or [])
+    source_identity = SourceIdentityRef.from_store(store)
     return CommercialCandidateRow(
         id=mapping.id,
         product_id=product.id,
@@ -89,8 +91,13 @@ def _row(mapping, product, store, legacy: list,
         canonical_identifier=product.canonical_upc,
         pdi_item_code=mapping.pdi_item_code,
         store_id=store.id,
-        store_label=store.display_name or f"Store {mapping.evidence.get('source_store_identifier', '')}".strip(),
+        # A source identity is named by its source identifier, never "Store <code>".
+        store_label=store.display_name or (
+            source_identity.label if source_identity
+            else f"Store {mapping.evidence.get('source_store_identifier', '')}".strip()),
         store_identity_status=store.identity_status,
+        store_kind=store.kind,
+        store_source_identity=source_identity,
         commercial_unit_basis=mapping.commercial_unit_basis,
         units_accounted_for=mapping.units_accounted_for,
         case_cost=float(mapping.case_cost) if mapping.case_cost is not None else None,

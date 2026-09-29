@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { StoreDirectoryEntry } from "@/api/types";
 
-import { physicalStores } from "./stores";
+import { physicalStores, sourceIdentityView, storeOptionLabel } from "./stores";
 import helperSource from "./stores.ts?raw";
 
 const base: Omit<StoreDirectoryEntry, "id" | "kind"> = {
@@ -19,6 +19,8 @@ const LIVE_SOURCE_IDENTITY: StoreDirectoryEntry = {
   identity_status: "unresolved", display_name: null, address: null, source_codes: ["47708760"],
   kind: "source_identity", in_store_directory: false,
   identifiers: [{ source_system: "item_sales", identifier_type: "store_code", identifier_value: "47708760", verified: false }],
+  source_identity: { source_system: "item_sales", source_label: "Item Sales", identifier_type: "store_code",
+                     identifier_value: "47708760", label: "Item Sales · 47708760" },
 };
 
 describe("physical store choices", () => {
@@ -46,5 +48,31 @@ describe("physical store choices", () => {
   it("name no store code in the filtering policy", () => {
     expect(helperSource).not.toContain("47708760");
     expect(helperSource).toMatch(/kind === "physical"/);
+  });
+});
+
+describe("source identity presentation", () => {
+  const identity = LIVE_SOURCE_IDENTITY.source_identity!;
+
+  it("presents a source identity by its source system and identifier", () => {
+    expect(sourceIdentityView("source_identity", identity)).toEqual({
+      name: "Item Sales · 47708760", system: "Item Sales", identifierLabel: "Store code", identifierValue: "47708760",
+    });
+  });
+
+  it("presents a physical store as nothing special, whatever codes it carries", () => {
+    expect(sourceIdentityView("physical", identity)).toBeNull();
+    expect(sourceIdentityView(undefined, identity)).toBeNull();
+  });
+
+  it("works from the classification it is given, for any code, and never falls back to 'Store'", () => {
+    const other = { ...identity, identifier_value: "12345678", label: "Item Sales · 12345678" };
+    expect(sourceIdentityView("source_identity", other)?.name).toBe("Item Sales · 12345678");
+    expect(sourceIdentityView("source_identity", null)?.name).toBe("Unidentified source record");
+  });
+
+  it("labels list and filter options truthfully", () => {
+    expect(storeOptionLabel(LIVE_SOURCE_IDENTITY)).toBe("Item Sales · 47708760 · source identity");
+    expect(storeOptionLabel({ ...PB_WOLF, label: "PB Wolf (identity unconfirmed)" })).toBe("PB Wolf (identity unconfirmed)");
   });
 });

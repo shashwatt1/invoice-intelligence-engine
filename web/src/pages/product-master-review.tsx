@@ -14,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useCommercialCandidates, useCommercialSummary } from "@/hooks/use-api";
+import { PHYSICAL_STORE_NOT_IDENTIFIED, sourceIdentityView } from "@/lib/stores";
+import { SourceIdentityBadge } from "@/components/shared/source-identity-badge";
 import { cn } from "@/lib/utils";
 
 // Rows per page a reviewer can choose; the server pages the queue (its limit is 500).
@@ -125,6 +127,27 @@ export function costLabel(basis: string | null): string {
  * Conflict rows carry no multiplier on purpose — the evidence produced
  * none — so approving one requires choosing the interpretation explicitly.
  */
+/** The store a candidate belongs to — or, for a source identity, what it actually is. */
+function StoreContext({ row }: { row: CommercialCandidateRow }) {
+  const source = sourceIdentityView(row.store_kind, row.store_source_identity);
+  if (source) {
+    return (
+      <>
+        <span className="font-mono">{source.name}</span> <SourceIdentityBadge className="ml-1" />
+        <div className="text-xs text-muted-foreground">{PHYSICAL_STORE_NOT_IDENTIFIED}</div>
+      </>
+    );
+  }
+  return (
+    <>
+      {row.store_label}
+      {row.store_identity_status !== "confirmed" && (
+        <div className="text-xs text-muted-foreground">location not confirmed</div>
+      )}
+    </>
+  );
+}
+
 export function ProductMasterReviewPage() {
   const [state, setState] = useState("READY_FOR_REVIEW");
   const [basis, setBasis] = useState("ALL");
@@ -254,10 +277,7 @@ export function ProductMasterReviewPage() {
                     <div className="text-muted-foreground">{row.pdi_item_code ?? ""}</div>
                   </TableCell>
                   <TableCell className="text-sm">
-                    {row.store_label}
-                    {row.store_identity_status !== "confirmed" && (
-                      <div className="text-xs text-muted-foreground">location not confirmed</div>
-                    )}
+                    <StoreContext row={row} />
                   </TableCell>
                   <TableCell className="text-sm">
                     <span className="inline-flex items-center gap-1.5">

@@ -648,6 +648,33 @@ class MappingQueueSummary(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SourceIdentityRef(BaseModel):
+    """
+    What a source identity is: a source system's own identifier (e.g. Item
+    Sales store code 47708760), not a physical store. Present only for a
+    store whose kind is source_identity; the physical store it belongs to is
+    not identified until a person links it.
+    """
+
+    source_system: str
+    source_label: str = Field(description="The source system as a person names it, e.g. 'Item Sales'.")
+    identifier_type: str
+    identifier_value: str
+    label: str = Field(description="e.g. 'Item Sales · 47708760'.")
+
+    @classmethod
+    def from_store(cls, store: Any) -> SourceIdentityRef | None:
+        from app.models.store import SOURCE_SYSTEM_LABELS
+
+        ident = store.source_identity
+        if ident is None:
+            return None
+        source_label = SOURCE_SYSTEM_LABELS.get(ident.source_system, ident.source_system)
+        return cls(source_system=ident.source_system, source_label=source_label,
+                   identifier_type=ident.identifier_type, identifier_value=ident.identifier_value,
+                   label=f"{source_label} · {ident.identifier_value}")
+
+
 class StoreRef(BaseModel):
     """
     How a store is named wherever an invoice, mapping or proposal shows
@@ -662,13 +689,16 @@ class StoreRef(BaseModel):
     display_name: str | None = None
     address: str | None = None
     source_codes: list[str] = Field(default_factory=list)
+    kind: str = Field(default="physical", description="'physical', or 'source_identity' — see SourceIdentityRef.")
+    source_identity: SourceIdentityRef | None = None
 
     @classmethod
     def from_store(cls, store: Any) -> StoreRef:
         return cls(
             id=store.id, label=store.label, identity_status=store.identity_status,
             display_name=store.display_name, address=store.address_summary,
-            source_codes=store.source_codes,
+            source_codes=store.source_codes, kind=store.kind,
+            source_identity=SourceIdentityRef.from_store(store),
         )
 
 

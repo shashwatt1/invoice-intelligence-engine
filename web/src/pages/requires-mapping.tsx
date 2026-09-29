@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useMappingQueue, useMappingQueueSummary, useStores } from "@/hooks/use-api";
+import { storeOptionLabel } from "@/lib/stores";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
@@ -96,7 +97,7 @@ export function RequiresMappingPage() {
           <SelectContent>
             <SelectItem value="ALL">All stores</SelectItem>
             {(stores.data ?? []).map((s) => (
-              <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>
+              <SelectItem key={s.id} value={s.id}>{storeOptionLabel(s)}</SelectItem>
             ))}
           </SelectContent>
         </Select>

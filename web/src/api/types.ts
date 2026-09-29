@@ -66,6 +66,17 @@ export interface Paginated<T> {
  * confirmed — never a guessed name. `source_codes` are the Item Sales
  * store codes, shown as provenance.
  */
+/** What a source identity is: a source system's own identifier (e.g. Item Sales store code), not a physical store. */
+export interface SourceIdentityRef {
+  source_system: string;
+  /** The source system as a person names it, e.g. "Item Sales". */
+  source_label: string;
+  identifier_type: string;
+  identifier_value: string;
+  /** e.g. "Item Sales · 47708760". */
+  label: string;
+}
+
 export interface StoreRef {
   id: string;
   label: string;
@@ -73,6 +84,9 @@ export interface StoreRef {
   display_name: string | null;
   address: string | null;
   source_codes: string[];
+  /** The Store Master classification; "source_identity" is not a physical store. */
+  kind?: "physical" | "source_identity";
+  source_identity?: SourceIdentityRef | null;
 }
 
 export interface StoreIdentifier {
@@ -853,6 +867,8 @@ export interface CommercialCandidateRow {
   store_id: string;
   store_label: string;
   store_identity_status: string;
+  store_kind?: "physical" | "source_identity";
+  store_source_identity?: SourceIdentityRef | null;
   commercial_unit_basis: string;
   units_accounted_for: number | null;
   case_cost: number | null;

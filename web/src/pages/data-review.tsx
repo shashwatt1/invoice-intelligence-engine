@@ -34,6 +34,7 @@ import { useProposalCounts, useProposals, useStores } from "@/hooks/use-api";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { isEditable } from "@/lib/proposals";
 import { PROPOSAL_SOURCE_META, PROPOSAL_STATUS_META } from "@/lib/status";
+import { storeOptionLabel } from "@/lib/stores";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
@@ -162,8 +163,9 @@ export function DataReviewPage() {
     });
   }, []);
 
+  const chosenStore = stores.data?.find((x) => x.id === store);
   const chips = [
-    ...(store !== "ALL" ? [{ key: "store", label: stores.data?.find((x) => x.id === store)?.label ?? "store", onRemove: () => setStore("ALL") }] : []),
+    ...(store !== "ALL" ? [{ key: "store", label: chosenStore ? storeOptionLabel(chosenStore) : "store", onRemove: () => setStore("ALL") }] : []),
     ...(source !== "ALL" ? [{ key: "source", label: PROPOSAL_SOURCE_META[source].label, onRemove: () => setSource("ALL") }] : []),
     ...(upc ? [{ key: "upc", label: `UPC ${upc}`, onRemove: () => setUpcInput("") }] : []),
     ...(invoice ? [{ key: "invoice", label: `invoice ${invoice.slice(0, 8)}…`, onRemove: () => setInvoiceInput("") }] : []),
@@ -199,7 +201,7 @@ export function DataReviewPage() {
           <SelectTrigger className={cn("h-8 w-44 text-[0.8rem]", store !== "ALL" && "border-primary/40 bg-accent/40")} aria-label="Store filter"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All stores</SelectItem>
-            {(stores.data ?? []).map((s) => <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>)}
+            {(stores.data ?? []).map((s) => <SelectItem key={s.id} value={s.id}>{storeOptionLabel(s)}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={source} onValueChange={(value) => setSource(value as ProposalSource | "ALL")}>
