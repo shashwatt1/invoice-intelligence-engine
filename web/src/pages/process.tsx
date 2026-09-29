@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useDocumentStatus, useProcessInvoice, useStores } from "@/hooks/use-api";
+import { physicalStores } from "@/lib/stores";
 
 export function ProcessPage() {
   // The photos of ONE invoice, in top-to-bottom order. A long invoice is
@@ -42,7 +43,8 @@ export function ProcessPage() {
 
   const isRunning = Boolean(documentId) && !status.data?.is_terminal;
   const terminal = status.data?.is_terminal ? status.data : null;
-  const selected = (stores.data ?? []).find((s) => s.id === store) ?? null;
+  const choices = physicalStores(stores.data);
+  const selected = choices.find((s) => s.id === store) ?? null;
   const awaiting = status.data?.awaiting_store_confirmation ?? false;
 
   const start = () => {
@@ -120,7 +122,7 @@ export function ProcessPage() {
                 />
               </SelectTrigger>
               <SelectContent>
-                {(stores.data ?? []).map((s) => (
+                {choices.map((s) => (
                   <SelectItem key={s.id} value={s.id}>
                     <span className={s.identity_status !== "confirmed" ? "font-mono" : undefined}>{s.label}</span>
                     {s.address ? (

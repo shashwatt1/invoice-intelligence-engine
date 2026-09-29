@@ -682,6 +682,15 @@ class StoreIdentifierOut(BaseModel):
 class StoreDirectoryEntry(StoreRef):
     """One row of the Store Directory."""
 
+    kind: str = Field(
+        default="physical",
+        description=("'physical' for a location (named, addressed or in the store directory); 'source_identity' "
+                     "for a record known only by a source-system code, e.g. Item Sales store 47708760 — not a "
+                     "physical store until a person links it to one."),
+    )
+    in_store_directory: bool = Field(
+        default=False, description="True when the operator's CStorePro store directory names this store.",
+    )
     customer_name: str | None = None
     address_line_1: str | None = None
     address_line_2: str | None = None

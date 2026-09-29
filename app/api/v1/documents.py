@@ -47,6 +47,7 @@ from app.services.document_lifecycle import (
 )
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.reprocess_service import reprocess_document
+from app.services.store_guard import ensure_physical_store
 
 logger = get_logger(__name__)
 
@@ -263,6 +264,7 @@ async def confirm_store(
     if store is None:
         raise ValidationError(message="store_id is not a known store. Choose one from the directory.",
                               detail={"field": "store_id", "reason": "unknown", "value": str(body.store_id)})
+    ensure_physical_store(store)
 
     candidates = {c.get("store_id") for c in (document.store_candidates or [])}
     document.store_id = store.id

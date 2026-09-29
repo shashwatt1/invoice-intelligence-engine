@@ -36,10 +36,28 @@ IDENTITY_UNRESOLVED = "unresolved"    # known only by a source identifier, or by
 # a real document shows them — not before.
 SOURCE_ITEM_SALES = "item_sales"      # the POS/back-office "Item Sales Summary" export
 SOURCE_DOCUMENT = "document"          # text observed on invoice documents, as reported
+# Names an operator supplied directly (e.g. "WOLF" for PB Wolf). Evidence,
+# not confirmation: carried as store_alias identifiers with evidence
+# {"verified": false}; any contact email is metadata in that evidence and is
+# never, by itself, evidence that two records are the same location.
+SOURCE_OPERATOR = "operator"
+# The operator's CStorePro store directory: the authoritative list of physical
+# stores. A directory_name identifier is how CStorePro names the store.
+SOURCE_CSTOREPRO = "cstorepro"
+# Facts the Store Master workflow itself recorded, e.g. a store's previous
+# display name kept as an alias when it was reconciled to the directory.
+SOURCE_STORE_MASTER = "store_master"
 TYPE_STORE_CODE = "store_code"
 TYPE_CUSTOMER_NAME = "customer_name"
 TYPE_ADDRESS_LINE = "address_line"
 TYPE_POSTAL_CODE = "postal_code"
+TYPE_DIRECTORY_NAME = "directory_name"   # a store directory's own name for the store
+TYPE_STORE_ALIAS = "store_alias"         # another name people use; evidence["alias_kind"] says which
+# Governance labels, not document evidence: the invoice→store matcher never reads them.
+NON_MATCHING_IDENTIFIER_TYPES = frozenset({TYPE_DIRECTORY_NAME, TYPE_STORE_ALIAS})
+
+KIND_PHYSICAL = "physical"
+KIND_SOURCE_IDENTITY = "source_identity"
 
 
 class Store(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -99,6 +117,23 @@ class Store(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         if codes:
             return f"Store {codes[0]} (location not yet confirmed)"
         return f"Store {str(self.id)[:8]} (unidentified)"
+
+    @property
+    def in_store_directory(self) -> bool:
+        """True when the operator's CStorePro store directory names this store."""
+        return bool(self.identifier_values(SOURCE_CSTOREPRO, TYPE_DIRECTORY_NAME))
+
+    @property
+    def kind(self) -> str:
+        """
+        KIND_PHYSICAL for a location — named, addressed, or listed in the store
+        directory; KIND_SOURCE_IDENTITY for a record known only by a source-system
+        code (e.g. Item Sales store 47708760), which is not a physical store until
+        a person links it to one.
+        """
+        if self.in_store_directory or self.display_name or self.address_line_1:
+            return KIND_PHYSICAL
+        return KIND_SOURCE_IDENTITY
 
     @property
     def address_summary(self) -> str | None:

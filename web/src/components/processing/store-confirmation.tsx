@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useConfirmDocumentStore, useDeferDocumentStore } from "@/hooks/use-api";
+import { physicalStores, sourceIdentityIds } from "@/lib/stores";
 import { cn } from "@/lib/utils";
 
 /**
@@ -36,7 +37,10 @@ export function StoreConfirmation({
 }) {
   const confirm = useConfirmDocumentStore(status.document_id);
   const defer = useDeferDocumentStore(status.document_id);
-  const candidates = status.store_candidates;
+  // Only physical stores are offered: a source identity (e.g. Item Sales 47708760) is never a choice.
+  const hidden = sourceIdentityIds(stores);
+  const candidates = status.store_candidates.filter((c) => !hidden.has(c.store_id));
+  const choices = physicalStores(stores);
   const chosenUpFront = status.store;
   const [selected, setSelected] = useState<string>(
     candidates.length === 1 ? candidates[0].store_id : "",
@@ -144,7 +148,7 @@ export function StoreConfirmation({
               <SelectValue placeholder="Select a store from the directory" />
             </SelectTrigger>
             <SelectContent>
-              {stores.map((s) => (
+              {choices.map((s) => (
                 <SelectItem key={s.id} value={s.id}>
                   {s.label}
                   {s.address ? <span className="ml-2 text-[0.72rem] text-muted-foreground">{s.address}</span> : null}

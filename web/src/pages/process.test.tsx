@@ -63,3 +63,30 @@ describe("processing several photos as one invoice", () => {
     expect(storeId).toBeNull();
   });
 });
+
+describe("the Process Invoice store picker", () => {
+  it("offers only physical stores — never the source identity 47708760", async () => {
+    const base = {
+      identity_status: "unresolved" as const, source_codes: [] as string[], in_store_directory: true,
+      customer_name: null, address_line_1: null, address_line_2: null, city: null, state: null, postal_code: null,
+      status: "active", notes: null, identifiers: [], invoices: 0, pricing_rows: 0, identities: 0, catalogue_rows: 0,
+      case_mappings: 0, pending_proposals: 0,
+    };
+    vi.mocked(api.listStores).mockResolvedValue([
+      { ...base, id: "pb-wolf", label: "PB Wolf (identity unconfirmed)", display_name: "PB Wolf",
+        address: "800 Wolf St, Syracuse, NY 13208", kind: "physical" },
+      { ...base, id: "lg-rcm", label: "LG - RCM (identity unconfirmed)", display_name: "LG - RCM",
+        address: "1409 E Saint George Blvd, Saint George, UT 84790", kind: "physical" },
+      { ...base, id: "code-47708760", label: "Store 47708760 (location not yet confirmed)", display_name: null,
+        address: null, source_codes: ["47708760"], kind: "source_identity", in_store_directory: false },
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(api.listStores).toHaveBeenCalled());
+    await user.click(screen.getByRole("combobox"));
+    const options = (await screen.findAllByRole("option")).map((o) => o.textContent ?? "");
+    expect(options.map((t) => t.split(" (")[0])).toEqual(["PB Wolf", "LG - RCM"]);
+    expect(options.some((t) => t.includes("47708760"))).toBe(false);
+  });
+});
+

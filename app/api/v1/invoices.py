@@ -87,6 +87,7 @@ from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
 from app.services.storage_service import get_storage_service
+from app.services.store_guard import ensure_physical_store
 from app.services.store_reference_service import match_invoice_against_reference
 from app.services.upload_service import UploadService
 
@@ -184,6 +185,7 @@ async def resolve_chosen_store(db: AsyncSession, value: str | None) -> uuid.UUID
             message=f"store_id {value!r} is not a known store. Choose a store from the directory.",
             detail={"field": "store_id", "reason": "unknown", "value": value},
         )
+    ensure_physical_store(store)
     return store.id
 
 
@@ -902,6 +904,7 @@ async def assign_store(
     store = await StoreRepository(db).get(body.store_id)
     if store is None:
         raise RecordNotFoundError(message="Store not found.", detail={"store_id": str(body.store_id)})
+    ensure_physical_store(store)
 
     invoice.store_id = store.id
     invoice.document.store_id = store.id

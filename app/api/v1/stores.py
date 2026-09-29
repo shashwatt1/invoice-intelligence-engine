@@ -37,6 +37,7 @@ router = APIRouter(tags=["Stores"], dependencies=[Depends(require_manager)])
 def _entry(store: Store, counts: dict[str, int]) -> StoreDirectoryEntry:
     return StoreDirectoryEntry(
         id=store.id, label=store.label, identity_status=store.identity_status,
+        kind=store.kind, in_store_directory=store.in_store_directory,
         display_name=store.display_name, address=store.address_summary,
         source_codes=store.source_codes,
         customer_name=store.customer_name, address_line_1=store.address_line_1,

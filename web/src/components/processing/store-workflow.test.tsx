@@ -22,7 +22,8 @@ import * as api from "@/api/endpoints";
 
 const STORE: StoreDirectoryEntry = {
   id: "s-1", label: "Red Cliff Market", identity_status: "confirmed", display_name: "Red Cliff Market",
-  address: "1409 E St George Blvd", source_codes: [], customer_name: null, address_line_1: null,
+  address: "1409 E St George Blvd", source_codes: [], kind: "physical", in_store_directory: true,
+  customer_name: null, address_line_1: null,
   address_line_2: null, city: null, state: null, postal_code: null, status: "confirmed", notes: null,
   identifiers: [], invoices: 0, pricing_rows: 0, identities: 0, catalogue_rows: 0, case_mappings: 0, pending_proposals: 0,
 };
@@ -66,6 +67,43 @@ describe("RCM is offered wherever a store is chosen, through the existing picker
     await user.type(screen.getByLabelText(/assigned by/i), "data-team:shashwat");
     await user.click(screen.getByTestId("assign-store"));
     await waitFor(() => expect(api.assignInvoiceStore).toHaveBeenCalledWith("inv-9", "rcm-1", "data-team:shashwat", null));
+  });
+});
+
+/** Item Sales store 47708760: a source identity, never a physical store. */
+const CODE_47708760: StoreDirectoryEntry = {
+  ...STORE, id: "code-47708760", label: "Store 47708760 (location not yet confirmed)", identity_status: "unresolved",
+  display_name: null, address: null, source_codes: ["47708760"], kind: "source_identity", in_store_directory: false,
+  status: "active",
+};
+
+describe("a source identity is never offered as a physical store", () => {
+  it("is hidden from the confirmation candidates and from every store dropdown", async () => {
+    const user = userEvent.setup();
+    const paused: DocumentStatusData = {
+      ...PAUSED,
+      store_candidates: [
+        { store_id: "code-47708760", label: CODE_47708760.label, identity_status: "unresolved", address: null,
+          matched_on: [{ kind: "store_code", value: "47708760", source_system: "item_sales", verified: true }] },
+        { store_id: "s-1", label: "Red Cliff Market", identity_status: "confirmed", address: null,
+          matched_on: [{ kind: "address", value: "1409 E ST GEORGE BLVD", source_system: "document", verified: true }] },
+      ],
+    };
+    wrap(<StoreConfirmation status={paused} stores={[STORE, RCM, CODE_47708760]} />);
+    expect(screen.queryByText(/Store 47708760/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("combobox"));
+    const options = (await screen.findAllByRole("option")).map((o) => o.textContent ?? "");
+    expect(options.some((t) => t.includes("47708760"))).toBe(false);
+    expect(options.some((t) => t.includes("Red Cliff Market"))).toBe(true);
+    await user.keyboard("{Escape}");
+
+    vi.mocked(api.listStores).mockResolvedValue([STORE, RCM, CODE_47708760]);
+    wrap(<StorePendingCard invoiceId="inv-9" />);
+    const [, pendingCombo] = screen.getAllByRole("combobox");
+    await user.click(pendingCombo);
+    const pendingOptions = (await screen.findAllByRole("option")).map((o) => o.textContent ?? "");
+    expect(pendingOptions.some((t) => t.includes("47708760"))).toBe(false);
+    expect(pendingOptions.some((t) => t.includes("RCM"))).toBe(true);
   });
 });
 

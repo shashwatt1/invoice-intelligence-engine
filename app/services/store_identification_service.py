@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.store import (
+    NON_MATCHING_IDENTIFIER_TYPES,
     SOURCE_DOCUMENT,
     TYPE_ADDRESS_LINE,
     TYPE_CUSTOMER_NAME,
@@ -93,6 +94,8 @@ def match_stores(text: str, stores: list[Store]) -> list[StoreCandidate]:
     for store in stores:
         hits: list[dict[str, Any]] = []
         for ident in store.identifiers:
+            if ident.identifier_type in NON_MATCHING_IDENTIFIER_TYPES:
+                continue                          # aliases and directory names are governance labels, not evidence
             verified = bool((ident.evidence or {}).get("verified", ident.source_system != SOURCE_DOCUMENT))
             if ident.identifier_type == TYPE_CUSTOMER_NAME:
                 if _contains_text(haystack, ident.identifier_value):

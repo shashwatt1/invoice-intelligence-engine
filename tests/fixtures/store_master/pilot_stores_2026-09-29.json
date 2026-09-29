@@ -1,0 +1,187 @@
+{
+  "_about": "Transcription of 'Store Infor.pdf' (the pilot /stores page, captured 2026-09-29 08:49). NOT a database read: store ids are not printed on that page, so they are placeholders. Used for the offline reconciliation and tests until the database is reachable.",
+  "captured_at": "2026-09-29T08:49",
+  "stores": [
+    {
+      "id": "pdf-placeholder:apple-foods-ii",
+      "display_name": "Apple Foods II",
+      "customer_name": "PB Wolf Group Inc",
+      "address_line_1": "800 Wolf St",
+      "address_line_2": null,
+      "city": "Syracuse",
+      "state": "NY",
+      "postal_code": "13208-1224",
+      "status": "active",
+      "identity_status": "unresolved",
+      "notes": "Name and address observed on the 'Invoices HO' photo batch, as reported by the operator; the photographs themselves have not been processed. NOT linked to any Item Sales store code \u2014 whether this is the location behind 47708760 (or another) is a human decision that has not been made.",
+      "identifiers": [
+        {
+          "source_system": "document",
+          "identifier_type": "address_line",
+          "identifier_value": "800 WOLF ST",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "customer_name",
+          "identifier_value": "APPLE FOODS",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "customer_name",
+          "identifier_value": "APPLE FOODS II",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "customer_name",
+          "identifier_value": "PB WOLF GROUP INC",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "postal_code",
+          "identifier_value": "13208",
+          "evidence": {
+            "verified": false
+          }
+        }
+      ],
+      "counts": {
+        "invoices": 2,
+        "case_mappings": 0,
+        "pending_proposals": 7,
+        "pricing_rows": 0,
+        "catalogue_rows": 0,
+        "identities": 0
+      }
+    },
+    {
+      "id": "pdf-placeholder:rcm",
+      "display_name": "RCM",
+      "customer_name": "Red Cliff Market",
+      "address_line_1": "1409 E St George Blvd",
+      "address_line_2": null,
+      "city": "St George",
+      "state": "UT",
+      "postal_code": "84790",
+      "status": "active",
+      "identity_status": "unresolved",
+      "notes": "Added 18 Sep 2026 for the RCM invoice batch. ... That 'RCM' is this location is the operator's classification, not confirmed by a person. NOT linked to any Item Sales store code. Vendor account numbers seen: Red Bull cust# 3000088613, Coca-Cola customer number 21919.",
+      "identifiers": [
+        {
+          "source_system": "document",
+          "identifier_type": "address_line",
+          "identifier_value": "1409 E ST GEORGE BLVD",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "address_line",
+          "identifier_value": "1409 EAST ST. GEORGE BLVD.",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "customer_name",
+          "identifier_value": "RED CLIFF MARKET",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "customer_name",
+          "identifier_value": "RED CLIFF PETROLEUM, LLC",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "customer_name",
+          "identifier_value": "RED CLIFF TEXACO",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "customer_name",
+          "identifier_value": "RED CLIFFS MARKET",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "postal_code",
+          "identifier_value": "84770",
+          "evidence": {
+            "verified": false
+          }
+        },
+        {
+          "source_system": "document",
+          "identifier_type": "postal_code",
+          "identifier_value": "84790",
+          "evidence": {
+            "verified": false
+          }
+        }
+      ],
+      "counts": {
+        "invoices": 0,
+        "case_mappings": 0,
+        "pending_proposals": 0,
+        "pricing_rows": 0,
+        "catalogue_rows": 0,
+        "identities": 0
+      }
+    },
+    {
+      "id": "pdf-placeholder:store-47708760",
+      "display_name": null,
+      "customer_name": null,
+      "address_line_1": null,
+      "address_line_2": null,
+      "city": null,
+      "state": null,
+      "postal_code": null,
+      "status": "active",
+      "identity_status": "unresolved",
+      "notes": "Known only as Item Sales store code 47708760. ... NOT linked to Apple Foods II or RCM \u2014 whether this code is either location is a human decision that has not been made.",
+      "identifiers": [
+        {
+          "source_system": "item_sales",
+          "identifier_type": "store_code",
+          "identifier_value": "47708760",
+          "evidence": {
+            "verified": false
+          }
+        }
+      ],
+      "counts": {
+        "invoices": 0,
+        "case_mappings": 0,
+        "pending_proposals": 0,
+        "pricing_rows": 0,
+        "catalogue_rows": 0,
+        "identities": 0
+      }
+    }
+  ]
+}

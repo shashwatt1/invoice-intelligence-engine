@@ -1,0 +1,139 @@
+{
+  "_about": "The operator's authoritative CStorePro store directory: the complete physical-store universe for the pilot, supplied 2026-09-29. Names and addresses are exactly as supplied and are never rewritten to match invoice wording. No CStorePro store numbers were supplied, so none are recorded. Applied only through scripts/store_master_reconcile.py.",
+  "source": "CStorePro store directory (operator-supplied)",
+  "supplied_at": "2026-09-29",
+  "stores": [
+    {
+      "name": "LG - RCM",
+      "address_line_1": "1409 E Saint George Blvd",
+      "city": "Saint George",
+      "state": "UT",
+      "postal_code": "84790"
+    },
+    {
+      "name": "AF 429",
+      "address_line_1": "429 Riverside",
+      "city": "Johnson City",
+      "state": "NY",
+      "postal_code": "13790"
+    },
+    {
+      "name": "PB Wolf",
+      "address_line_1": "800 Wolf St",
+      "city": "Syracuse",
+      "state": "NY",
+      "postal_code": "13208"
+    },
+    {
+      "name": "AF Conklin",
+      "address_line_1": "306 Conklin Ave",
+      "city": "Binghamton",
+      "state": "NY",
+      "postal_code": "13903"
+    },
+    {
+      "name": "LG - Singh Market",
+      "address_line_1": "5118 E Lake Mead Blvd",
+      "city": "Las Vegas",
+      "state": "NV",
+      "postal_code": "89156"
+    },
+    {
+      "name": "AF McKinley",
+      "address_line_1": "100 N McKinley Ave",
+      "city": "Endicott",
+      "state": "NY",
+      "postal_code": "13760-2917"
+    },
+    {
+      "name": "AF Hooper",
+      "address_line_1": "522 Hooper Rd",
+      "city": "Endicott",
+      "state": "NY",
+      "postal_code": "13760-1960"
+    },
+    {
+      "name": "Tonopah Texaco",
+      "address_line_1": "1172 S Main St",
+      "city": "Tonopah",
+      "state": "NV",
+      "postal_code": "89049"
+    },
+    {
+      "name": "LG - SGM",
+      "address_line_1": "81 N River Rd",
+      "city": "Saint George",
+      "state": "UT",
+      "postal_code": "84790"
+    },
+    {
+      "name": "AF 143",
+      "address_line_1": "143 Riverside Dr",
+      "city": "Johnson City",
+      "state": "NY",
+      "postal_code": "13790-2713"
+    },
+    {
+      "name": "Tonopah Shell",
+      "address_line_1": "459 N Main St",
+      "city": "Tonopah",
+      "state": "NV",
+      "postal_code": "89049"
+    },
+    {
+      "name": "AF North",
+      "address_line_1": "906 North St",
+      "city": "Endicott",
+      "state": "NY",
+      "postal_code": "13760-5147"
+    },
+    {
+      "name": "AF MV Tiki",
+      "address_line_1": "8730 E US Highway 36",
+      "city": "Rockville",
+      "state": "IN",
+      "postal_code": "47872"
+    },
+    {
+      "name": "AF NV Midler",
+      "address_line_1": "356 N Midler Ave",
+      "city": "Syracuse",
+      "state": "NY",
+      "postal_code": "13206"
+    }
+  ],
+  "reconcile_existing": [
+    {
+      "existing_display_name": "RCM",
+      "canonical": "LG - RCM",
+      "why": "operator mandate: the existing RCM record is the LG - RCM location (not a separate store)"
+    },
+    {
+      "existing_display_name": "Apple Foods II",
+      "canonical": "PB Wolf",
+      "why": "operator mandate: the existing Apple Foods II record is the PB Wolf location; 'Apple Foods II' is not a physical store name"
+    }
+  ],
+  "keep_unresolved_source_identities": [
+    {
+      "source_system": "item_sales",
+      "identifier_type": "store_code",
+      "identifier_value": "47708760",
+      "why": "no confirmed physical identity; linking it to any store is a human/data-team decision. Product Master commercial mappings use this store."
+    }
+  ],
+  "operator_aliases": [
+    {
+      "alias": "MIDLER",
+      "canonical": "AF NV Midler"
+    },
+    {
+      "alias": "WOLF",
+      "canonical": "PB Wolf"
+    },
+    {
+      "alias": "TIKKI",
+      "canonical": "AF MV Tiki"
+    }
+  ]
+}

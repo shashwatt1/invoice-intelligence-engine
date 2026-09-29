@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAssignInvoiceStore, useStores } from "@/hooks/use-api";
 import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
+import { physicalStores } from "@/lib/stores";
 
 /**
  * The invoice was read before its store was known. Everything the
@@ -57,7 +58,7 @@ export function StorePendingCard({ invoiceId }: { invoiceId: string }) {
             <Select value={storeId} onValueChange={setStoreId} disabled={assign.isPending}>
               <SelectTrigger className="w-full"><SelectValue placeholder="Choose the store" /></SelectTrigger>
               <SelectContent>
-                {(stores.data ?? []).map((s) => (
+                {physicalStores(stores.data).map((s) => (
                   <SelectItem key={s.id} value={s.id}>
                     {s.label}
                     {s.address ? <span className="ml-2 text-[0.72rem] text-muted-foreground">{s.address}</span> : null}

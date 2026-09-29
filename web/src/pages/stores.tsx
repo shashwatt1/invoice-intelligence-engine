@@ -46,16 +46,32 @@ export function StoresPage() {
         <EmptyState icon={MapPin} title="No stores" description="Add a store, or import reference data for one." />
       ) : (
         <div className="space-y-4">
-          {data.map((store) => (
+          {data.filter((s) => s.kind !== "source_identity").map((store) => (
             <StoreCard key={store.id} store={store} highlighted={store.id === highlight} />
           ))}
+          {data.some((s) => s.kind === "source_identity") ? (
+            <section className="space-y-3 pt-4" data-testid="source-identities">
+              <div>
+                <h2 className="text-[0.9rem] font-semibold tracking-tight">Unresolved source identities</h2>
+                <p className="t-meta mt-1">
+                  Known only by a source-system code, such as an Item Sales store code. These are not physical stores:
+                  which location a code belongs to is a data-team decision, and nothing links it automatically.
+                </p>
+              </div>
+              {data.filter((s) => s.kind === "source_identity").map((store) => (
+                <StoreCard key={store.id} store={store} highlighted={store.id === highlight} sourceIdentity />
+              ))}
+            </section>
+          ) : null}
         </div>
       )}
     </>
   );
 }
 
-function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlighted: boolean }) {
+function StoreCard({ store, highlighted, sourceIdentity = false }: {
+  store: StoreDirectoryEntry; highlighted: boolean; sourceIdentity?: boolean;
+}) {
   const unresolved = store.identity_status !== "confirmed";
   const [editing, setEditing] = useState(false);
   const hasReference = store.pricing_rows + store.catalogue_rows + store.identities > 0;
@@ -69,6 +85,10 @@ function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlig
                         label={unresolved ? "Identity needs confirmation" : "Identity confirmed"}
                         meaning={unresolved ? "Known by a source identifier or by what documents say; a person has not confirmed the location." : "A person confirmed this store's name and address."} />
             {store.source_codes.length ? <span className="t-mono text-muted-foreground">#{store.source_codes.join(", ")}</span> : null}
+            {!sourceIdentity && !store.in_store_directory ? (
+              <StatusPill size="xs" tone="warning" label="Not in store directory"
+                          meaning="The operator's CStorePro store directory does not list this store; a person should reconcile it." />
+            ) : null}
           </div>
           <div className="t-meta mt-1">
             {store.address ?? (unresolved ? "No confirmed address." : "No address recorded.")}
@@ -76,7 +96,9 @@ function StoreCard({ store, highlighted }: { store: StoreDirectoryEntry; highlig
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {editing ? null : (
+          {sourceIdentity ? (
+            <span className="t-meta max-w-[18rem] text-right">Linking this code to a physical store is a data-team decision.</span>
+          ) : editing ? null : (
             <Button size="sm" variant={unresolved ? "default" : "outline"} onClick={() => setEditing(true)}>
               <Pencil className="size-3.5" /> {unresolved ? "Confirm identity" : "Correct identity"}
             </Button>
@@ -187,7 +209,7 @@ function IdentityForm({ store, onDone }: { store: StoreDirectoryEntry; onDone: (
   return (
     <div className="space-y-2 rounded-md border p-3">
       <div className="grid gap-2 sm:grid-cols-2">
-        <Field label="Store name *" value={form.display_name ?? ""} onChange={set("display_name")} placeholder="e.g. Apple Foods II" />
+        <Field label="Store name *" value={form.display_name ?? ""} onChange={set("display_name")} placeholder="e.g. PB Wolf" />
         <Field label="Billed as (customer name)" value={form.customer_name ?? ""} onChange={set("customer_name")} placeholder="e.g. PB Wolf Group Inc" />
         <Field label="Address line 1" value={form.address_line_1 ?? ""} onChange={set("address_line_1")} />
         <Field label="Address line 2" value={form.address_line_2 ?? ""} onChange={set("address_line_2")} />

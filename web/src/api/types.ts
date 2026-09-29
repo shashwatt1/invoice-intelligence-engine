@@ -83,6 +83,10 @@ export interface StoreIdentifier {
 }
 
 export interface StoreDirectoryEntry extends StoreRef {
+  /** "physical": a location. "source_identity": known only by a source-system code — not a physical store. */
+  kind: "physical" | "source_identity";
+  /** True when the operator's CStorePro store directory names this store. */
+  in_store_directory: boolean;
   customer_name: string | null;
   address_line_1: string | null;
   address_line_2: string | null;
