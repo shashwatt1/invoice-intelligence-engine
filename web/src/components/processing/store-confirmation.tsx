@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useConfirmDocumentStore, useDeferDocumentStore } from "@/hooks/use-api";
-import { physicalStores, sourceIdentityIds } from "@/lib/stores";
+import { physicalStores } from "@/lib/stores";
 import { cn } from "@/lib/utils";
 
 /**
@@ -37,14 +37,14 @@ export function StoreConfirmation({
 }) {
   const confirm = useConfirmDocumentStore(status.document_id);
   const defer = useDeferDocumentStore(status.document_id);
-  // Only physical stores are offered: a source identity (e.g. Item Sales 47708760) is never a choice.
-  const hidden = sourceIdentityIds(stores);
-  const candidates = status.store_candidates.filter((c) => !hidden.has(c.store_id));
+  // Only physical stores are offered or suggested — one Store Master classification for both: a
+  // suggestion is shown only once the directory confirms it is physical, never while it is loading.
   const choices = physicalStores(stores);
+  const physicalIds = new Set(choices.map((s) => s.id));
+  const candidates = status.store_candidates.filter((c) => physicalIds.has(c.store_id));
   const chosenUpFront = status.store;
-  const [selected, setSelected] = useState<string>(
-    candidates.length === 1 ? candidates[0].store_id : "",
-  );
+  const [picked, setSelected] = useState<string>("");
+  const selected = picked || (candidates.length === 1 ? candidates[0].store_id : "");
   const [confirmedBy, setConfirmedBy] = useState("");
 
   const conflict = chosenUpFront && candidates.length > 0 &&

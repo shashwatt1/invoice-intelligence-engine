@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { StoreDirectoryEntry } from "@/api/types";
+
 import { ProcessPage } from "./process";
 
 vi.mock("@/api/endpoints", () => ({
@@ -87,6 +89,42 @@ describe("the Process Invoice store picker", () => {
     const options = (await screen.findAllByRole("option")).map((o) => o.textContent ?? "");
     expect(options.map((t) => t.split(" (")[0])).toEqual(["PB Wolf", "LG - RCM"]);
     expect(options.some((t) => t.includes("47708760"))).toBe(false);
+  });
+
+  it("excludes the live-shaped 47708760 record and anything not classified physical; keeps physical stores", async () => {
+    const base = {
+      identity_status: "unresolved" as const, source_codes: [] as string[], in_store_directory: true,
+      customer_name: null, address_line_1: null, address_line_2: null, city: null, state: null, postal_code: null,
+      status: "active", notes: null, identifiers: [], invoices: 0, pricing_rows: 0, identities: 0, catalogue_rows: 0,
+      case_mappings: 0, pending_proposals: 0,
+    };
+    const itemSalesCode = { source_system: "item_sales", identifier_type: "store_code", identifier_value: "47708760",
+                            verified: false };
+    // Exactly as the live GET /api/v1/stores returns the source identity.
+    const liveSourceIdentity: StoreDirectoryEntry = {
+      ...base, id: "113a1fd4-d621-4dbe-afdd-b4b9279d5e59", label: "Store 47708760 (location not yet confirmed)",
+      identity_status: "unresolved" as const, display_name: null, address: null, source_codes: ["47708760"],
+      kind: "source_identity", in_store_directory: false, identifiers: [itemSalesCode],
+    };
+    // A record with no classification (e.g. an older payload) is not offered either.
+    const unclassified = { ...liveSourceIdentity, id: "unclassified", label: "Store 99999999 (location not yet confirmed)",
+                           kind: undefined } as unknown as StoreDirectoryEntry;
+    vi.mocked(api.listStores).mockResolvedValue([
+      { ...base, id: "pb-wolf", label: "PB Wolf (identity unconfirmed)", display_name: "PB Wolf",
+        address: "800 Wolf St, Syracuse, NY 13208", kind: "physical" },
+      { ...base, id: "af-429", label: "AF 429 (identity unconfirmed)", display_name: "AF 429",
+        address: "429 Riverside, Johnson City, NY 13790", kind: "physical", source_codes: ["47708760"],
+        identifiers: [itemSalesCode] },
+      liveSourceIdentity,
+      unclassified,
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(api.listStores).toHaveBeenCalled());
+    await user.click(screen.getByRole("combobox"));
+    const options = (await screen.findAllByRole("option")).map((o) => o.textContent ?? "");
+    expect(options.map((t) => t.split(" (")[0])).toEqual(["PB Wolf", "AF 429"]);
+    expect(options.some((t) => t.includes("location not yet confirmed"))).toBe(false);
   });
 });
 

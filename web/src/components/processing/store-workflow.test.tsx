@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DocumentStatusData, StoreDirectoryEntry } from "@/api/types";
+import type { DocumentStatusData, StoreCandidate, StoreDirectoryEntry } from "@/api/types";
 import { StorePendingCard } from "@/components/invoice/store-pending-card";
 
 import { StoreConfirmation } from "./store-confirmation";
@@ -104,6 +104,30 @@ describe("a source identity is never offered as a physical store", () => {
     const pendingOptions = (await screen.findAllByRole("option")).map((o) => o.textContent ?? "");
     expect(pendingOptions.some((t) => t.includes("47708760"))).toBe(false);
     expect(pendingOptions.some((t) => t.includes("RCM"))).toBe(true);
+  });
+
+  it("is never suggested while the store directory is still loading, and a physical suggestion still preselects", () => {
+    const sourceCandidate: StoreCandidate = {
+      store_id: "113a1fd4-d621-4dbe-afdd-b4b9279d5e59", label: "Store 47708760 (location not yet confirmed)",
+      identity_status: "unresolved", address: null,
+      matched_on: [{ kind: "store_code", value: "47708760", source_system: "item_sales", verified: true }],
+    };
+    const paused: DocumentStatusData = { ...PAUSED, store_candidates: [sourceCandidate] };
+    // Directory not loaded yet: nothing is known to be physical, so nothing is suggested.
+    const loading = wrap(<StoreConfirmation status={paused} stores={[]} />);
+    expect(screen.queryByText(/Store 47708760/)).not.toBeInTheDocument();
+    loading.unmount();
+
+    // A lone physical suggestion is preselected once the directory has arrived.
+    const physical: StoreCandidate = { ...sourceCandidate, store_id: "s-1", label: "Red Cliff Market",
+                                       identity_status: "confirmed" };
+    const later = wrap(<StoreConfirmation status={{ ...PAUSED, store_candidates: [physical] }} stores={[]} />);
+    later.rerender(
+      <QueryClientProvider client={new QueryClient()}><MemoryRouter>
+        <StoreConfirmation status={{ ...PAUSED, store_candidates: [physical] }} stores={[STORE]} />
+      </MemoryRouter></QueryClientProvider>,
+    );
+    expect(screen.getByRole("button", { name: /Red Cliff Market/ })).toHaveClass("border-primary");
   });
 });
 
