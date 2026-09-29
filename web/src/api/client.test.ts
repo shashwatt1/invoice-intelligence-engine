@@ -2,7 +2,8 @@ import { AxiosError, type AxiosAdapter } from "axios";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { apiClient, ApiError, PROCESS_TIMEOUT_MESSAGE, PROCESS_TIMEOUT_MS } from "./client";
-import { getInvoice, processInvoice } from "./endpoints";
+import { getInvoice, listCommercialCandidates, processInvoice } from "./endpoints";
+import endpointsSource from "./endpoints.ts?raw";
 
 /** What a person sees when a request fails: what and where, a reference, never internals. */
 describe("ApiError.userMessage", () => {
@@ -151,5 +152,44 @@ describe("apiClient failure classification", () => {
 
     await getInvoice("f6f714c0-a326-42df-adbb-eee6ab8d1391");
     expect(sent.mock.calls[1][0].timeout).toBe(30_000);
+  });
+});
+
+/**
+ * Collection endpoints answer with the flat PaginatedResponse body —
+ * {success, items, total, page, page_size, request_id} — not inside the
+ * {success, data} envelope. The commercial review queue once read `data.data`
+ * from that body, got undefined, and the Product Master table failed with
+ * "… data is undefined" while the summary (a real envelope) still loaded.
+ */
+describe("paginated collection responses", () => {
+  const original = apiClient.defaults.adapter;
+  afterEach(() => {
+    apiClient.defaults.adapter = original;
+  });
+
+  it("returns the commercial review queue exactly as the backend sends it", async () => {
+    const body = {
+      success: true,
+      items: [{ id: "0b6f4a52-2b1c-4b8e-9d0e-6a5f3c2d1e00", review_status: "READY_FOR_REVIEW" }],
+      total: 414, page: 1, page_size: 25, request_id: "5f0c7d2e-0000-0000-0000-000000000000",
+    };
+    const sent = vi.fn(async (config: Parameters<AxiosAdapter>[0]) => ({
+      data: body, status: 200, statusText: "OK", headers: {}, config,
+    }));
+    apiClient.defaults.adapter = sent as unknown as AxiosAdapter;
+
+    const page = await listCommercialCandidates({ page: 1, page_size: 25, review_status: "READY_FOR_REVIEW" });
+
+    expect(page).toBeDefined();
+    expect(page.total).toBe(414);
+    expect(page.items.map((row) => row.review_status)).toEqual(["READY_FOR_REVIEW"]);
+    expect(sent.mock.calls[0][0].url).toBe("/product-master/commercial");
+    expect(sent.mock.calls[0][0].params).toEqual({ page: 1, page_size: 25, review_status: "READY_FOR_REVIEW" });
+  });
+
+  it("are never read through the {success, data} envelope", () => {
+    // The backend never nests a PaginatedResponse inside APIResponse.
+    expect(endpointsSource).not.toMatch(/ApiEnvelope<\s*Paginated</);
   });
 });

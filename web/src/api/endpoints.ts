@@ -429,11 +429,12 @@ export async function correctTotals(
 export async function listCommercialCandidates(
   params: CommercialCandidateParams,
 ): Promise<Paginated<CommercialCandidateRow>> {
-  const { data } = await apiClient.get<ApiEnvelope<Paginated<CommercialCandidateRow>>>(
+  // A collection endpoint: the flat PaginatedResponse body, not the {data} envelope.
+  const { data } = await apiClient.get<Paginated<CommercialCandidateRow>>(
     "/product-master/commercial",
     { params },
   );
-  return data.data!;
+  return data;
 }
 
 export async function getCommercialSummary(): Promise<CommercialReviewSummary> {
