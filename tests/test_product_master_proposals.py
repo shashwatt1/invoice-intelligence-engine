@@ -126,7 +126,7 @@ class TestManagerApprovesTheProposal:
         mapping = FakeMapping()
         repository = patched(mapping)
         await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek")
-        outcome = await service.approve(None, mapping.id, reviewer="barj")
+        outcome = await service.approve(None, mapping.id, reviewer="barj", note="Reviewed against the source evidence.")
 
         assert outcome.new_state == STATE_APPROVED
         assert mapping.units_accounted_for == 12, "the proposal became authoritative"
@@ -141,7 +141,7 @@ class TestManagerApprovesTheProposal:
         await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek")
         await service.approve(
             None, mapping.id, reviewer="barj",
-            commercial_unit_basis="CASE_IS_SELLING_UNIT",
+            commercial_unit_basis="CASE_IS_SELLING_UNIT", note="Reviewed against the source evidence.",
         )
         assert mapping.units_accounted_for == 1
 

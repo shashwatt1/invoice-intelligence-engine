@@ -109,6 +109,7 @@ class ReviewHistoryEntry(BaseModel):
     previous_units_accounted_for: int | None
     new_units_accounted_for: int | None
     reviewer: str
+    reviewer_role: str | None = None
     note: str | None
     decided_at: datetime
 
@@ -123,10 +124,13 @@ class CommercialReviewRequest(BaseModel):
     """
     A reviewer's decision. `commercial_unit_basis`/`units_accounted_for`
     are required only when the evidence did not settle the candidate — the
-    service enforces that, never the client.
+    service enforces that, never the client. `note` is the decision basis
+    (for a rejection, the reason) and is required; the service enforces it.
+    Who decided is never part of the request: it is the authenticated session.
     """
 
-    note: str | None = Field(default=None, max_length=1000)
+    note: str | None = Field(default=None, max_length=1000,
+                             description="The decision basis — required to approve or reject.")
     commercial_unit_basis: str | None = None
     units_accounted_for: int | None = Field(default=None, ge=1, le=9999)
 

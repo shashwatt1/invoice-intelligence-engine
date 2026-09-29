@@ -895,6 +895,8 @@ export interface ReviewHistoryEntry {
   previous_units_accounted_for: number | null;
   new_units_accounted_for: number | null;
   reviewer: string;
+  /** The reviewer's role when deciding; null for decisions recorded before it was kept. */
+  reviewer_role?: string | null;
   note: string | null;
   decided_at: string;
 }

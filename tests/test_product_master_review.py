@@ -83,7 +83,7 @@ class TestConflictCannotBeApprovedWithoutResolution:
         mapping = FakeMapping(basis=COMMERCIAL_CONFLICT, units=None)
         patched(mapping)
         with pytest.raises(ValidationError) as raised:
-            await service.approve(None, mapping.id, reviewer="manager")
+            await service.approve(None, mapping.id, reviewer="manager", note="Reviewed against the source evidence.")
         assert raised.value.detail["reason"] == "resolution_required"
         assert mapping.approval_state == STATE_REVIEW_REQUIRED, "nothing changed"
 
@@ -91,7 +91,7 @@ class TestConflictCannotBeApprovedWithoutResolution:
         mapping = FakeMapping(basis=COMMERCIAL_UNKNOWN, units=None)
         patched(mapping)
         with pytest.raises(ValidationError):
-            await service.approve(None, mapping.id, reviewer="manager")
+            await service.approve(None, mapping.id, reviewer="manager", note="Reviewed against the source evidence.")
 
     async def test_a_reviewer_may_resolve_a_conflict_explicitly(self, patched):
         mapping = FakeMapping(basis=COMMERCIAL_CONFLICT, units=None)
@@ -114,7 +114,7 @@ class TestConflictCannotBeApprovedWithoutResolution:
         with pytest.raises(ValidationError) as raised:
             await service.approve(
                 None, mapping.id, reviewer="manager",
-                commercial_unit_basis=COMMERCIAL_UNIT_IS_SELLING_UNIT,
+                commercial_unit_basis=COMMERCIAL_UNIT_IS_SELLING_UNIT, note="Reviewed against the source evidence.",
             )
         assert raised.value.detail["field"] == "units_accounted_for"
 
@@ -124,7 +124,7 @@ class TestConflictCannotBeApprovedWithoutResolution:
         patched(mapping)
         with pytest.raises(ValidationError):
             await service.approve(None, mapping.id, reviewer="m",
-                                  commercial_unit_basis=basis, units_accounted_for=4)
+                                  commercial_unit_basis=basis, units_accounted_for=4, note="Reviewed against the source evidence.")
 
     async def test_case_is_selling_unit_cannot_carry_a_larger_multiplier(self, patched):
         mapping = FakeMapping(basis=COMMERCIAL_CONFLICT, units=None)
@@ -133,7 +133,7 @@ class TestConflictCannotBeApprovedWithoutResolution:
             await service.approve(
                 None, mapping.id, reviewer="m",
                 commercial_unit_basis=COMMERCIAL_CASE_IS_SELLING_UNIT,
-                units_accounted_for=18,
+                units_accounted_for=18, note="Reviewed against the source evidence.",
             )
         assert raised.value.detail["expected"] == 1
 
@@ -144,7 +144,7 @@ class TestConflictCannotBeApprovedWithoutResolution:
             await service.approve(
                 None, mapping.id, reviewer="m",
                 commercial_unit_basis=COMMERCIAL_UNIT_IS_SELLING_UNIT,
-                units_accounted_for=1,
+                units_accounted_for=1, note="Reviewed against the source evidence.",
             )
 
 
@@ -161,7 +161,7 @@ class TestApproval:
     async def test_approval_is_idempotent(self, patched):
         mapping = FakeMapping()
         repository = patched(mapping)
-        await service.approve(None, mapping.id, reviewer="a")
+        await service.approve(None, mapping.id, reviewer="a", note="Reviewed against the source evidence.")
         outcome = await service.approve(None, mapping.id, reviewer="b")
         assert outcome.new_state == STATE_APPROVED
         assert len(repository.reviews) == 1, "a double submit must not rewrite the decision"
@@ -171,7 +171,7 @@ class TestApproval:
         mapping = FakeMapping(state=STATE_REJECTED)
         patched(mapping)
         with pytest.raises(ValidationError):
-            await service.approve(None, mapping.id, reviewer="manager")
+            await service.approve(None, mapping.id, reviewer="manager", note="Reviewed against the source evidence.")
 
     async def test_history_records_the_reviewer_note_and_evidence(self, patched):
         mapping = FakeMapping()
@@ -198,15 +198,116 @@ class TestRejection:
     async def test_rejection_does_not_erase_the_candidate_values(self, patched):
         mapping = FakeMapping(units=4)
         patched(mapping)
-        await service.reject(None, mapping.id, reviewer="manager")
+        await service.reject(None, mapping.id, reviewer="manager", note="Source sheet is out of date")
         assert mapping.units_accounted_for == 4, "evidence is preserved, not blanked"
 
     async def test_rejection_is_idempotent(self, patched):
         mapping = FakeMapping()
         repository = patched(mapping)
-        await service.reject(None, mapping.id, reviewer="a")
+        await service.reject(None, mapping.id, reviewer="a", note="Source sheet is out of date")
         await service.reject(None, mapping.id, reviewer="b")
         assert len(repository.reviews) == 1
+
+
+class TestDecisionAccountability:
+    """Every APPROVE/REJECT says what it rests on and who, by account and role, made it."""
+
+    @pytest.mark.parametrize("note", [None, "", "   "])
+    async def test_an_approval_without_a_decision_basis_is_refused_and_changes_nothing(self, patched, note):
+        mapping = FakeMapping()
+        repository = patched(mapping)
+        with pytest.raises(ValidationError) as raised:
+            await service.approve(None, mapping.id, reviewer="manager", note=note)
+        assert raised.value.detail == {"field": "note", "reason": "required", "decision": DECISION_APPROVE}
+        assert mapping.approval_state == STATE_REVIEW_REQUIRED and mapping.reviewed_by is None
+        assert repository.reviews == []
+
+    @pytest.mark.parametrize("note", [None, "", "   "])
+    async def test_a_rejection_without_a_reason_is_refused_and_changes_nothing(self, patched, note):
+        mapping = FakeMapping()
+        repository = patched(mapping)
+        with pytest.raises(ValidationError) as raised:
+            await service.reject(None, mapping.id, reviewer="manager", note=note)
+        assert raised.value.detail["decision"] == DECISION_REJECT
+        assert mapping.approval_state == STATE_REVIEW_REQUIRED and repository.reviews == []
+
+    async def test_the_basis_is_recorded_as_written_without_surrounding_space(self, patched):
+        mapping = FakeMapping()
+        repository = patched(mapping)
+        await service.approve(None, mapping.id, reviewer="manager", note="  Sheet1 items/case says 4.  ")
+        assert repository.reviews[0].note == "Sheet1 items/case says 4."
+
+    async def test_approve_reject_and_propose_record_the_account_and_its_role(self, patched):
+        account = uuid.uuid4()
+        approved, rejected, proposed = FakeMapping(), FakeMapping(), FakeMapping()
+        repository = patched(approved)
+        await service.approve(None, approved.id, reviewer="barj", note="Sheet1 says 4.",
+                              reviewer_user_id=account, reviewer_role="MANAGER")
+        assert (repository.reviews[0].reviewer, repository.reviews[0].reviewer_user_id,
+                repository.reviews[0].reviewer_role) == ("barj", account, "MANAGER")
+        repository = patched(rejected)
+        await service.reject(None, rejected.id, reviewer="shashwatt1", note="Stale sheet.",
+                             reviewer_user_id=account, reviewer_role="ADMIN")
+        assert (repository.reviews[0].reviewer_user_id, repository.reviews[0].reviewer_role) == (account, "ADMIN")
+        repository = patched(proposed)
+        await service.propose(None, proposed.id, units_accounted_for=6, proposer="vivek",
+                              proposer_user_id=account, proposer_role="USER")
+        assert (repository.reviews[0].reviewer_user_id, repository.reviews[0].reviewer_role) == (account, "USER")
+
+
+class TestTheSessionDecides:
+    """Who decided is the authenticated account — never a value in the request."""
+
+    @pytest.fixture
+    def session_as(self, app, patched):
+        from app.database.session import get_db
+
+        class _Session:
+            commits = 0
+
+            async def commit(self):
+                _Session.commits += 1
+
+        async def fake_db():
+            yield _Session()
+
+        app.dependency_overrides[get_db] = fake_db
+
+        def bind(role, mapping):
+            account = User(id=uuid.uuid4(), username=f"{role.lower()}-account", password_hash="x",
+                           role=role, is_active=True)
+            app.dependency_overrides[require_authenticated_user] = lambda: account
+            return account, patched(mapping)
+        yield bind
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(require_authenticated_user, None)
+
+    @pytest.mark.parametrize("role", [UserRole.MANAGER.value, UserRole.ADMIN.value])
+    @pytest.mark.parametrize("action", ["approve", "reject"])
+    async def test_the_session_account_is_recorded_whatever_the_request_claims(
+        self, client, session_as, role, action,
+    ):
+        mapping = FakeMapping()
+        account, repository = session_as(role, mapping)
+        response = await client.post(
+            f"/api/v1/product-master/commercial/{mapping.id}/{action}",
+            json={"note": "Distributor sheet states 4 per case.",
+                  "reviewer": "someone-else", "reviewer_user_id": str(uuid.uuid4()), "reviewer_role": "ADMIN"},
+        )
+        assert response.status_code == 200, response.text
+        entry = repository.reviews[0]
+        assert (entry.reviewer, entry.reviewer_user_id, entry.reviewer_role) == (
+            account.username, account.id, role)
+        assert entry.note == "Distributor sheet states 4 per case."
+
+    @pytest.mark.parametrize("action", ["approve", "reject"])
+    async def test_a_decision_without_a_basis_is_refused_over_the_api(self, client, session_as, action):
+        mapping = FakeMapping()
+        _, repository = session_as(UserRole.MANAGER.value, mapping)
+        response = await client.post(f"/api/v1/product-master/commercial/{mapping.id}/{action}", json={})
+        assert response.status_code == 422
+        assert response.json()["error"]["detail"]["field"] == "note"
+        assert repository.reviews == [] and mapping.approval_state == STATE_REVIEW_REQUIRED
 
 
 class TestCostIsIndependent:
@@ -214,14 +315,14 @@ class TestCostIsIndependent:
         # Cost status must not gate the commercial-unit decision.
         mapping = FakeMapping(cost_basis=COST_CONFLICTING_SOURCES)
         patched(mapping)
-        outcome = await service.approve(None, mapping.id, reviewer="manager")
+        outcome = await service.approve(None, mapping.id, reviewer="manager", note="Reviewed against the source evidence.")
         assert outcome.new_state == STATE_APPROVED
         assert mapping.cost_basis == COST_CONFLICTING_SOURCES, "cost status is untouched"
 
     async def test_approving_never_invents_a_cost(self, patched):
         mapping = FakeMapping(cost_basis=None)
         patched(mapping)
-        await service.approve(None, mapping.id, reviewer="manager")
+        await service.approve(None, mapping.id, reviewer="manager", note="Reviewed against the source evidence.")
         assert mapping.cost_basis is None
 
 

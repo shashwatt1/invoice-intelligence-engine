@@ -327,6 +327,7 @@ describe("Product Master commercial review", () => {
     await user.click(within(row).getByRole("button", { name: /review/i }));
 
     expect(await screen.findByText(/did not settle this candidate/i)).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/decision basis/i), "Checked the distributor sheet");
     await user.click(screen.getByRole("button", { name: /approve candidate/i }));
 
     // The UI sends no basis, so the backend refuses — nothing is guessed here.
@@ -343,6 +344,7 @@ describe("Product Master commercial review", () => {
 
     await user.click(await screen.findByRole("combobox", { name: /commercial interpretation/i }));
     await user.click(await screen.findByRole("option", { name: /case is the selling unit/i }));
+    await user.type(screen.getByLabelText(/decision basis/i), "Items/case column states 1");
     await user.click(screen.getByRole("button", { name: /approve candidate/i }));
 
     expect(approveCommercialCandidate).toHaveBeenCalledWith(
@@ -356,7 +358,7 @@ describe("Product Master commercial review", () => {
     const row = (await screen.findByText("018200967214")).closest("tr")!;
     await user.click(within(row).getByRole("button", { name: /review/i }));
 
-    await user.type(await screen.findByLabelText(/note/i), "Source sheet is stale");
+    await user.type(await screen.findByLabelText(/decision basis/i), "Source sheet is stale");
     await user.click(screen.getByRole("button", { name: /^reject$/i }));
 
     expect(rejectCommercialCandidate).toHaveBeenCalledWith(
@@ -550,5 +552,94 @@ describe("rows per page", () => {
     await user.click(screen.getAllByRole("combobox")[index]);
     await user.click(await screen.findByRole("option", { name: option }));
     await waitFor(() => expect(lastAsked()).toMatchObject({ page: 1, page_size: 25 }));
+  });
+});
+
+describe("Product Master review — accountable decisions", () => {
+  async function openCandidate(identifier: string) {
+    const user = userEvent.setup();
+    renderPage();
+    const row = (await screen.findByText(identifier)).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: /review/i }));
+    return { user, dialog: await screen.findByRole("alertdialog") };
+  }
+
+  it("orders the panel identity → evidence → interpretation → decision", async () => {
+    const { dialog } = await openCandidate("018200967214");
+    const headings = within(dialog).getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+    expect(headings).toEqual(["Product identity", "Source evidence", "Commercial interpretation", "Decision"]);
+  });
+
+  it("keeps Approve and Reject unavailable until the decision basis is written", async () => {
+    const { user, dialog } = await openCandidate("018200001154");
+    const approve = within(dialog).getByRole("button", { name: /approve candidate/i });
+    const reject = within(dialog).getByRole("button", { name: /^reject$/i });
+    expect(approve).toBeDisabled();
+    expect(reject).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "   ");
+    expect(approve).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "Sheet1 items/case states 4");
+    expect(approve).toBeEnabled();
+    expect(reject).toBeEnabled();
+    await user.click(approve);
+    expect(approveCommercialCandidate).toHaveBeenCalledWith(
+      "c1", expect.objectContaining({ note: "Sheet1 items/case states 4" }),
+    );
+  });
+
+  it("shows who decides from the signed-in account, with nothing to type", async () => {
+    currentRole = "ADMIN";
+    const { dialog } = await openCandidate("018200001154");
+    const maker = within(dialog).getByTestId("decision-maker");
+    expect(maker).toHaveTextContent("Decision by");
+    expect(maker).toHaveTextContent("tester · Administrator");
+    expect(maker).toHaveTextContent("Recorded from your signed-in account.");
+    expect(within(dialog).queryByLabelText(/name|reviewer|approved by/i)).not.toBeInTheDocument();
+  });
+
+  it("states the operational consequence as exact arithmetic", async () => {
+    // SETTLED: case cost 26.45, derived multiplier 4 → 6.6125 → $6.61, rounded.
+    const { user, dialog } = await openCandidate("018200001154");
+    const impact = within(dialog).getByTestId("commercial-impact");
+    expect(impact).toHaveTextContent("$26.45");
+    expect(impact).toHaveTextContent("Selling-unit cost$6.61 (rounded to the cent)");
+    // Choosing "case is the selling unit" makes the multiplier 1 and the unit cost the case cost.
+    await user.click(within(dialog).getByRole("combobox", { name: /commercial interpretation/i }));
+    await user.click(await screen.findByRole("option", { name: /case is the selling unit/i }));
+    expect(impact).toHaveTextContent("Multiplier1");
+    expect(impact).toHaveTextContent("Selling-unit cost$26.45");
+  });
+
+  it("shows no unit cost for a conflict until an interpretation is chosen, and never guesses one", async () => {
+    const { dialog } = await openCandidate("018200967214");
+    const impact = within(dialog).getByTestId("commercial-impact");
+    expect(impact).toHaveTextContent("Selling-unit cost—");
+    expect(impact).toHaveTextContent("No case cost is established");
+  });
+
+  it("lets a MANAGER decide a candidate that has a pending proposal", async () => {
+    listCommercialCandidates.mockResolvedValue({
+      items: [{ ...SETTLED, approval_state: "PENDING", review_status: "PENDING",
+                proposed_units_accounted_for: 12, proposed_by: "vivek", proposed_note: "from the sheet" }],
+      total: 1, page: 1, page_size: 25,
+    });
+    const { dialog } = await openCandidate("018200001154");
+    expect(within(dialog).getByText(/vivek proposed/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /approve candidate/i })).toBeInTheDocument();
+  });
+
+  it("shows the reviewer's role in the decision history", async () => {
+    getCommercialCandidate.mockResolvedValue({
+      candidate: SETTLED,
+      evidence: { notes: null, source_statements: [], governed_units_observed: [], supporting_rows: [],
+                  source_file: null, source_sheet: null, source_row: null, source_snapshot_rows: [],
+                  admissible_evidence: [], inadmissible_evidence: [], descriptions: [] },
+      history: [{ decision: "PROPOSE", previous_approval_state: "REVIEW_REQUIRED", new_approval_state: "PENDING",
+                  previous_commercial_unit_basis: "UNIT_IS_SELLING_UNIT", new_commercial_unit_basis: "UNIT_IS_SELLING_UNIT",
+                  previous_units_accounted_for: 4, new_units_accounted_for: 12, reviewer: "vivek",
+                  reviewer_role: "USER", note: "from the sheet", decided_at: "2026-09-30T10:00:00Z" }],
+    });
+    const { dialog } = await openCandidate("018200001154");
+    expect(await within(dialog).findByText(/propose by vivek \(User\)/)).toBeInTheDocument();
   });
 });

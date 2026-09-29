@@ -250,7 +250,8 @@ async def get_commercial_candidate(
                 new_commercial_unit_basis=entry.new_commercial_unit_basis,
                 previous_units_accounted_for=entry.previous_units_accounted_for,
                 new_units_accounted_for=entry.new_units_accounted_for,
-                reviewer=entry.reviewer, note=entry.note, decided_at=entry.created_at,
+                reviewer=entry.reviewer, reviewer_role=entry.reviewer_role,
+                note=entry.note, decided_at=entry.created_at,
             )
             for entry in history
         ],
@@ -278,6 +279,8 @@ async def propose_candidate(
         units_accounted_for=payload.units_accounted_for,
         proposer=user.username,
         note=payload.note,
+        proposer_user_id=user.id,
+        proposer_role=user.role,
     )
     await db.commit()
     return APIResponse(data=CommercialReviewDecision(**vars(outcome)))
@@ -300,6 +303,8 @@ async def approve_candidate(
         note=payload.note,
         commercial_unit_basis=payload.commercial_unit_basis,
         units_accounted_for=payload.units_accounted_for,
+        reviewer_user_id=user.id,
+        reviewer_role=user.role,
     )
     await db.commit()
     return APIResponse(data=CommercialReviewDecision(**vars(outcome)))
@@ -318,6 +323,7 @@ async def reject_candidate(
 ) -> APIResponse[CommercialReviewDecision]:
     outcome = await review_service.reject(
         db, mapping_id, reviewer=user.username, note=payload.note,
+        reviewer_user_id=user.id, reviewer_role=user.role,
     )
     await db.commit()
     return APIResponse(data=CommercialReviewDecision(**vars(outcome)))

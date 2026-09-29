@@ -68,6 +68,22 @@ class ReviewOutcome:
     units_accounted_for: int | None
 
 
+def _require_basis(note: str | None, decision: str) -> str:
+    """
+    The reviewer's own words for what an APPROVE or REJECT rests on. Required:
+    a decision nobody explained cannot be audited. Checked here, not only in
+    the UI, so no client can record an unexplained decision.
+    """
+    text = (note or "").strip()
+    if not text:
+        what = "approval" if decision == DECISION_APPROVE else "rejection"
+        raise ValidationError(
+            message=f"Say what this {what} rests on — the decision basis is recorded with it.",
+            detail={"field": "note", "reason": "required", "decision": decision},
+        )
+    return text
+
+
 def _validate_resolution(basis: str, units: int | None) -> tuple[str, int | None]:
     """
     Check the interpretation a reviewer supplied for a candidate.
@@ -126,6 +142,8 @@ async def approve(
     note: str | None = None,
     commercial_unit_basis: str | None = None,
     units_accounted_for: int | None = None,
+    reviewer_user_id: uuid.UUID | None = None,
+    reviewer_role: str | None = None,
 ) -> ReviewOutcome:
     """
     Approve one candidate, resolving its interpretation if it had none.
@@ -152,6 +170,7 @@ async def approve(
             message="This candidate was rejected. Reopen it before approving.",
             detail={"approval_state": mapping.approval_state},
         )
+    note = _require_basis(note, DECISION_APPROVE)
 
     # A pending proposal supplies the number when the reviewer does not
     # override it — approving a proposal is what promotes it.
@@ -208,6 +227,8 @@ async def approve(
         previous_units_accounted_for=previous_units,
         new_units_accounted_for=units,
         reviewer=reviewer,
+        reviewer_user_id=reviewer_user_id,
+        reviewer_role=reviewer_role,
         note=note,
         # A snapshot, so the decision stays explicable even if the candidate
         # is later re-derived from changed source data.
@@ -222,6 +243,8 @@ async def reject(
     *,
     reviewer: str,
     note: str | None = None,
+    reviewer_user_id: uuid.UUID | None = None,
+    reviewer_role: str | None = None,
 ) -> ReviewOutcome:
     """Refuse a candidate. The row is kept — rejection is a decision, not a delete."""
     repository = MasterCommercialRepository(session)
@@ -237,6 +260,7 @@ async def reject(
             mapping.commercial_unit_basis, mapping.units_accounted_for,
         )
 
+    note = _require_basis(note, DECISION_REJECT)
     previous_state = mapping.approval_state
     mapping.approval_state = STATE_REJECTED
     mapping.reviewed_by = reviewer
@@ -252,6 +276,8 @@ async def reject(
         previous_units_accounted_for=mapping.units_accounted_for,
         new_units_accounted_for=mapping.units_accounted_for,
         reviewer=reviewer,
+        reviewer_user_id=reviewer_user_id,
+        reviewer_role=reviewer_role,
         note=note,
         evidence_considered=dict(mapping.evidence or {}),
     ))
@@ -337,6 +363,8 @@ async def propose(
     units_accounted_for: int,
     proposer: str,
     note: str | None = None,
+    proposer_user_id: uuid.UUID | None = None,
+    proposer_role: str | None = None,
 ) -> ReviewOutcome:
     """
     Record a suggested multiplier. This is NOT an authoritative write.
@@ -387,6 +415,8 @@ async def propose(
         previous_units_accounted_for=mapping.units_accounted_for,
         new_units_accounted_for=units_accounted_for,
         reviewer=proposer,
+        reviewer_user_id=proposer_user_id,
+        reviewer_role=proposer_role,
         note=note,
         evidence_considered=dict(mapping.evidence or {}),
     ))

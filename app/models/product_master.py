@@ -490,7 +490,17 @@ class MasterCommercialReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     reviewer: Mapped[str] = mapped_column(
         String(64), nullable=False, doc="The username that made the decision.",
     )
-    note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    reviewer_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+        doc="The authenticated account that made the decision (NULL before 0026).",
+    )
+    reviewer_role: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, doc="The reviewer's role when deciding (NULL before 0026).",
+    )
+    note: Mapped[str | None] = mapped_column(
+        String(1000), nullable=True,
+        doc="What the decision rests on — required for APPROVE and REJECT; optional on a PROPOSE.",
+    )
     evidence_considered: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict,
         doc="The candidate's evidence as it stood when the decision was made.",
