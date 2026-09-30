@@ -5,6 +5,7 @@ User Management Endpoints — app/api/v1/users.py
     POST   /users              Create an account (any role, including ADMIN)
     PATCH  /users/{id}/role    Change an account's role
     PATCH  /users/{id}/active  Activate / deactivate an account
+    POST   /users/{id}/reset-password  Set another account's password
 
 ADMIN-only, entirely — require_admin gates the whole router, which is
 also what makes "only ADMIN may create or promote ADMIN" and "MANAGER
@@ -24,12 +25,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.auth import user_out
 from app.core.dependencies import require_admin
 from app.core.exceptions import RecordNotFoundError, ValidationError
+from app.core.logging import get_logger
 from app.core.security import hash_password
 from app.database.session import get_db
-from app.models.user import User
+from app.models.user import SECURITY_EVENT_PASSWORD_RESET, User, UserSecurityEvent
 from app.repositories.user_repository import UserRepository
-from app.schemas.auth import ChangeUserRoleRequest, CreateUserRequest, SetUserActiveRequest, UserOut
+from app.schemas.auth import (
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+    ChangeUserRoleRequest,
+    CreateUserRequest,
+    ResetPasswordRequest,
+    SetUserActiveRequest,
+    UserOut,
+)
 from app.schemas.base import APIResponse
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/users", tags=["Users"], dependencies=[Depends(require_admin)])
 
@@ -93,3 +105,66 @@ async def set_user_active(
     await db.commit()
     await db.refresh(user)
     return APIResponse(data=user_out(user))
+
+
+def _password_refusal(field: str, reason: str, message: str) -> ValidationError:
+    # Only the field and the reason — never the submitted value.
+    return ValidationError(message=message, detail={"field": field, "reason": reason})
+
+
+def _checked_new_password(body: ResetPasswordRequest) -> str:
+    """The new password, if it meets the account password policy and matches its confirmation."""
+    password, confirmation = body.new_password, body.confirm_password
+    if not isinstance(password, str) or not password.strip():
+        raise _password_refusal("new_password", "required", "Enter a new password.")
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise _password_refusal("new_password", "too_short",
+                                f"The password must be at least {PASSWORD_MIN_LENGTH} characters.")
+    if len(password) > PASSWORD_MAX_LENGTH:
+        raise _password_refusal("new_password", "too_long",
+                                f"The password must be at most {PASSWORD_MAX_LENGTH} characters.")
+    if not isinstance(confirmation, str) or confirmation != password:
+        raise _password_refusal("confirm_password", "mismatch", "The two passwords do not match.")
+    return password
+
+
+@router.post(
+    "/{user_id}/reset-password", response_model=APIResponse[UserOut],
+    summary="Reset another account's password",
+    description=(
+        "An ADMIN sets a new password for another account. Only the password changes — username, "
+        "role, active state and id are untouched. The acting administrator is the authenticated "
+        "session; the reset is recorded without the password. Resetting your own password here is "
+        "refused. Existing sessions of the account are not ended (sessions are stateless and expire "
+        "on their own); deactivate the account to cut access immediately."
+    ),
+    responses={404: {"description": "User not found"},
+               422: {"description": "Own account, or the password is missing, too short/long or unconfirmed"}},
+)
+async def reset_user_password(
+    user_id: uuid.UUID,
+    body: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_admin),
+) -> APIResponse[UserOut]:
+    if user_id == actor.id:
+        raise ValidationError(
+            message=("You cannot reset your own password here — this is for another account. "
+                     "Ask another administrator to reset it."),
+            detail={"field": "user_id", "reason": "own_account"},
+        )
+    target = await _get_or_404(db, user_id)
+    password = _checked_new_password(body)
+
+    repo = UserRepository(db)
+    await repo.set_password_hash(target, hash_password(password))
+    await repo.record_security_event(UserSecurityEvent(
+        action=SECURITY_EVENT_PASSWORD_RESET,
+        target_user_id=target.id, target_username=target.username,
+        actor_user_id=actor.id, actor_username=actor.username, actor_role=actor.role,
+    ))
+    await db.commit()
+    await db.refresh(target)
+    logger.info("user_password_reset", target_user_id=str(target.id), target_username=target.username,
+                actor_user_id=str(actor.id), actor_username=actor.username, actor_role=actor.role)
+    return APIResponse(data=user_out(target))

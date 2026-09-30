@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { UserAccount, UserRole } from "@/api/types";
 import { PageHeader, SectionHeader } from "@/components/layout/page-header";
 import { ErrorState } from "@/components/shared/states";
+import { ResetPasswordDialog } from "@/components/users/reset-password-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +43,9 @@ export function UsersPage() {
   const createUser = useCreateUser();
   const changeRole = useChangeUserRole();
   const setActive = useSetUserActive();
+  // Resetting another account's password is ADMIN-only; the server enforces it regardless.
+  const canResetPasswords = currentUser?.role === "ADMIN";
+  const [resetting, setResetting] = useState<UserAccount | null>(null);
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -162,6 +166,11 @@ export function UsersPage() {
                         >
                           {account.is_active ? "Deactivate" : "Reactivate"}
                         </Button>
+                        {canResetPasswords && !isSelf ? (
+                          <Button size="sm" variant="ghost" onClick={() => setResetting(account)}>
+                            Reset Password
+                          </Button>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   );
@@ -170,6 +179,7 @@ export function UsersPage() {
             </Table>
           )}
         </section>
+        {resetting ? <ResetPasswordDialog account={resetting} onClose={() => setResetting(null)} /> : null}
 
         <section className="surface overflow-hidden">
           <SectionHeader

@@ -19,9 +19,10 @@ in the future without touching any of those relationships.
 from __future__ import annotations
 
 import re
+import uuid
 from enum import StrEnum
 
-from sqlalchemy import Boolean, String, text
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -127,3 +128,37 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<User id={self.id} username={self.username!r} role={self.role!r} is_active={self.is_active}>"
+
+
+SECURITY_EVENT_PASSWORD_RESET = "PASSWORD_RESET"
+
+
+class UserSecurityEvent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """
+    One administrative security action on an account, append-only.
+
+    Today the only action is PASSWORD_RESET: an ADMIN set another account's
+    password. It records who (from the authenticated session), whose account
+    and when — never the password, its confirmation or its hash. Usernames are
+    kept as they were at the time, so the record survives a later rename.
+    """
+
+    __tablename__ = "user_security_events"
+
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    target_username: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    actor_username: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_role: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("action IN ('PASSWORD_RESET')", name="ck_user_security_events_action"),
+        Index("idx_user_security_events_target", "target_user_id"),
+        Index("idx_user_security_events_created", "created_at"),
+    )
+

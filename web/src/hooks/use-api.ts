@@ -32,6 +32,7 @@ import {
   createStore,
   listUsers,
   setUserActive,
+  resetUserPassword,
   correctLineItem,
   correctInvoiceDate,
   correctTotals,
@@ -526,6 +527,15 @@ export function useSetUserActive() {
   return useMutation({
     mutationFn: ({ userId, isActive }: { userId: string; isActive: boolean }) =>
       setUserActive(userId, isActive),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useResetUserPassword() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, newPassword, confirmPassword }: { userId: string; newPassword: string; confirmPassword: string }) =>
+      resetUserPassword(userId, newPassword, confirmPassword),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["users"] }),
   });
 }

@@ -12,7 +12,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.user import User, normalize_username
+from app.models.user import User, UserSecurityEvent, normalize_username
 
 
 class UserRepository:
@@ -50,3 +50,9 @@ class UserRepository:
     async def set_password_hash(self, user: User, password_hash: str) -> None:
         user.password_hash = password_hash
         await self._session.flush()
+
+    async def record_security_event(self, event: UserSecurityEvent) -> UserSecurityEvent:
+        """Append one security event. Never updated or deleted afterwards."""
+        self._session.add(event)
+        await self._session.flush()
+        return event

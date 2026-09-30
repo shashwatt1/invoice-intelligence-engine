@@ -98,6 +98,16 @@ export async function setUserActive(userId: string, isActive: boolean): Promise<
   return data.data!;
 }
 
+/** ADMIN only, for another account. Who is resetting is the signed-in account; it is never sent. */
+export async function resetUserPassword(
+  userId: string, newPassword: string, confirmPassword: string,
+): Promise<UserAccount> {
+  const { data } = await apiClient.post<ApiEnvelope<UserAccount>>(`/users/${userId}/reset-password`, {
+    new_password: newPassword, confirm_password: confirmPassword,
+  });
+  return data.data!;
+}
+
 /** `files` are the photos of ONE invoice in top-to-bottom order (a single
  * PDF or photo is a list of one); the backend reads them as one intake.
  * `storeId` is the store the operator chose up front, if any. Without it

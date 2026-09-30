@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -44,9 +45,15 @@ class UserOut(BaseModel):
     updated_at: datetime
 
 
+# The account password policy: the same bounds for creating an account and
+# for an administrative reset.
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 200
+
+
 class CreateUserRequest(BaseModel):
     username: str
-    password: str = Field(min_length=8, max_length=200)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
     role: UserRole
 
     @field_validator("username")
@@ -64,3 +71,20 @@ class ChangeUserRoleRequest(BaseModel):
 
 class SetUserActiveRequest(BaseModel):
     is_active: bool
+
+
+class ResetPasswordRequest(BaseModel):
+    """
+    An ADMIN setting another account's password. Only the new password and
+    its confirmation — who is acting is the authenticated session, never a
+    field here.
+
+    Deliberately unconstrained at the schema level: a request-validation
+    error is logged and returned with the submitted value, which here would be
+    the password. The endpoint checks presence, length and match itself and
+    reports only the field and the reason.
+    """
+
+    new_password: Any = Field(default=None, description="The new password (text).")
+    confirm_password: Any = Field(default=None, description="The same password again.")
+
