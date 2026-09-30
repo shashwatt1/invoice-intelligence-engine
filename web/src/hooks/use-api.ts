@@ -12,12 +12,14 @@ import { apiClient } from "@/api/client";
 
 import {
   approveCommercialCandidate,
+  bulkApproveCommercialCandidates,
   getCommercialCandidate,
   getCommercialSummary,
   listCommercialCandidates,
   listIdentityUnresolved,
   proposeCommercialCandidate,
   rejectCommercialCandidate,
+  reopenCommercialCandidate,
   addLineItem,
   approveProposal,
   assignInvoiceStore,
@@ -63,6 +65,8 @@ import {
 import type {
   CommercialCandidateParams,
   CommercialProposalRequest,
+  CommercialBulkApprovalRequest,
+  CommercialReopenRequest,
   CommercialReviewRequest,
   CaseMappingConfirmation,
   InvoiceListParams,
@@ -615,6 +619,27 @@ export function useRejectCommercialCandidate() {
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: CommercialReviewRequest }) =>
       rejectCommercialCandidate(id, body),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["product-master"] });
+    },
+  });
+}
+
+export function useReopenCommercialCandidate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CommercialReopenRequest }) =>
+      reopenCommercialCandidate(id, body),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["product-master"] });
+    },
+  });
+}
+
+export function useBulkApproveCommercialCandidates() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CommercialBulkApprovalRequest) => bulkApproveCommercialCandidates(body),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["product-master"] });
     },

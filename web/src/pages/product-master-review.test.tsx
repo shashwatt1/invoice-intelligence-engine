@@ -21,6 +21,7 @@ const getCommercialCandidate = vi.fn();
 const approveCommercialCandidate = vi.fn();
 const rejectCommercialCandidate = vi.fn();
 const proposeCommercialCandidate = vi.fn();
+const reopenCommercialCandidate = vi.fn();
 
 vi.mock("@/api/endpoints", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/endpoints")>()),
@@ -30,6 +31,7 @@ vi.mock("@/api/endpoints", async (importOriginal) => ({
   approveCommercialCandidate: (...a: unknown[]) => approveCommercialCandidate(...a),
   rejectCommercialCandidate: (...a: unknown[]) => rejectCommercialCandidate(...a),
   proposeCommercialCandidate: (...a: unknown[]) => proposeCommercialCandidate(...a),
+  reopenCommercialCandidate: (...a: unknown[]) => reopenCommercialCandidate(...a),
 }));
 
 const { ProductMasterReviewPage } = await import("./product-master-review");
@@ -155,6 +157,7 @@ beforeEach(() => {
   approveCommercialCandidate.mockResolvedValue({});
   rejectCommercialCandidate.mockResolvedValue({});
   proposeCommercialCandidate.mockResolvedValue({});
+  reopenCommercialCandidate.mockResolvedValue({});
   currentRole = "MANAGER";
 });
 
@@ -333,6 +336,7 @@ describe("Product Master commercial review", () => {
     expect(await screen.findByText(/did not settle this candidate/i)).toBeInTheDocument();
     await user.type(screen.getByLabelText(/decision basis/i), "Checked the distributor sheet");
     await user.click(screen.getByRole("button", { name: /approve candidate/i }));
+    await user.click(screen.getByRole("button", { name: /confirm approval/i }));
 
     // The UI sends no basis, so the backend refuses — nothing is guessed here.
     expect(approveCommercialCandidate).toHaveBeenCalledWith(
@@ -350,6 +354,7 @@ describe("Product Master commercial review", () => {
     await user.click(await screen.findByRole("option", { name: /case is the selling unit/i }));
     await user.type(screen.getByLabelText(/decision basis/i), "Items/case column states 1");
     await user.click(screen.getByRole("button", { name: /approve candidate/i }));
+    await user.click(screen.getByRole("button", { name: /confirm approval/i }));
 
     expect(approveCommercialCandidate).toHaveBeenCalledWith(
       "c2", expect.objectContaining({ commercial_unit_basis: "CASE_IS_SELLING_UNIT" }),
@@ -364,6 +369,7 @@ describe("Product Master commercial review", () => {
 
     await user.type(await screen.findByLabelText(/decision basis/i), "Source sheet is stale");
     await user.click(screen.getByRole("button", { name: /^reject$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm rejection/i }));
 
     expect(rejectCommercialCandidate).toHaveBeenCalledWith(
       "c2", expect.objectContaining({ note: "Source sheet is stale" }),
@@ -408,10 +414,11 @@ describe("Product Master commercial review", () => {
     await user.click(await screen.findByRole("combobox", { name: /commercial interpretation/i }));
     await user.click(await screen.findByRole("option", { name: /contained unit/i }));
     await user.type(screen.getByLabelText(/sellable units per case/i), "12");
+    await user.type(screen.getByLabelText(/proposal basis/i), "Distributor sheet states 12 per case");
     await user.click(screen.getByRole("button", { name: /submit proposal/i }));
 
     expect(proposeCommercialCandidate).toHaveBeenCalledWith(
-      "c2", expect.objectContaining({ units_accounted_for: 12 }),
+      "c2", expect.objectContaining({ units_accounted_for: 12, note: "Distributor sheet states 12 per case" }),
     );
   });
 
@@ -586,6 +593,7 @@ describe("Product Master review — accountable decisions", () => {
     expect(approve).toBeEnabled();
     expect(reject).toBeEnabled();
     await user.click(approve);
+    await user.click(within(dialog).getByRole("button", { name: /confirm approval/i }));
     expect(approveCommercialCandidate).toHaveBeenCalledWith(
       "c1", expect.objectContaining({ note: "Sheet1 items/case states 4" }),
     );
@@ -644,7 +652,10 @@ describe("Product Master review — accountable decisions", () => {
                   reviewer_role: "USER", note: "from the sheet", decided_at: "2026-09-30T10:00:00Z" }],
     });
     const { dialog } = await openCandidate("018200001154");
-    expect(await within(dialog).findByText(/propose by vivek \(User\)/)).toBeInTheDocument();
+    const history = await within(dialog).findByTestId("review-history");
+    expect(history).toHaveTextContent("Proposed");
+    expect(history).toHaveTextContent("by vivek · User · review required → proposal pending");
+    expect(history).toHaveTextContent("from the sheet");
   });
 });
 
@@ -709,5 +720,100 @@ describe("source identity presentation", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText(/AF McKinley · location not confirmed/)).toBeInTheDocument();
     expect(within(dialog).queryByTestId("store-context")).not.toBeInTheDocument();
+  });
+});
+
+describe("Product Master review — governance safety", () => {
+  async function open(identifier: string, row?: Partial<CommercialCandidateRow>) {
+    if (row) {
+      listCommercialCandidates.mockResolvedValue({ items: [{ ...SETTLED, ...row }], total: 1, page: 1, page_size: 25 });
+      // The panel decides against the detail's (fresher) view; serve the same candidate there.
+      const base = await getCommercialCandidate();
+      getCommercialCandidate.mockClear();
+      getCommercialCandidate.mockResolvedValue({ ...base, candidate: { ...SETTLED, ...row }, history: [] });
+    }
+    const user = userEvent.setup();
+    renderPage();
+    const tr = (await screen.findByText(identifier)).closest("tr")!;
+    await user.click(within(tr).getByRole("button", { name: /review/i }));
+    return { user, dialog: await screen.findByRole("alertdialog") };
+  }
+
+  it("asks for confirmation before approving, sends the version seen, and Go back decides nothing", async () => {
+    const { user, dialog } = await open("018200001154", { review_version: 3 });
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "Sheet1 states 4");
+    await user.click(within(dialog).getByRole("button", { name: /approve candidate/i }));
+    const confirm = within(dialog).getByTestId("decision-confirmation");
+    expect(confirm).toHaveTextContent("becomes the authoritative commercial mapping");
+    expect(confirm).toHaveTextContent("Decision by tester · Manager");
+    await user.click(within(dialog).getByRole("button", { name: /go back/i }));
+    expect(approveCommercialCandidate).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: /approve candidate/i }));
+    await user.click(within(dialog).getByRole("button", { name: /confirm approval/i }));
+    expect(approveCommercialCandidate).toHaveBeenCalledWith("c1", expect.objectContaining({
+      note: "Sheet1 states 4", expected_review_version: 3 }));
+  });
+
+  it("warns before leaving with unsaved notes, and Stay keeps them", async () => {
+    const { user, dialog } = await open("018200001154");
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "half-written reason");
+    await user.click(within(dialog).getByRole("button", { name: /^back$/i }));
+    expect(within(dialog).getByTestId("leave-warning")).toHaveTextContent("unsaved notes");
+    await user.click(within(dialog).getByRole("button", { name: /stay/i }));
+    expect(within(dialog).getByLabelText(/decision basis/i)).toHaveValue("half-written reason");
+    await user.click(within(dialog).getByRole("button", { name: /^back$/i }));
+    await user.click(within(dialog).getByRole("button", { name: /leave/i }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+  });
+
+  it("closes at once when nothing was typed", async () => {
+    const { user, dialog } = await open("018200001154");
+    await user.click(within(dialog).getByRole("button", { name: /^back$/i }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+  });
+
+  it("lets a manager reopen a decided mapping only with a reason and a confirmation", async () => {
+    const { user, dialog } = await open("018200001154",
+      { approval_state: "APPROVED", review_status: "APPROVED", review_version: 2 });
+    expect(within(dialog).queryByRole("button", { name: /approve candidate/i })).not.toBeInTheDocument();
+    const reopen = within(dialog).getByRole("button", { name: /reopen for reconsideration/i });
+    expect(reopen).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/reason for reconsideration/i), "Distributor corrected the sheet");
+    await user.click(reopen);
+    expect(within(dialog).getByTestId("decision-confirmation")).toHaveTextContent("decision stays in the history");
+    await user.click(within(dialog).getByRole("button", { name: /confirm reopen/i }));
+    expect(reopenCommercialCandidate).toHaveBeenCalledWith("c1", {
+      reason: "Distributor corrected the sheet", expected_review_version: 2 });
+  });
+
+  it("does not let a USER reopen a decision", async () => {
+    currentRole = "USER";
+    const { dialog } = await open("018200001154", { approval_state: "REJECTED", review_status: "REJECTED" });
+    expect(within(dialog).queryByRole("button", { name: /reopen/i })).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/only a manager can reopen/i)).toBeInTheDocument();
+  });
+
+  it("refuses a stale decision clearly and keeps the typed basis", async () => {
+    const { ApiError } = await import("@/api/client");
+    approveCommercialCandidate.mockRejectedValue(new ApiError(409, { error_code: "ERR_STALE_REVIEW", message: "changed" }));
+    const { user, dialog } = await open("018200001154");
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "Sheet1 states 4");
+    await user.click(within(dialog).getByRole("button", { name: /approve candidate/i }));
+    await user.click(within(dialog).getByRole("button", { name: /confirm approval/i }));
+    expect(await within(dialog).findByText(/changed since you opened it/i)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/decision basis/i)).toHaveValue("Sheet1 states 4");
+    expect(within(dialog).getByRole("button", { name: /approve candidate/i })).toBeDisabled();
+  });
+
+  it("labels review states in words", async () => {
+    listCommercialCandidates.mockResolvedValue({
+      items: [{ ...SETTLED, review_status: "READY_FOR_REVIEW" }, { ...CONFLICT, review_status: "CONFLICT" }],
+      total: 2, page: 1, page_size: 25,
+    });
+    renderPage();
+    const badges = await screen.findAllByTestId("review-status");
+    const text = badges.map((b) => b.textContent).join(" | ");
+    expect(text).toContain("Ready for reviewReview required");
+    expect(text).toContain("ConflictIndividual review required");
   });
 });

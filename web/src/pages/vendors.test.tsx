@@ -52,6 +52,10 @@ function detailOf(row: VendorRow): VendorDetail {
       store: { id: "s1", label: "PB Wolf (identity unconfirmed)", identity_status: "unresolved", display_name: "PB Wolf",
                address: null, source_codes: [], kind: "physical", source_identity: null },
     }],
+    discrepancies: row.identity_status === "confirmed" ? [{
+      invoice_id: "i9", invoice_number: "3376590", observed_vendor_name: "TESTANI BROS",
+      observed_vendor_tax_id: null, recorded_at: "2026-09-30T08:00:00Z",
+    }] : [],
     history: row.identity_status === "confirmed" ? [{
       decision: "CONFIRM", previous_status: "unresolved", new_status: "confirmed", previous_display_name: null,
       new_display_name: "Rocco J. Testani", reviewer: "prabh", reviewer_role: "MANAGER",
@@ -168,5 +172,14 @@ describe("Vendor review", () => {
     await user.type(within(dialog).getByLabelText(/decision basis/i), "Two remit-to entities share this name");
     await user.click(reopen);
     expect(reopenVendor).toHaveBeenCalledWith("v2", { basis: "Two remit-to entities share this name" });
+  });
+});
+
+describe("vendor reading discrepancies", () => {
+  it("shows readings that disagreed with a confirmed vendor", async () => {
+    const { dialog } = await openReview("Rocco J. Testani");
+    const section = await within(dialog).findByTestId("vendor-discrepancies");
+    expect(section).toHaveTextContent("#3376590");
+    expect(section).toHaveTextContent("read as “TESTANI BROS”");
   });
 });

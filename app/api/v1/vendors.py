@@ -35,6 +35,7 @@ from app.schemas.vendor import (
     VendorConfirmRequest,
     VendorDecision,
     VendorDetail,
+    VendorDiscrepancy,
     VendorIdentityReviewEntry,
     VendorInvoiceRef,
     VendorReopenRequest,
@@ -104,6 +105,7 @@ async def get_vendor(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -
             )
             for h in await repository.history(vendor.id)
         ],
+        discrepancies=[VendorDiscrepancy(**d) for d in await repository.discrepancies(vendor.id)],
     ))
 
 

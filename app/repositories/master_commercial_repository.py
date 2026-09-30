@@ -38,7 +38,12 @@ def _review_status_clause(status: str):
     must agree, so the mapping is written once here rather than duplicated
     at each call site.
     """
-    from app.models.product_master import STATE_APPROVED, STATE_REJECTED, STATE_REVIEW_REQUIRED
+    from app.models.product_master import (
+        STATE_APPROVED,
+        STATE_PENDING,
+        STATE_REJECTED,
+        STATE_REVIEW_REQUIRED,
+    )
 
     open_row = MasterCommercialMapping.approval_state == STATE_REVIEW_REQUIRED
     if status == "APPROVED":
@@ -51,6 +56,9 @@ def _review_status_clause(status: str):
         return (open_row
                 & (MasterCommercialMapping.commercial_unit_basis != COMMERCIAL_CONFLICT)
                 & MasterCommercialMapping.units_accounted_for.is_(None))
+    if status == "UNDECIDED":
+        # Everything still awaiting a MANAGER/ADMIN decision: the approval queue.
+        return MasterCommercialMapping.approval_state.in_((STATE_REVIEW_REQUIRED, STATE_PENDING))
     if status == "READY_FOR_REVIEW":
         return (open_row
                 & (MasterCommercialMapping.commercial_unit_basis != COMMERCIAL_CONFLICT)
@@ -134,9 +142,54 @@ class MasterCommercialRepository:
             (await self._session.execute(select(func.count()).select_from(inner))).scalar() or 0
         )
 
-    async def get(self, mapping_id: uuid.UUID):
+    async def get(self, mapping_id: uuid.UUID, *, for_update: bool = False):
+        """
+        The candidate with its product and store. `for_update` locks the mapping
+        row for the rest of the transaction, so two decisions on one candidate
+        are serialized and the second sees the first (see review_version).
+        """
         statement = self._base().where(MasterCommercialMapping.id == mapping_id)
+        if for_update:
+            statement = statement.with_for_update(of=MasterCommercialMapping)
         return (await self._session.execute(statement)).first()
+
+    async def review_version(self, mapping_id: uuid.UUID) -> int:
+        """
+        How many review events the candidate has. The history is append-only,
+        so this only grows: every proposal, decision and reopening changes it,
+        which makes it the version a reviewer's decision is checked against.
+        """
+        return int((await self._session.execute(
+            select(func.count()).select_from(MasterCommercialReview)
+            .where(MasterCommercialReview.mapping_id == mapping_id)
+        )).scalar() or 0)
+
+    async def review_facts(self, mapping_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, tuple[int, str | None]]:
+        """Per candidate: (review_version, latest decision) — two grouped queries for a whole page."""
+        ids = list(mapping_ids)
+        if not ids:
+            return {}
+        counts: dict[uuid.UUID, int] = dict((await self._session.execute(
+            select(MasterCommercialReview.mapping_id, func.count())
+            .where(MasterCommercialReview.mapping_id.in_(ids))
+            .group_by(MasterCommercialReview.mapping_id)
+        )).tuples().all())
+        ranked = (
+            select(
+                MasterCommercialReview.mapping_id,
+                MasterCommercialReview.decision,
+                func.row_number().over(
+                    partition_by=MasterCommercialReview.mapping_id,
+                    order_by=(MasterCommercialReview.created_at.desc(), MasterCommercialReview.id.desc()),
+                ).label("rank"),
+            )
+            .where(MasterCommercialReview.mapping_id.in_(ids))
+            .subquery()
+        )
+        latest: dict[uuid.UUID, str] = dict((await self._session.execute(
+            select(ranked.c.mapping_id, ranked.c.decision).where(ranked.c.rank == 1)
+        )).tuples().all())
+        return {i: (int(counts.get(i, 0)), latest.get(i)) for i in ids}
 
     async def summary(self) -> dict[str, int]:
         rows = (await self._session.execute(

@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useDocumentStatus, useProcessInvoice, useStores } from "@/hooks/use-api";
+import { useAuth } from "@/hooks/use-auth";
 import { physicalStores } from "@/lib/stores";
 
 export function ProcessPage() {
@@ -40,11 +41,16 @@ export function ProcessPage() {
   const processMutation = useProcessInvoice();
   const status = useDocumentStatus(documentId ?? undefined);
   const stores = useStores();
+  const { user } = useAuth();
+  // USER and MANAGER name the physical store before processing; only an ADMIN may
+  // process without one and resolve it later. The server enforces this as well.
+  const storeRequired = user?.role !== "ADMIN";
 
   const isRunning = Boolean(documentId) && !status.data?.is_terminal;
   const terminal = status.data?.is_terminal ? status.data : null;
   const choices = physicalStores(stores.data);
   const selected = choices.find((s) => s.id === store) ?? null;
+  const missingStore = storeRequired && !selected;
   const awaiting = status.data?.awaiting_store_confirmation ?? false;
 
   const start = () => {
@@ -102,7 +108,12 @@ export function ProcessPage() {
             <div className="flex items-baseline gap-2.5">
               <span className="t-mono text-muted-foreground/70">01</span>
               <label id="intake-store" htmlFor="store-select" className="t-section">
-                Store <span className="font-normal text-muted-foreground">— optional now, confirmed later</span>
+                Store{" "}
+                {storeRequired ? (
+                  <span className="font-normal text-muted-foreground">— required</span>
+                ) : (
+                  <span className="font-normal text-muted-foreground">— optional for administrators, confirmed later</span>
+                )}
               </label>
             </div>
             <Select
@@ -117,7 +128,9 @@ export function ProcessPage() {
                       ? "Loading the store directory…"
                       : stores.isError
                         ? "Store directory unavailable"
-                        : "Decide after the document is read"
+                        : storeRequired
+                          ? "Choose the physical store"
+                          : "Decide after the document is read"
                   }
                 />
               </SelectTrigger>
@@ -189,9 +202,10 @@ export function ProcessPage() {
               className="flex-1"
               size="lg"
               variant={files.length === 0 ? "secondary" : "default"}
-              disabled={files.length === 0 || isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
+              disabled={files.length === 0 || missingStore || isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
               onClick={start}
-              title={files.length === 0 ? "Add a file or the photos of one invoice first" : undefined}
+              title={files.length === 0 ? "Add a file or the photos of one invoice first"
+                : missingStore ? "Choose the physical store this invoice is for first" : undefined}
               data-testid="process-button"
             >
               {processMutation.isPending
@@ -204,7 +218,9 @@ export function ProcessPage() {
                       : "Reading the document…"
                     : selected
                       ? `Process ${files.length > 1 ? `${files.length} photos as one invoice` : "invoice"} for ${selected.label}`
-                      : `Read the ${files.length > 1 ? `${files.length} photos` : "document"}, then confirm the store`}
+                      : missingStore
+                        ? "Choose the store to process this invoice"
+                        : `Read the ${files.length > 1 ? `${files.length} photos` : "document"}, then confirm the store`}
               {!isRunning && !processMutation.isPending && !awaiting ? <ArrowRight className="size-4" /> : null}
             </Button>
             {(terminal || duplicate || awaiting) && (

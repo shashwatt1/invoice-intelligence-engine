@@ -35,9 +35,12 @@ from app.repositories.master_commercial_repository import MasterCommercialReposi
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import SourceIdentityRef
 from app.schemas.product_master import (
+    CommercialBulkApprovalRequest,
+    CommercialBulkApprovalResult,
     CommercialCandidateDetail,
     CommercialCandidateRow,
     CommercialProposalRequest,
+    CommercialReopenRequest,
     CommercialReviewDecision,
     CommercialReviewRequest,
     CommercialReviewSummary,
@@ -70,7 +73,9 @@ INADMISSIBLE_EVIDENCE = [
 
 
 def _row(mapping, product, store, legacy: list,
-         descriptions: list | None = None) -> CommercialCandidateRow:
+         descriptions: list | None = None,
+         facts: tuple[int, str | None] = (0, None)) -> CommercialCandidateRow:
+    review_version, last_decision = facts
     legacy_units = {row.units_per_case for row in legacy}
     evidence = mapping.evidence or {}
     name = resolve_display_name(descriptions or [])
@@ -117,6 +122,10 @@ def _row(mapping, product, store, legacy: list,
         proposed_units_accounted_for=mapping.proposed_units_accounted_for,
         proposed_by=mapping.proposed_by,
         proposed_note=mapping.proposed_note,
+        proposed_at=mapping.proposed_at,
+        review_version=review_version,
+        last_decision=last_decision,
+        bulk_eligible=review_service.bulk_eligible(mapping, last_decision),
         legacy_mappings=[
             LegacyMappingRef(
                 item_code=row.item_code, units_per_case=row.units_per_case,
@@ -161,10 +170,11 @@ async def list_commercial_candidates(
         [mapping.pdi_item_code for mapping, _, _ in rows if mapping.pdi_item_code]
     )
     descriptions = await repository.descriptions_for([product.id for _, product, _ in rows])
+    facts = await repository.review_facts([mapping.id for mapping, _, _ in rows])
     return PaginatedResponse(
         items=[
             _row(mapping, product, store, legacy.get(mapping.pdi_item_code, []),
-                 descriptions.get(product.id, []))
+                 descriptions.get(product.id, []), facts.get(mapping.id, (0, None)))
             for mapping, product, store in rows
         ],
         total=total, page=page, page_size=page_size,
@@ -219,7 +229,7 @@ async def get_commercial_candidate(
 
     return APIResponse(data=CommercialCandidateDetail(
         candidate=_row(mapping, product, store, legacy.get(mapping.pdi_item_code, []),
-                       descriptions),
+                       descriptions, (len(history), history[0].decision if history else None)),
         evidence=EvidenceView(
             notes=evidence.get("notes"),
             source_statements=evidence.get("source_statements", []),
@@ -312,6 +322,7 @@ async def approve_candidate(
         units_accounted_for=payload.units_accounted_for,
         reviewer_user_id=user.id,
         reviewer_role=user.role,
+        expected_review_version=payload.expected_review_version,
     )
     await db.commit()
     return APIResponse(data=CommercialReviewDecision(**vars(outcome)))
@@ -331,9 +342,67 @@ async def reject_candidate(
     outcome = await review_service.reject(
         db, mapping_id, reviewer=user.username, note=payload.note,
         reviewer_user_id=user.id, reviewer_role=user.role,
+        expected_review_version=payload.expected_review_version,
     )
     await db.commit()
     return APIResponse(data=CommercialReviewDecision(**vars(outcome)))
+
+
+@router.post(
+    "/commercial/{mapping_id}/reopen",
+    response_model=APIResponse[CommercialReviewDecision],
+    summary="Reopen a decided candidate for reconsideration (MANAGER/ADMIN)",
+    description=(
+        "Never an undo: the decision being reconsidered stays in the history, and a REOPEN event "
+        "records who reopened it and why. The candidate returns to REVIEW_REQUIRED with the "
+        "interpretation the evidence gave before that decision."
+    ),
+    responses={409: {"description": "Changed since the reviewer opened it"},
+               422: {"description": "Not decided, or no reason given"}},
+)
+async def reopen_candidate(
+    mapping_id: uuid.UUID,
+    payload: CommercialReopenRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[CommercialReviewDecision]:
+    outcome = await review_service.reopen(
+        db, mapping_id, reviewer=user.username, reason=payload.reason,
+        reviewer_user_id=user.id, reviewer_role=user.role,
+        expected_review_version=payload.expected_review_version,
+    )
+    await db.commit()
+    return APIResponse(data=CommercialReviewDecision(**vars(outcome)))
+
+
+@router.post(
+    "/commercial/bulk-approve",
+    response_model=APIResponse[CommercialBulkApprovalResult],
+    summary="Approve several READY_FOR_REVIEW candidates (MANAGER/ADMIN)",
+    description=(
+        "A convenience over the same governed approval: every selected candidate is approved and "
+        "recorded individually (one review event each, with the reviewer, role, basis and evidence). "
+        "All or nothing — if any candidate changed since it was selected (409) or needs an individual "
+        "decision (422: conflict, pending proposal, no multiplier, reopened), nothing is approved."
+    ),
+    responses={409: {"description": "The queue changed since the selection"},
+               422: {"description": "A selected candidate needs an individual decision"}},
+)
+async def bulk_approve_candidates(
+    payload: CommercialBulkApprovalRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[CommercialBulkApprovalResult]:
+    outcomes = await review_service.bulk_approve(
+        db,
+        [review_service.BulkApprovalItem(i.mapping_id, i.expected_review_version) for i in payload.items],
+        reviewer=user.username, note=payload.note,
+        reviewer_user_id=user.id, reviewer_role=user.role,
+    )
+    await db.commit()
+    return APIResponse(data=CommercialBulkApprovalResult(
+        approved=len(outcomes), decisions=[CommercialReviewDecision(**vars(o)) for o in outcomes],
+    ))
 
 
 @router.get(

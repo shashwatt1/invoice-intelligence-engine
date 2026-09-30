@@ -19,13 +19,16 @@ from app.models.user import User, UserRole
 def _authenticated(app):
     """
     /invoices/process requires a session; this suite is offline (no DB,
-    no real login), so a fake authenticated USER is injected the
+    no real login), so a fake authenticated account is injected the
     standard FastAPI-testing way — a dependency override — scoped to
-    this module only and cleared after each test.
+    this module only and cleared after each test. It is an ADMIN: the one
+    role that may process without naming a store, so these checks reach the
+    file validation they test (the store rule by role is covered in
+    tests/test_phase_d_relationships.py).
     """
     fake_user = User(
         id=uuid.uuid4(), username="offline-test", password_hash="x",
-        role=UserRole.USER.value, is_active=True,
+        role=UserRole.ADMIN.value, is_active=True,
     )
     app.dependency_overrides[require_authenticated_user] = lambda: fake_user
     yield

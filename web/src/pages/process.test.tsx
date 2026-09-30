@@ -13,6 +13,11 @@ vi.mock("@/api/endpoints", () => ({
   listStores: vi.fn(async () => []),
   getDocumentStatus: vi.fn(),
 }));
+// Role-dependent store rules: ADMIN by default (may process or defer without a store).
+let currentRole = "ADMIN";
+vi.mock("@/hooks/use-auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", username: "tester", role: currentRole } }),
+}));
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), error: vi.fn(), warning: vi.fn(), success: vi.fn() } }));
 vi.mock("framer-motion", () => ({
   AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -42,7 +47,10 @@ function renderPage() {
   );
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  currentRole = "ADMIN";
+});
 
 describe("processing several photos as one invoice", () => {
   it("sends every photo, in order, in ONE request", async () => {
@@ -128,3 +136,38 @@ describe("the Process Invoice store picker", () => {
   });
 });
 
+
+describe("the physical store rule by role", () => {
+  const STORE = {
+    id: "pb-wolf", label: "PB Wolf (identity unconfirmed)", identity_status: "unresolved" as const, display_name: "PB Wolf",
+    address: "800 Wolf St", source_codes: [] as string[], kind: "physical" as const, in_store_directory: true,
+    customer_name: null, address_line_1: null, address_line_2: null, city: null, state: null, postal_code: null,
+    status: "active", notes: null, identifiers: [], invoices: 0, pricing_rows: 0, identities: 0, catalogue_rows: 0,
+    case_mappings: 0, pending_proposals: 0,
+  };
+
+  it.each(["USER", "MANAGER"])("a %s cannot process without choosing a physical store", async (role) => {
+    currentRole = role;
+    vi.mocked(api.listStores).mockResolvedValue([STORE]);
+    const user = userEvent.setup();
+    renderPage();
+    expect(screen.getByText("— required")).toBeInTheDocument();
+    await user.upload(screen.getByTestId("file-input"), [png("p1.jpg", 1)]);
+    const button = screen.getByTestId("process-button");
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("Choose the store to process this invoice");
+    await waitFor(() => expect(api.listStores).toHaveBeenCalled());
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: /PB Wolf/ }));
+    expect(button).toBeEnabled();
+    processInvoice.mockResolvedValue({ document_id: "d-2", filename: "p1.jpg", status: "UPLOADED", status_url: "/x" });
+    await user.click(button);
+    await waitFor(() => expect(processInvoice).toHaveBeenCalledWith(expect.any(Array), "pb-wolf"));
+  });
+
+  it("an ADMIN may leave the store for later", async () => {
+    currentRole = "ADMIN";
+    renderPage();
+    expect(screen.getByText(/optional for administrators/)).toBeInTheDocument();
+  });
+});

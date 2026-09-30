@@ -237,3 +237,15 @@ class DocumentWithdrawnError(InvoiceBaseException):
     error_code = "ERR_DOCUMENT_WITHDRAWN"
     http_status = 409
     message = "This document was withdrawn from the active workflow; processing was halted."
+
+
+class StaleReviewError(InvoiceBaseException):
+    """
+    Raised when a review decision was made against a view of a Product Master
+    candidate that is no longer current — someone decided, proposed or reopened
+    it since. The stale decision is refused whole; nothing is overwritten.
+    """
+
+    error_code = "ERR_STALE_REVIEW"
+    http_status = 409
+    message = "This mapping changed since you opened it. Refresh to see the latest state, then decide again."

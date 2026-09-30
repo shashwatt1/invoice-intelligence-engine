@@ -83,6 +83,13 @@ class CommercialCandidateRow(BaseModel):
     proposed_units_accounted_for: int | None = None
     proposed_by: str | None = None
     proposed_note: str | None = None
+    proposed_at: datetime | None = None
+    # Governance: the review version a decision is checked against (the number
+    # of review events so far), the latest review event, and whether the row may
+    # be part of a multi-select approval — decided by the server, not the client.
+    review_version: int = 0
+    last_decision: str | None = None
+    bulk_eligible: bool = False
     legacy_mappings: list[LegacyMappingRef] = Field(default_factory=list)
 
 
@@ -139,6 +146,32 @@ class CommercialReviewRequest(BaseModel):
                              description="The decision basis — required to approve or reject.")
     commercial_unit_basis: str | None = None
     units_accounted_for: int | None = Field(default=None, ge=1, le=9999)
+    expected_review_version: int = Field(
+        ge=0, description="The review_version the reviewer saw; a stale decision is refused with 409.")
+
+
+class CommercialReopenRequest(BaseModel):
+    """Reopen a decided candidate for reconsideration (MANAGER/ADMIN)."""
+
+    reason: str | None = Field(default=None, max_length=1000, description="Why it is reconsidered — required.")
+    expected_review_version: int = Field(ge=0, description="The review_version the reviewer saw.")
+
+
+class BulkApprovalItemRequest(BaseModel):
+    mapping_id: uuid.UUID
+    expected_review_version: int = Field(ge=0)
+
+
+class CommercialBulkApprovalRequest(BaseModel):
+    """
+    Approve several READY_FOR_REVIEW candidates at once. Each is approved and
+    recorded individually; if any changed or needs an individual decision,
+    nothing is approved.
+    """
+
+    items: list[BulkApprovalItemRequest] = Field(min_length=1)
+    note: str | None = Field(default=None, max_length=1000,
+                             description="The decision basis, recorded with every approval — required.")
 
 
 class CommercialProposalRequest(BaseModel):
@@ -154,6 +187,11 @@ class CommercialReviewDecision(BaseModel):
     new_state: str
     commercial_unit_basis: str
     units_accounted_for: int | None
+
+
+class CommercialBulkApprovalResult(BaseModel):
+    approved: int
+    decisions: list[CommercialReviewDecision]
 
 
 class CommercialReviewSummary(BaseModel):

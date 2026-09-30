@@ -20,6 +20,7 @@ const CRUMBS: { match: RegExp; trail: { label: string; to?: string }[] }[] = [
   { match: /^\/data-review\/products\//, trail: [{ label: "Master Data Review", to: "/data-review" }, { label: "Product history" }] },
   { match: /^\/data-review/, trail: [{ label: "Master Data Review" }] },
   { match: /^\/requires-mapping/, trail: [{ label: "Requires Mapping" }] },
+  { match: /^\/product-master\/approvals/, trail: [{ label: "Product Master", to: "/product-master" }, { label: "Approvals" }] },
   { match: /^\/stores/, trail: [{ label: "Stores" }] },
   { match: /^\/vendors/, trail: [{ label: "Vendors" }] },
   { match: /^\/settings/, trail: [{ label: "Settings" }] },

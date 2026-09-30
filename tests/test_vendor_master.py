@@ -267,6 +267,10 @@ class TestTheApiReads:
             async def history(self, _id):
                 return [review]
 
+            async def discrepancies(self, _id):
+                return [{"recorded_at": when, "invoice_id": invoice.id, "invoice_number": "3376587",
+                         "observed_vendor_name": "TESTANI BROS", "observed_vendor_tax_id": None}]
+
         class Stores:
             def __init__(self, _session):
                 pass
@@ -300,6 +304,8 @@ class TestTheApiReads:
         assert (ref["invoice_number"], ref["observed_vendor_name"], ref["store"]["label"]) == (
             "3376587", "Testani Distributors", "PB Wolf (identity unconfirmed)")
         assert (detail["history"][0]["reviewer"], detail["history"][0]["reviewer_role"]) == ("barj", "MANAGER")
+        [discrepancy] = detail["discrepancies"]
+        assert (discrepancy["invoice_number"], discrepancy["observed_vendor_name"]) == ("3376587", "TESTANI BROS")
 
 
 # ---- invoices and exports -------------------------------------------------

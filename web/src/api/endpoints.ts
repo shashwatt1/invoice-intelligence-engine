@@ -10,6 +10,9 @@ import type {
   CommercialCandidateParams,
   CommercialCandidateRow,
   CommercialProposalRequest,
+  CommercialBulkApprovalRequest,
+  CommercialBulkApprovalResult,
+  CommercialReopenRequest,
   CommercialReviewRequest,
   CommercialReviewSummary,
   IdentityUnresolvedRow,
@@ -494,6 +497,26 @@ export async function rejectCommercialCandidate(id: string, body: CommercialRevi
     body,
   );
   return data.data;
+}
+
+/** MANAGER/ADMIN: reopen a decided candidate for reconsideration — a new event, never an undo. */
+export async function reopenCommercialCandidate(id: string, body: CommercialReopenRequest) {
+  const { data } = await apiClient.post<ApiEnvelope<unknown>>(
+    `/product-master/commercial/${id}/reopen`,
+    body,
+  );
+  return data.data;
+}
+
+/** MANAGER/ADMIN: approve several READY_FOR_REVIEW candidates; each is recorded individually. */
+export async function bulkApproveCommercialCandidates(
+  body: CommercialBulkApprovalRequest,
+): Promise<CommercialBulkApprovalResult> {
+  const { data } = await apiClient.post<ApiEnvelope<CommercialBulkApprovalResult>>(
+    "/product-master/commercial/bulk-approve",
+    body,
+  );
+  return data.data!;
 }
 
 export async function listIdentityUnresolved(): Promise<IdentityUnresolvedRow[]> {

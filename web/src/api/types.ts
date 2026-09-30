@@ -368,6 +368,16 @@ export interface VendorDetail extends VendorRow {
   observed_tax_ids: { tax_id: string; invoices: number }[];
   recent_invoices: VendorInvoiceRef[];
   history: VendorIdentityReviewEntry[];
+  /** Reprocessed readings that named another vendor (or none); the confirmed vendor was kept. */
+  discrepancies?: VendorDiscrepancy[];
+}
+
+export interface VendorDiscrepancy {
+  invoice_id: string;
+  invoice_number: string | null;
+  observed_vendor_name: string | null;
+  observed_vendor_tax_id: string | null;
+  recorded_at: string;
 }
 
 export interface VendorListParams {
@@ -960,6 +970,13 @@ export interface CommercialCandidateRow {
   proposed_units_accounted_for: number | null;
   proposed_by: string | null;
   proposed_note: string | null;
+  proposed_at?: string | null;
+  /** The version a decision is checked against: how many review events the candidate has. */
+  review_version?: number;
+  /** The latest review event: PROPOSE, APPROVE, REJECT or REOPEN. */
+  last_decision?: string | null;
+  /** Whether it may be part of a multi-select approval — decided by the server. */
+  bulk_eligible?: boolean;
   reviewed_by: string | null;
   reviewed_at: string | null;
   legacy_mappings: LegacyMappingRef[];
@@ -1011,13 +1028,31 @@ export interface CommercialReviewSummary {
 
 export interface CommercialProposalRequest {
   units_accounted_for: number;
-  note?: string | null;
+  /** What the proposal rests on — required. */
+  note: string;
 }
 
 export interface CommercialReviewRequest {
   note?: string | null;
   commercial_unit_basis?: string | null;
   units_accounted_for?: number | null;
+  /** The review_version the reviewer saw; a stale decision is refused (409). */
+  expected_review_version: number;
+}
+
+export interface CommercialReopenRequest {
+  reason: string;
+  expected_review_version: number;
+}
+
+export interface CommercialBulkApprovalRequest {
+  items: { mapping_id: string; expected_review_version: number }[];
+  note: string;
+}
+
+export interface CommercialBulkApprovalResult {
+  approved: number;
+  decisions: { mapping_id: string; previous_state: string; new_state: string }[];
 }
 
 export interface CommercialCandidateParams {

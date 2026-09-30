@@ -51,7 +51,7 @@ class FakeRepository:
         self._mapping = mapping
         self.reviews = []
 
-    async def get(self, mapping_id):
+    async def get(self, mapping_id, *, for_update=False):
         return (self._mapping, None, None) if mapping_id == self._mapping.id else None
 
     async def add_review(self, review):
@@ -82,7 +82,7 @@ class TestProposalIsNotAuthoritative:
     async def test_a_proposal_does_not_overwrite_the_derived_value(self, patched):
         mapping = FakeMapping(units=4)
         patched(mapping)
-        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek")
+        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek", note="From the distributor sheet.")
         # The evidence's own number is untouched; the proposal sits beside it.
         assert mapping.units_accounted_for == 4
         assert mapping.proposed_units_accounted_for == 12
@@ -91,7 +91,7 @@ class TestProposalIsNotAuthoritative:
     async def test_a_proposal_does_not_reinterpret_the_evidence(self, patched):
         mapping = FakeMapping(basis=COMMERCIAL_CONFLICT, units=None)
         patched(mapping)
-        await service.propose(None, mapping.id, units_accounted_for=18, proposer="vivek")
+        await service.propose(None, mapping.id, units_accounted_for=18, proposer="vivek", note="From the distributor sheet.")
         assert mapping.commercial_unit_basis == COMMERCIAL_CONFLICT, "still a conflict"
 
     async def test_a_decided_candidate_cannot_be_reopened_by_a_proposal(self, patched):
@@ -100,7 +100,7 @@ class TestProposalIsNotAuthoritative:
             patched(mapping)
             with pytest.raises(ValidationError):
                 await service.propose(
-                    None, mapping.id, units_accounted_for=12, proposer="vivek")
+                    None, mapping.id, units_accounted_for=12, proposer="vivek", note="From the distributor sheet.")
 
     @pytest.mark.parametrize("units", [0, -1, 10000])
     async def test_an_impossible_multiplier_is_refused(self, patched, units):
@@ -108,7 +108,7 @@ class TestProposalIsNotAuthoritative:
         patched(mapping)
         with pytest.raises(ValidationError):
             await service.propose(
-                None, mapping.id, units_accounted_for=units, proposer="vivek")
+                None, mapping.id, units_accounted_for=units, proposer="vivek", note="From the distributor sheet.")
 
     async def test_the_proposal_is_recorded_with_its_author_and_evidence(self, patched):
         mapping = FakeMapping()
@@ -125,7 +125,7 @@ class TestManagerApprovesTheProposal:
     async def test_approving_a_pending_candidate_promotes_the_proposed_value(self, patched):
         mapping = FakeMapping()
         repository = patched(mapping)
-        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek")
+        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek", note="From the distributor sheet.")
         outcome = await service.approve(None, mapping.id, reviewer="barj", note="Reviewed against the source evidence.")
 
         assert outcome.new_state == STATE_APPROVED
@@ -138,7 +138,7 @@ class TestManagerApprovesTheProposal:
     async def test_a_manager_may_override_the_proposed_value(self, patched):
         mapping = FakeMapping()
         patched(mapping)
-        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek")
+        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek", note="From the distributor sheet.")
         await service.approve(
             None, mapping.id, reviewer="barj",
             commercial_unit_basis="CASE_IS_SELLING_UNIT", note="Reviewed against the source evidence.",
@@ -148,7 +148,7 @@ class TestManagerApprovesTheProposal:
     async def test_rejecting_a_proposal_creates_no_authoritative_mapping(self, patched):
         mapping = FakeMapping()
         patched(mapping)
-        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek")
+        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek", note="From the distributor sheet.")
         await service.reject(None, mapping.id, reviewer="barj", note="not supported")
         assert mapping.approval_state == STATE_REJECTED
         assert mapping.units_accounted_for == 4, "the derived value is untouched"
@@ -157,7 +157,7 @@ class TestManagerApprovesTheProposal:
     async def test_a_pending_candidate_reports_as_pending(self, patched):
         mapping = FakeMapping()
         patched(mapping)
-        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek")
+        await service.propose(None, mapping.id, units_accounted_for=12, proposer="vivek", note="From the distributor sheet.")
         assert service.review_status(mapping) == service.REVIEW_PENDING
 
 

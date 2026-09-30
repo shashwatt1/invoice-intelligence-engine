@@ -152,8 +152,10 @@ def _photo() -> UploadFile:
 
 
 def _operator() -> User:
+    # An ADMIN: the one role that may process without naming a store, which these
+    # intake-cleanup paths do (the store rule by role: tests/test_phase_d_relationships.py).
     return User(id=uuid.uuid4(), username="pilot", password_hash="x",
-                role=UserRole.MANAGER.value, is_active=True)
+                role=UserRole.ADMIN.value, is_active=True)
 
 
 class TestProcessRouteCleansUpWhatItStored:

@@ -1,4 +1,5 @@
 import {
+  BadgeCheck,
   Boxes,
   ClipboardCheck,
   FileClock,
@@ -47,6 +48,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { to: "/requires-mapping", label: "Requires Mapping", icon: ListChecks, badge: "mapping", minimum: "MANAGER" },
       { to: "/product-master", label: "Product Master", icon: Boxes, minimum: "USER" },
+      { to: "/product-master/approvals", label: "PM Approvals", icon: BadgeCheck, minimum: "MANAGER" },
       { to: "/vendors", label: "Vendors", icon: Truck, minimum: "USER" },
       { to: "/data-review", label: "Master Data Review", icon: ClipboardCheck, badge: "pending", minimum: "MANAGER" },
       { to: "/stores", label: "Stores", icon: MapPin, minimum: "MANAGER" },
@@ -123,6 +125,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                 <NavLink
                   key={to}
                   to={to}
+                  // Product Master and its Approvals queue are separate items: only the exact page is active.
+                  end={to === "/product-master"}
                   title={collapsed ? label : undefined}
                   className={({ isActive }) =>
                     cn(

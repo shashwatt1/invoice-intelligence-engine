@@ -157,6 +157,9 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("idx_invoices_status", "status"),
         Index("idx_invoices_invoice_number", "invoice_number"),
         Index("idx_invoices_store", "store_id"),
+        # Store / vendor activity over a date range (receiving, store and vendor views).
+        Index("idx_invoices_store_date", "store_id", "invoice_date"),
+        Index("idx_invoices_vendor_date", "vendor_id", "invoice_date"),
     )
 
     def __repr__(self) -> str:

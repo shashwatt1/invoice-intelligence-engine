@@ -151,6 +151,25 @@ export function VendorReviewPanel({ vendor, onClose }: Props) {
             ) : null}
           </section>
 
+          {data?.discrepancies?.length ? (
+            <section className="space-y-2 border-t pt-4" data-testid="vendor-discrepancies">
+              <h3 className="text-sm font-medium">Reading discrepancies</h3>
+              <p className="text-xs text-muted-foreground">
+                Reprocessing read a different vendor on these invoices. They were kept on this confirmed vendor; review
+                whether that is right.
+              </p>
+              <ul className="space-y-1 text-sm">
+                {data.discrepancies.map((d, index) => (
+                  <li key={index} className="flex flex-wrap justify-between gap-x-4">
+                    <span className="tabular-nums">{d.invoice_number ? `#${d.invoice_number}` : "(no number)"}</span>
+                    <span className="text-muted-foreground">read as “{d.observed_vendor_name ?? "no vendor"}”</span>
+                    <span className="text-xs text-muted-foreground">{formatDate(d.recorded_at)}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           {data?.history.length ? (
             <section className="space-y-2 border-t pt-4">
               <h3 className="text-sm font-medium">Decision history</h3>

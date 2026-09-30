@@ -50,6 +50,7 @@ from app.core.logging import get_logger
 from app.models.document import Document
 from app.models.invoice import Invoice
 from app.models.processing_log import LogStatus, PipelineStage, ProcessingLog
+from app.models.vendor import VENDOR_CONFIRMED, Vendor
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
@@ -88,6 +89,44 @@ async def _next_attempt(session: AsyncSession, document_id: uuid.UUID) -> int:
         if isinstance((log.payload or {}).get("attempt"), int)
     ]
     return (max(recorded) if recorded else 1) + 1
+
+
+@dataclass(frozen=True)
+class VendorSettlement:
+    """Which vendor a reprocessed invoice keeps, and whether the new reading disagreed."""
+
+    vendor_id: uuid.UUID | None
+    # Set when a CONFIRMED vendor was kept although the new reading names another
+    # vendor (or none) — recorded for a person to review; nothing is merged.
+    discrepancy: dict[str, Any] | None = None
+
+
+async def settle_reprocess_vendor(session: AsyncSession, invoice: Invoice, normalized: Any) -> VendorSettlement:
+    """
+    A confirmed vendor is a person's decision: a new reading never replaces it.
+    If the reading matches that vendor exactly it is kept (and blank contact
+    fields filled, as always); if it names another vendor or none, it is still
+    kept and the reading is returned as a discrepancy — no vendor is created,
+    merged or re-keyed for it. An unconfirmed vendor is re-matched by the same
+    exact rule as first processing. The invoice's raw vendor fields always take
+    the new reading (replace_extraction); only the canonical link is protected.
+    """
+    vendors = VendorRepository(session)
+    current = await session.get(Vendor, invoice.vendor_id) if invoice.vendor_id else None
+    if current is not None and current.identity_status == VENDOR_CONFIRMED:
+        observed = await vendors.find_existing(normalized)
+        if observed is not None and observed.id == current.id:
+            await vendors.get_or_create(normalized)
+            return VendorSettlement(current.id)
+        return VendorSettlement(current.id, {
+            "event": "vendor_identity_discrepancy",
+            "kept_vendor_id": str(current.id), "kept_vendor_label": current.label,
+            "observed_vendor_id": str(observed.id) if observed else None,
+            "observed_vendor_name": normalized.vendor_name,
+            "observed_vendor_tax_id": normalized.vendor_tax_id,
+        })
+    vendor, _ = await vendors.get_or_create(normalized)
+    return VendorSettlement(vendor.id if vendor else None)
 
 
 def _blocking_corrections(invoice: Invoice) -> list[str]:
@@ -215,16 +254,36 @@ async def reprocess_document(
         duration_ms=validation.report.duration_ms,
     )
 
-    vendor, _ = await VendorRepository(session).get_or_create(validation.invoice)
+    previous_vendor_id = invoice.vendor_id
+    settled = await settle_reprocess_vendor(session, invoice, validation.invoice)
     await invoices.replace_extraction(
         invoice,
-        vendor_id=vendor.id if vendor else None,
+        vendor_id=settled.vendor_id,
         normalized=validation.invoice,
         decision=decision,
         composite_confidence=validation.report.confidence.composite,
         extraction_model=structuring.metadata.model,
         raw_extraction_json=structuring.raw_response,
     )
+    if settled.discrepancy is not None:
+        observed = settled.discrepancy["observed_vendor_name"] or "no vendor"
+        await logs.add(
+            document_id=document_id,
+            stage=PipelineStage.PERSISTENCE,
+            message=(f"Vendor identity discrepancy: kept the confirmed vendor "
+                     f"{settled.discrepancy['kept_vendor_label']}; this reading names {observed}. "
+                     "Review the vendor before relying on this invoice's vendor."),
+            payload={**stamp, **settled.discrepancy},
+        )
+    elif settled.vendor_id != previous_vendor_id:
+        await logs.add(
+            document_id=document_id,
+            stage=PipelineStage.PERSISTENCE,
+            message="Reprocess re-matched the unconfirmed vendor exactly, as on first processing.",
+            payload={**stamp, "event": "vendor_rematched",
+                     "previous_vendor_id": str(previous_vendor_id) if previous_vendor_id else None,
+                     "vendor_id": str(settled.vendor_id) if settled.vendor_id else None},
+        )
     final_status = document_status_for(decision)
     await DocumentRepository(session).set_status(document, final_status)
     await logs.add(

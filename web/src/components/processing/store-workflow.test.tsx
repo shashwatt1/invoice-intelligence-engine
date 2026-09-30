@@ -16,6 +16,11 @@ vi.mock("@/api/endpoints", () => ({
   listStores: vi.fn(),
   createStore: vi.fn(),
 }));
+// Role-dependent store rules: ADMIN by default (may process or defer without a store).
+let currentRole = "ADMIN";
+vi.mock("@/hooks/use-auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", username: "tester", role: currentRole } }),
+}));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import * as api from "@/api/endpoints";
@@ -46,6 +51,7 @@ function wrap(node: React.ReactNode) {
 }
 
 beforeEach(() => {
+  currentRole = "ADMIN";
   vi.clearAllMocks();
   localStorage.clear();
   vi.mocked(api.listStores).mockResolvedValue([STORE, RCM]);
@@ -142,6 +148,14 @@ describe("store confirmation: confirm, or read now and assign later", () => {
     await user.click(screen.getByRole("button", { name: /confirm store and continue/i }));
     await waitFor(() => expect(api.confirmDocumentStore).toHaveBeenCalledWith("d-1", "s-1", "data-team:shashwat"));
     expect(api.deferDocumentStore).not.toHaveBeenCalled();
+  });
+
+  it.each(["MANAGER", "USER"])("a %s cannot continue without a store — no deferral offered", (role) => {
+    currentRole = role;
+    wrap(<StoreConfirmation status={PAUSED} stores={[STORE]} />);
+    expect(screen.queryByTestId("defer-store")).not.toBeInTheDocument();
+    expect(screen.getByText(/only an administrator can continue without a physical store/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /confirm store and continue/i })).toBeInTheDocument();
   });
 
   it("defers only with a name on record, and never sends a store", async () => {

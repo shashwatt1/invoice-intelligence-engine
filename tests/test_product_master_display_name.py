@@ -313,7 +313,7 @@ def _mapping(**overrides):
         "pdi_item_code": "01820000115", "commercial_unit_basis": "UNIT_IS_SELLING_UNIT",
         "units_accounted_for": 4, "case_cost": None, "cost_basis": "DISTRIBUTOR_CASE_PRICE",
         "approval_state": "REVIEW_REQUIRED", "reviewed_by": None, "reviewed_at": None,
-        "proposed_units_accounted_for": None, "proposed_by": None, "proposed_note": None,
+        "proposed_units_accounted_for": None, "proposed_by": None, "proposed_note": None, "proposed_at": None,
         "evidence": {"notes": "settled", "source_statements": [],
                      "source_store_identifier": "47708760"},
         "source_file": "Beer Inventory.xlsx", "source_sheet": "Sheet1", "source_row": 4,
@@ -372,6 +372,9 @@ class FakeRepository:
 
     async def descriptions_for(self, product_ids):
         return {pid: [d for d in self.descriptions if d.product_id == pid] for pid in product_ids}
+
+    async def review_facts(self, mapping_ids):
+        return dict.fromkeys(mapping_ids, (0, None))
 
 
 @pytest.fixture

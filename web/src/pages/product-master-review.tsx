@@ -1,9 +1,10 @@
-import { AlertTriangle, Check, FileSpreadsheet, X } from "lucide-react";
+import { AlertTriangle, FileSpreadsheet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import type { CommercialCandidateRow } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
 import { CommercialEvidencePanel } from "@/components/product-master/commercial-evidence-panel";
+import { ReviewStatusBadge } from "@/components/product-master/review-status-badge";
 import { FilterBar } from "@/components/shared/filter-bar";
 import { MetricStrip } from "@/components/shared/metric-strip";
 import { Pagination } from "@/components/shared/pagination";
@@ -128,7 +129,7 @@ export function costLabel(basis: string | null): string {
  * none — so approving one requires choosing the interpretation explicitly.
  */
 /** The store a candidate belongs to — or, for a source identity, what it actually is. */
-function StoreContext({ row }: { row: CommercialCandidateRow }) {
+export function StoreContext({ row }: { row: CommercialCandidateRow }) {
   const source = sourceIdentityView(row.store_kind, row.store_source_identity);
   if (source) {
     return (
@@ -315,11 +316,7 @@ export function ProductMasterReviewPage() {
                     )}
                   </TableCell>
                   <TableCell className="text-sm">
-                    <span className="inline-flex items-center gap-1.5">
-                      {row.approval_state === "APPROVED" && <Check className="size-3.5" aria-hidden />}
-                      {row.approval_state === "REJECTED" && <X className="size-3.5" aria-hidden />}
-                      {row.review_status.replaceAll("_", " ").toLowerCase()}
-                    </span>
+                    <ReviewStatusBadge status={row.review_status} lastDecision={row.last_decision} />
                   </TableCell>
                   <TableCell className="text-right">
                     <Button variant="outline" size="sm" onClick={() => setSelected(row)}>

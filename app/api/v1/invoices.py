@@ -87,7 +87,7 @@ from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
 from app.services.storage_service import get_storage_service
-from app.services.store_guard import ensure_physical_store
+from app.services.store_guard import ensure_physical_store, require_store_choice
 from app.services.store_reference_service import match_invoice_against_reference
 from app.services.upload_service import UploadService
 
@@ -230,6 +230,7 @@ async def process_invoice(
     uploads = ([file] if file is not None else []) + list(files)
     if not uploads:
         raise ValidationError(message="Send one `file`, or one or more `files` (photos of one invoice).")
+    require_store_choice(user.role, store_id)
     # Checked before any file is touched: a store that does not exist is
     # refused outright — nothing is stored, no document row is made.
     chosen = await resolve_chosen_store(db, store_id)

@@ -28,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
+from app.models.processing_log import ProcessingLog
 from app.models.vendor import VENDOR_CONFIRMED, Vendor, VendorIdentityReview
 from app.schemas.normalized import NormalizedInvoice
 
@@ -72,6 +73,12 @@ class VendorRepository:
                 raise
             return existing, False
         return vendor, True
+
+    async def find_existing(self, invoice: NormalizedInvoice) -> Vendor | None:
+        """The vendor these extracted fields match exactly, by the same rule — never creates one."""
+        if invoice.vendor_name is None:
+            return None
+        return await self._find(invoice.vendor_name, invoice.vendor_tax_id)
 
     async def _find(self, name: str, tax_id: str | None) -> Vendor | None:
         if tax_id is not None:
@@ -161,6 +168,22 @@ class VendorRepository:
         query = (select(Vendor).where(Vendor.identity_status == VENDOR_CONFIRMED, Vendor.id != excluding,
                                       func.lower(Vendor.display_name) == display_name.lower()).limit(1))
         return (await self._session.execute(query)).scalar_one_or_none()
+
+    async def discrepancies(self, vendor_id: uuid.UUID, limit: int = 50) -> list[dict[str, Any]]:
+        """
+        Readings that disagreed with this CONFIRMED vendor on reprocessing — the
+        vendor was kept and the reading recorded (event vendor_identity_discrepancy).
+        """
+        payload = ProcessingLog.payload
+        query = (select(ProcessingLog.created_at, payload, Invoice.id, Invoice.invoice_number)
+                 .join(Invoice, Invoice.document_id == ProcessingLog.document_id)
+                 .where(payload["event"].astext == "vendor_identity_discrepancy",
+                        payload["kept_vendor_id"].astext == str(vendor_id))
+                 .order_by(ProcessingLog.created_at.desc()).limit(limit))
+        return [{"recorded_at": at, "invoice_id": invoice_id, "invoice_number": number,
+                 "observed_vendor_name": (data or {}).get("observed_vendor_name"),
+                 "observed_vendor_tax_id": (data or {}).get("observed_vendor_tax_id")}
+                for at, data, invoice_id, number in (await self._session.execute(query)).all()]
 
     async def add_review(self, review: VendorIdentityReview) -> VendorIdentityReview:
         self._session.add(review)

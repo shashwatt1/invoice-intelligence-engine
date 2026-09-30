@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useConfirmDocumentStore, useDeferDocumentStore } from "@/hooks/use-api";
+import { useAuth } from "@/hooks/use-auth";
 import { physicalStores } from "@/lib/stores";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +38,8 @@ export function StoreConfirmation({
 }) {
   const confirm = useConfirmDocumentStore(status.document_id);
   const defer = useDeferDocumentStore(status.document_id);
+  // Processing without a physical store is ADMIN-only; a MANAGER confirms a store here instead.
+  const canDefer = useAuth().user?.role === "ADMIN";
   // Only physical stores are offered or suggested — one Store Master classification for both: a
   // suggestion is shown only once the directory confirms it is physical, never while it is loading.
   const choices = physicalStores(stores);
@@ -173,20 +176,25 @@ export function StoreConfirmation({
           <Search className="size-3.5" />
           {confirm.isPending ? "Confirming…" : "Confirm store and continue"}
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!confirmedBy.trim() || busy}
-          onClick={deferNow}
-          title={!confirmedBy.trim() ? "Enter your name first — the deferral is recorded" : undefined}
-          data-testid="defer-store"
-        >
-          <Clock className="size-3.5" />
-          {defer.isPending ? "Reading…" : "Store unknown — read now, assign later"}
-        </Button>
+        {canDefer ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!confirmedBy.trim() || busy}
+            onClick={deferNow}
+            title={!confirmedBy.trim() ? "Enter your name first — the deferral is recorded" : undefined}
+            data-testid="defer-store"
+          >
+            <Clock className="size-3.5" />
+            {defer.isPending ? "Reading…" : "Store unknown — read now, assign later"}
+          </Button>
+        ) : null}
         <span className="text-[0.7rem] text-muted-foreground">
-          Confirming runs structuring, validation and persistence for that store only. Deferring stores the
-          invoice with no store: nothing store-specific until you assign one on the invoice.
+          {canDefer
+            ? "Confirming runs structuring, validation and persistence for that store only. Deferring stores the "
+              + "invoice with no store: nothing store-specific until you assign one on the invoice."
+            : "Confirming runs structuring, validation and persistence for that store only. Only an administrator "
+              + "can continue without a physical store."}
         </span>
       </div>
     </div>

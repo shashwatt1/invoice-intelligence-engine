@@ -276,6 +276,8 @@ async def confirm_store(
         payload={
             "store_id": str(store.id), "store_label": store.label,
             "confirmed_by": body.confirmed_by,
+            # Who actually confirmed it: the authenticated account, never the typed name.
+            "actor_user_id": str(user.id), "actor_username": user.username, "actor_role": user.role,
             "was_a_candidate": str(store.id) in candidates,
             "candidates_offered": sorted(candidates),
         },
@@ -301,8 +303,11 @@ async def confirm_store(
         "structuring → validation → persistence run from the text already extracted and the "
         "invoice is stored STORE_PENDING. No reference data, case mapping, proposal or EDI "
         "is possible until POST /invoices/{id}/assign-store. No store is invented."
+        "\n\nADMIN only: USER and MANAGER must settle a physical store before processing "
+        "continues (a MANAGER confirms one with POST .../confirm-store)."
     ),
-    responses={404: {"description": "Not found"}, 422: {"description": "Not waiting for a store"}},
+    responses={403: {"description": "Not an ADMIN"}, 404: {"description": "Not found"},
+               422: {"description": "Not waiting for a store"}},
 )
 async def defer_store(
     document_id: uuid.UUID,
@@ -310,7 +315,7 @@ async def defer_store(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     pipeline: InvoiceProcessingPipeline = Depends(get_pipeline),
-    user: User = Depends(require_manager),
+    user: User = Depends(require_admin),
 ) -> APIResponse[DocumentStatusData]:
     document = await DocumentRepository(db).get(document_id)
     if document is None:
@@ -327,6 +332,7 @@ async def defer_store(
         stage=PipelineStage.STORE_IDENTIFICATION,
         message=f"Store deferred by {body.deferred_by}: processing continues with no store (STORE_PENDING).",
         payload={"event": "store_deferred", "deferred_by": body.deferred_by, "note": body.note,
+                 "actor_user_id": str(user.id), "actor_username": user.username, "actor_role": user.role,
                  "candidates_offered": sorted({c.get("store_id") for c in (document.store_candidates or [])
                                                if c.get("store_id")})},
     )

@@ -80,7 +80,10 @@ VALID_STATES = frozenset({
 DECISION_PROPOSE = "PROPOSE"
 DECISION_APPROVE = "APPROVE"
 DECISION_REJECT = "REJECT"
-VALID_DECISIONS = frozenset({DECISION_PROPOSE, DECISION_APPROVE, DECISION_REJECT})
+# A MANAGER/ADMIN reopens a decided candidate for reconsideration. The decision
+# being reconsidered stays in the history; this is a new event, never an undo.
+DECISION_REOPEN = "REOPEN"
+VALID_DECISIONS = frozenset({DECISION_PROPOSE, DECISION_APPROVE, DECISION_REJECT, DECISION_REOPEN})
 
 # What a canonical identity rests on. A product with no barcode is still a
 # product; it is not silently invented from a description.
@@ -479,7 +482,7 @@ class MasterCommercialReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ForeignKey("master_commercial_mappings.id", ondelete="CASCADE"), nullable=False,
     )
     decision: Mapped[str] = mapped_column(
-        String(16), nullable=False, doc="APPROVE or REJECT — see VALID_DECISIONS.",
+        String(16), nullable=False, doc="PROPOSE, APPROVE, REJECT or REOPEN — see VALID_DECISIONS.",
     )
     previous_approval_state: Mapped[str] = mapped_column(String(32), nullable=False)
     new_approval_state: Mapped[str] = mapped_column(String(32), nullable=False)

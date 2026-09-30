@@ -16,14 +16,17 @@ import { Input } from "@/components/ui/input";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { ReviewStatusBadge } from "@/components/product-master/review-status-badge";
 import {
   useApproveCommercialCandidate,
   useCommercialCandidate,
   useProposeCommercialCandidate,
   useRejectCommercialCandidate,
+  useReopenCommercialCandidate,
 } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { roleLabel, sellingUnitCost } from "@/lib/commercial";
+import { formatDateTime } from "@/lib/format";
 import { sourceIdentityView } from "@/lib/stores";
 import {
   PRODUCT_NAME_UNAVAILABLE,
@@ -49,6 +52,13 @@ function nameBasisLabel(candidate: CommercialCandidateRow): string {
   }
 }
 
+const DECISION_LABEL: Record<string, string> = {
+  PROPOSE: "Proposed", APPROVE: "Approved", REJECT: "Rejected", REOPEN: "Reopened for reconsideration",
+};
+const STATE_LABEL: Record<string, string> = {
+  REVIEW_REQUIRED: "review required", PENDING: "proposal pending", APPROVED: "approved", REJECTED: "rejected",
+};
+
 interface Props {
   candidate: CommercialCandidateRow;
   onClose: () => void;
@@ -72,79 +82,104 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
   // proposes a value; the backend enforces this independently.
   const canDecide = user?.role === "MANAGER" || user?.role === "ADMIN";
 
+  const reopen = useReopenCommercialCandidate();
   const [basis, setBasis] = useState<string>("");
   const [units, setUnits] = useState<string>("");
   const [note, setNote] = useState("");
+  // A final decision is a second, explicit step — never a single click.
+  const [confirming, setConfirming] = useState<"approve" | "reject" | "reopen" | null>(null);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const [stale, setStale] = useState(false);
 
   const needsResolution = candidate.requires_resolution;
   // Decided rows are closed; a PENDING proposal is still open for a MANAGER/ADMIN decision.
   const settled = candidate.approval_state === "APPROVED" || candidate.approval_state === "REJECTED";
   const evidence = detail.data?.evidence;
+  const current = detail.data?.candidate ?? candidate;
+  // The version this person is deciding against; a decision made after anyone
+  // else acted on the candidate is refused by the server (409).
+  const reviewVersion = current.review_version ?? 0;
   const source = sourceIdentityView(candidate.store_kind, candidate.store_source_identity);
   const basisGiven = note.trim().length > 0;
+  const dirty = basisGiven || basis !== "" || units !== "";
   // The multiplier the decision would record: the reviewer's choice, else what was derived.
   const typedUnits = Number(units);
   const multiplier = basis === "CASE_IS_SELLING_UNIT" ? 1
     : basis === "UNIT_IS_SELLING_UNIT" ? (Number.isInteger(typedUnits) && typedUnits >= 2 ? typedUnits : null)
       : needsResolution ? null : candidate.units_accounted_for;
   const unitCost = sellingUnitCost(candidate.case_cost, multiplier);
+  const proposalReady = basisGiven && Number.isInteger(typedUnits) && typedUnits >= 1;
+  const busy = approve.isPending || reject.isPending || reopen.isPending || propose.isPending;
 
-  const onError = (error: unknown) => {
-    toast.error(error instanceof ApiError ? error.userMessage : "The decision was not saved.");
-  };
-
-  const submitApprove = () => {
-    approve.mutate(
-      {
-        id: candidate.id,
-        body: {
-          note: note.trim() || null,
-          commercial_unit_basis: basis || null,
-          units_accounted_for: units ? Number(units) : null,
-        },
-      },
-      {
-        onSuccess: () => { toast.success("Candidate approved — master data only, EDI unchanged."); onClose(); },
-        onError,
-      },
-    );
-  };
-
-  const submitPropose = () => {
-    const value = Number(units);
-    if (!value) {
-      toast.error("Enter the units per case you are proposing.");
+  // Leaving with unsaved notes asks first; nothing typed is lost silently.
+  const attemptClose = () => {
+    if (dirty && !confirmLeave) {
+      setConfirmLeave(true);
       return;
     }
-    propose.mutate(
-      { id: candidate.id, body: { units_accounted_for: value, note: note.trim() || null } },
-      {
-        onSuccess: () => {
-          toast.success("Proposal submitted for review.");
-          onClose();
-        },
-        onError,
-      },
-    );
+    onClose();
   };
 
-  const submitReject = () => {
-    reject.mutate(
-      { id: candidate.id, body: { note: note.trim() || null } },
-      {
-        onSuccess: () => { toast.success("Candidate rejected and kept for audit."); onClose(); },
-        onError,
-      },
-    );
+  const onError = (error: unknown) => {
+    if (error instanceof ApiError && error.statusCode === 409) {
+      setStale(true);
+      setConfirming(null);
+      toast.error("This mapping changed since you opened it. Nothing was saved — reopen it to see the latest state.");
+      return;
+    }
+    toast.error(error instanceof ApiError ? error.userMessage : "The decision was not saved.");
   };
+  const done = (message: string) => () => {
+    toast.success(message);
+    onClose();
+  };
+
+  const submitApprove = () => approve.mutate(
+    {
+      id: candidate.id,
+      body: {
+        note: note.trim(),
+        commercial_unit_basis: basis || null,
+        units_accounted_for: units ? Number(units) : null,
+        expected_review_version: reviewVersion,
+      },
+    },
+    { onSuccess: done("Candidate approved — master data only, EDI unchanged."), onError },
+  );
+  const submitReject = () => reject.mutate(
+    { id: candidate.id, body: { note: note.trim(), expected_review_version: reviewVersion } },
+    { onSuccess: done("Candidate rejected and kept for audit."), onError },
+  );
+  const submitReopen = () => reopen.mutate(
+    { id: candidate.id, body: { reason: note.trim(), expected_review_version: reviewVersion } },
+    { onSuccess: done("Reopened for reconsideration — the earlier decision stays in the history."), onError },
+  );
+  const submitPropose = () => propose.mutate(
+    { id: candidate.id, body: { units_accounted_for: typedUnits, note: note.trim() } },
+    { onSuccess: done("Proposal submitted for review."), onError },
+  );
+  const confirmAction = { approve: submitApprove, reject: submitReject, reopen: submitReopen };
+  const confirmText = {
+    approve: (
+      `Approve this mapping? It becomes the authoritative commercial mapping for ` +
+      `${source ? source.name : candidate.store_label} — master data only; EDI output does not change.`
+    ),
+    reject: "Reject this mapping? It stays on record for audit and no longer awaits review.",
+    reopen: (
+      "Reopen this decided mapping for reconsideration? The decision stays in the history, and the " +
+      "mapping returns to review with the interpretation the evidence gave before it."
+    ),
+  };
+  const confirmLabel = { approve: "Confirm approval", reject: "Confirm rejection", reopen: "Confirm reopen" };
 
   return (
-    <AlertDialog open onOpenChange={(next) => !next && onClose()}>
+    <AlertDialog open onOpenChange={(next) => !next && attemptClose()}>
       <AlertDialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <AlertDialogHeader>
           <AlertDialogTitle className="text-base">
             {candidate.product_name ?? PRODUCT_NAME_UNAVAILABLE}
           </AlertDialogTitle>
+          <ReviewStatusBadge status={current.review_status} lastDecision={current.last_decision} />
           <AlertDialogDescription>
             <span className="font-mono text-xs">{candidate.canonical_identifier ?? "—"}</span>
             {" · "}
@@ -433,37 +468,55 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
           {detail.data?.history.length ? (
             <section className="space-y-2 border-t pt-4">
               <h3 className="text-sm font-medium">Decision history</h3>
-              <ul className="space-y-1 text-sm text-muted-foreground">
-                {detail.data.history.map((entry, index) => (
-                  <li key={index}>
-                    {entry.decision.toLowerCase()} by {entry.reviewer}
-                    {entry.reviewer_role ? ` (${roleLabel(entry.reviewer_role)})` : ""} ·{" "}
-                    {entry.previous_commercial_unit_basis} → {entry.new_commercial_unit_basis}
-                    {entry.note ? ` · ${entry.note}` : ""}
-                  </li>
-                ))}
-              </ul>
+              <ol className="space-y-2 text-sm" data-testid="review-history">
+                {detail.data.history.map((entry, index) => {
+                  const reinterpreted = entry.previous_commercial_unit_basis !== entry.new_commercial_unit_basis
+                    || entry.previous_units_accounted_for !== entry.new_units_accounted_for;
+                  return (
+                    <li key={index} className="rounded-md border px-3 py-2">
+                      <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                        <span className="font-medium">{DECISION_LABEL[entry.decision] ?? entry.decision}</span>
+                        <span className="text-xs text-muted-foreground tabular-nums">{formatDateTime(entry.decided_at)}</span>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        by {entry.reviewer}{entry.reviewer_role ? ` · ${roleLabel(entry.reviewer_role)}` : ""} ·{" "}
+                        {STATE_LABEL[entry.previous_approval_state] ?? entry.previous_approval_state} →{" "}
+                        {STATE_LABEL[entry.new_approval_state] ?? entry.new_approval_state}
+                      </div>
+                      {reinterpreted ? (
+                        <div className="text-xs text-muted-foreground">
+                          {basisLabel(entry.previous_commercial_unit_basis)} ×{entry.previous_units_accounted_for ?? "—"} →{" "}
+                          {basisLabel(entry.new_commercial_unit_basis)} ×{entry.new_units_accounted_for ?? "—"}
+                        </div>
+                      ) : null}
+                      {entry.note ? <div className="mt-1">{entry.note}</div> : null}
+                    </li>
+                  );
+                })}
+              </ol>
             </section>
           ) : null}
 
-          {!settled && (
+          {(!settled || canDecide) && (
             <section className="space-y-3 border-t pt-4">
-              <h3 className="text-sm font-medium">Decision</h3>
+              <h3 className="text-sm font-medium">{settled ? "Reconsider" : "Decision"}</h3>
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="note">
-                  {canDecide ? "Decision basis" : "Note for the reviewer (optional)"}
+                  {settled ? "Reason for reconsideration" : canDecide ? "Decision basis" : "Proposal basis"}
                 </label>
                 <Input
                   id="note" value={note}
                   onChange={(event) => setNote(event.target.value)}
-                  placeholder={canDecide ? "What this decision rests on" : "What your proposal rests on"}
-                  aria-required={canDecide || undefined}
+                  placeholder={settled ? "Why this decision is reconsidered"
+                    : canDecide ? "What this decision rests on" : "What your proposal rests on"}
+                  aria-required
+                  disabled={busy || stale}
                 />
-                {canDecide && (
-                  <p className="text-xs text-muted-foreground">
-                    Required. Recorded with an approval, or as the reason for a rejection.
-                  </p>
-                )}
+                <p className="text-xs text-muted-foreground">
+                  {settled ? "Required. Recorded with the reopening; the decision itself stays in the history."
+                    : canDecide ? "Required. Recorded with an approval, or as the reason for a rejection."
+                      : "Required. Recorded with your proposal for the reviewing manager."}
+                </p>
               </div>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm" data-testid="decision-maker">
                 <dt className="text-muted-foreground">{canDecide ? "Decision by" : "Proposal by"}</dt>
@@ -475,34 +528,67 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
               </dl>
             </section>
           )}
+          {settled && !canDecide && (
+            <p className="border-t pt-4 text-sm text-muted-foreground">
+              This mapping has been decided. Only a manager can reopen it for reconsideration.
+            </p>
+          )}
 
           <div className="sticky -bottom-5 -mx-5 -mb-5 space-y-2 border-t bg-popover px-5 pt-3 pb-5">
-            {settled ? (
-              <div className="flex justify-end">
-                <Button variant="outline" onClick={onClose}>Close</Button>
+            {stale ? (
+              <p className="text-sm text-danger" role="alert">
+                This mapping changed since you opened it — someone decided, proposed or reopened it.
+                Nothing was saved. Close it and open it again to see the latest state.
+              </p>
+            ) : null}
+            {confirmLeave ? (
+              <div className="space-y-2" role="alert" data-testid="leave-warning">
+                <p className="text-sm">You have unsaved notes. Leave without saving them?</p>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setConfirmLeave(false)}>Stay</Button>
+                  <Button variant="ghost" onClick={onClose}>Leave</Button>
+                </div>
+              </div>
+            ) : confirming ? (
+              <div className="space-y-2" role="alert" data-testid="decision-confirmation">
+                <p className="text-sm">{confirmText[confirming]}</p>
+                <p className="text-xs text-muted-foreground">
+                  Decision by {user?.username ?? "—"} · {roleLabel(user?.role)}. Basis: “{note.trim()}”
+                </p>
+                <div className="flex gap-2">
+                  <Button onClick={confirmAction[confirming]} disabled={busy}>{confirmLabel[confirming]}</Button>
+                  <Button variant="outline" onClick={() => setConfirming(null)} disabled={busy}>Go back</Button>
+                </div>
               </div>
             ) : (
               <>
-                <div className="flex gap-2">
-                  {canDecide ? (
+                <div className="flex flex-wrap gap-2">
+                  {!settled && canDecide ? (
                     <>
-                      <Button onClick={submitApprove} disabled={approve.isPending || !basisGiven}>
+                      <Button onClick={() => setConfirming("approve")} disabled={busy || stale || !basisGiven}>
                         Approve candidate
                       </Button>
-                      <Button variant="outline" onClick={submitReject} disabled={reject.isPending || !basisGiven}>
+                      <Button variant="outline" onClick={() => setConfirming("reject")} disabled={busy || stale || !basisGiven}>
                         Reject
                       </Button>
                     </>
-                  ) : (
-                    <Button onClick={submitPropose} disabled={propose.isPending}>
+                  ) : null}
+                  {!settled && !canDecide ? (
+                    <Button onClick={submitPropose} disabled={busy || stale || !proposalReady}>
                       Submit proposal
                     </Button>
-                  )}
+                  ) : null}
+                  {settled && canDecide ? (
+                    <Button variant="outline" onClick={() => setConfirming("reopen")} disabled={busy || stale || !basisGiven}>
+                      Reopen for reconsideration
+                    </Button>
+                  ) : null}
+                  <Button variant="ghost" className="ml-auto" onClick={attemptClose}>Back</Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {canDecide
-                    ? "Approval records a master-data decision. It does not change EDI output."
-                    : "Your proposal is reviewed by a manager before it becomes authoritative."}
+                  {settled ? "A decided mapping changes only through a recorded reconsideration."
+                    : canDecide ? "Approval records a master-data decision. It does not change EDI output."
+                      : "Your proposal is reviewed by a manager before it becomes authoritative."}
                 </p>
               </>
             )}

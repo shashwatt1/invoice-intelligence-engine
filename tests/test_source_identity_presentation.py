@@ -91,7 +91,7 @@ class TestTheProductMasterRow:
             id=uuid.uuid4(), pdi_item_code="01820000115", commercial_unit_basis="UNIT_IS_SELLING_UNIT",
             units_accounted_for=4, case_cost=None, cost_basis=None, approval_state="REVIEW_REQUIRED",
             evidence={"source_store_identifier": "47708760"}, reviewed_by=None, reviewed_at=None,
-            proposed_units_accounted_for=None, proposed_by=None, proposed_note=None)
+            proposed_units_accounted_for=None, proposed_by=None, proposed_note=None, proposed_at=None)
         product = SimpleNamespace(id=uuid.uuid4(), canonical_upc="018200001154")
         return _row(mapping, product, store, [], [])
 
@@ -119,7 +119,7 @@ class TestOverTheApi:
         mapping = SimpleNamespace(
             id=uuid.uuid4(), pdi_item_code=None, commercial_unit_basis="CONFLICT", units_accounted_for=None,
             case_cost=None, cost_basis=None, approval_state="REVIEW_REQUIRED", evidence={}, reviewed_by=None,
-            reviewed_at=None, proposed_units_accounted_for=None, proposed_by=None, proposed_note=None)
+            reviewed_at=None, proposed_units_accounted_for=None, proposed_by=None, proposed_note=None, proposed_at=None)
         product = SimpleNamespace(id=uuid.uuid4(), canonical_upc=None)
 
         class Repository:
@@ -137,6 +137,9 @@ class TestOverTheApi:
 
             async def descriptions_for(self, _ids):
                 return {}
+
+            async def review_facts(self, ids):
+                return dict.fromkeys(ids, (0, None))
 
         async def no_db():
             yield None

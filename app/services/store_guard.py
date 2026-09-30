@@ -19,8 +19,23 @@ from __future__ import annotations
 
 from app.core.exceptions import ValidationError
 from app.models.store import KIND_SOURCE_IDENTITY, Store
+from app.models.user import UserRole
 
 REASON_SOURCE_IDENTITY = "source_identity"
+
+
+def require_store_choice(role: str, value: str | None) -> None:
+    """
+    USER and MANAGER must name the physical store an invoice is for before it is
+    processed; only an ADMIN may process without one and resolve it later.
+    Checks presence only — the chosen id is still resolved and refused unless it
+    is a physical store (resolve_chosen_store → ensure_physical_store).
+    """
+    if role != UserRole.ADMIN.value and not (value or "").strip():
+        raise ValidationError(
+            message="Choose the physical store this invoice is for before processing it.",
+            detail={"field": "store_id", "reason": "required_for_role", "role": role},
+        )
 
 
 def ensure_physical_store(store: Store) -> Store:

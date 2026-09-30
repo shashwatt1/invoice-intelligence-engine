@@ -65,6 +65,16 @@ class VendorIdentityReviewEntry(BaseModel):
     decided_at: datetime
 
 
+class VendorDiscrepancy(BaseModel):
+    """A reprocessed reading that named another vendor (or none) — the confirmed vendor was kept."""
+
+    invoice_id: uuid.UUID
+    invoice_number: str | None = None
+    observed_vendor_name: str | None = None
+    observed_vendor_tax_id: str | None = None
+    recorded_at: datetime
+
+
 class VendorDetail(VendorRow):
     address: str | None = None
     phone: str | None = None
@@ -73,6 +83,7 @@ class VendorDetail(VendorRow):
     observed_tax_ids: list[ObservedTaxId] = Field(default_factory=list)
     recent_invoices: list[VendorInvoiceRef] = Field(default_factory=list)
     history: list[VendorIdentityReviewEntry] = Field(default_factory=list)
+    discrepancies: list[VendorDiscrepancy] = Field(default_factory=list)
 
 
 class VendorConfirmRequest(BaseModel):

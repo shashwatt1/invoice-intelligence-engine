@@ -12,6 +12,7 @@ import { NotFoundPage } from "@/pages/not-found";
 import { ProcessPage } from "@/pages/process";
 import { ProductHistoryPage } from "@/pages/product-history";
 import { ProposalDetailPage } from "@/pages/proposal-detail";
+import { ProductMasterApprovalsPage } from "@/pages/product-master-approvals";
 import { ProductMasterReviewPage } from "@/pages/product-master-review";
 import { RequiresMappingPage } from "@/pages/requires-mapping";
 import { SettingsPage } from "@/pages/settings";
@@ -52,6 +53,7 @@ export function App() {
         <Route path="/stores" element={<RequireRole minimum="MANAGER"><StoresPage /></RequireRole>} />
         <Route path="/requires-mapping" element={<RequireRole minimum="MANAGER"><RequiresMappingPage /></RequireRole>} />
         <Route path="/product-master" element={<ProductMasterReviewPage />} />
+        <Route path="/product-master/approvals" element={<RequireRole minimum="MANAGER"><ProductMasterApprovalsPage /></RequireRole>} />
         <Route path="/vendors" element={<VendorsPage />} />
         <Route path="/data-review" element={<RequireRole minimum="MANAGER"><DataReviewPage /></RequireRole>} />
         <Route path="/data-review/proposals/:proposalId" element={<RequireRole minimum="MANAGER"><ProposalDetailPage /></RequireRole>} />

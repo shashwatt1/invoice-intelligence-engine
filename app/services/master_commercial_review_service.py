@@ -30,10 +30,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import RecordNotFoundError, ValidationError
+from app.core.exceptions import RecordNotFoundError, StaleReviewError, ValidationError
 from app.models.product_master import (
     COMMERCIAL_CASE_IS_SELLING_UNIT,
     COMMERCIAL_CONFLICT,
@@ -42,6 +43,7 @@ from app.models.product_master import (
     DECISION_APPROVE,
     DECISION_PROPOSE,
     DECISION_REJECT,
+    DECISION_REOPEN,
     MAX_UNITS_ACCOUNTED_FOR,
     MIN_UNITS_ACCOUNTED_FOR,
     STATE_APPROVED,
@@ -70,18 +72,38 @@ class ReviewOutcome:
 
 def _require_basis(note: str | None, decision: str) -> str:
     """
-    The reviewer's own words for what an APPROVE or REJECT rests on. Required:
-    a decision nobody explained cannot be audited. Checked here, not only in
-    the UI, so no client can record an unexplained decision.
+    The person's own words for what a decision, proposal or reopening rests
+    on. Required: an unexplained decision cannot be audited. Checked here, not
+    only in the UI, so no client can record one.
     """
     text = (note or "").strip()
     if not text:
-        what = "approval" if decision == DECISION_APPROVE else "rejection"
+        what = {DECISION_APPROVE: "approval", DECISION_REJECT: "rejection",
+                DECISION_PROPOSE: "proposal", DECISION_REOPEN: "reconsideration"}.get(decision, "decision")
         raise ValidationError(
             message=f"Say what this {what} rests on — the decision basis is recorded with it.",
             detail={"field": "note", "reason": "required", "decision": decision},
         )
     return text
+
+
+async def _check_version(repository, mapping, expected: int | None) -> None:
+    """
+    Refuse a decision made against a view that is no longer current.
+
+    `expected` is the review version (the number of review events) the person
+    saw. The mapping row is locked (get(..., for_update=True)), so a concurrent
+    decision either committed first — and moved the version — or waits for
+    this one. Nothing is written for a stale decision.
+    """
+    if expected is None:
+        return
+    current = await repository.review_version(mapping.id)
+    if current != expected:
+        raise StaleReviewError(detail={
+            "mapping_id": str(mapping.id), "expected_review_version": expected,
+            "review_version": current, "approval_state": mapping.approval_state,
+        })
 
 
 def _validate_resolution(basis: str, units: int | None) -> tuple[str, int | None]:
@@ -144,19 +166,23 @@ async def approve(
     units_accounted_for: int | None = None,
     reviewer_user_id: uuid.UUID | None = None,
     reviewer_role: str | None = None,
+    expected_review_version: int | None = None,
 ) -> ReviewOutcome:
     """
     Approve one candidate, resolving its interpretation if it had none.
 
+    With `expected_review_version` (the API always sends it), a decision made
+    against a view that is no longer current is refused (StaleReviewError).
     Flushed in the caller's transaction; the API layer commits.
     """
     repository = MasterCommercialRepository(session)
-    row = await repository.get(mapping_id)
+    row = await repository.get(mapping_id, for_update=True)
     if row is None:
         raise RecordNotFoundError(
             message="Commercial candidate not found.", detail={"mapping_id": str(mapping_id)},
         )
     mapping = row[0]
+    await _check_version(repository, mapping, expected_review_version)
 
     if mapping.approval_state == STATE_APPROVED:
         # Already settled. Re-approving is a no-op rather than a second
@@ -245,15 +271,17 @@ async def reject(
     note: str | None = None,
     reviewer_user_id: uuid.UUID | None = None,
     reviewer_role: str | None = None,
+    expected_review_version: int | None = None,
 ) -> ReviewOutcome:
     """Refuse a candidate. The row is kept — rejection is a decision, not a delete."""
     repository = MasterCommercialRepository(session)
-    row = await repository.get(mapping_id)
+    row = await repository.get(mapping_id, for_update=True)
     if row is None:
         raise RecordNotFoundError(
             message="Commercial candidate not found.", detail={"mapping_id": str(mapping_id)},
         )
     mapping = row[0]
+    await _check_version(repository, mapping, expected_review_version)
     if mapping.approval_state == STATE_REJECTED:
         return ReviewOutcome(
             mapping.id, STATE_REJECTED, STATE_REJECTED,
@@ -374,10 +402,11 @@ async def propose(
     as the evidence produced them — a proposal sits beside them in
     `proposed_*` and moves the row to PENDING so a reviewer sees it.
 
-    Flushed in the caller's transaction, like approve()/reject().
+    Flushed in the caller's transaction, like approve()/reject(). The
+    proposer must say what the proposal rests on.
     """
     repository = MasterCommercialRepository(session)
-    row = await repository.get(mapping_id)
+    row = await repository.get(mapping_id, for_update=True)
     if row is None:
         raise RecordNotFoundError(
             message="Commercial candidate not found.", detail={"mapping_id": str(mapping_id)},
@@ -389,6 +418,7 @@ async def propose(
             message="This candidate has already been decided; a proposal cannot change it.",
             detail={"approval_state": mapping.approval_state},
         )
+    note = _require_basis(note, DECISION_PROPOSE)
     if not MIN_UNITS_ACCOUNTED_FOR <= units_accounted_for <= MAX_UNITS_ACCOUNTED_FOR:
         raise ValidationError(
             message=f"Units must be between {MIN_UNITS_ACCOUNTED_FOR} and "
@@ -424,3 +454,165 @@ async def propose(
         mapping.id, previous_state, STATE_PENDING,
         mapping.commercial_unit_basis, units_accounted_for,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reconsideration and multi-select approval — the same governance, not a bypass
+# ---------------------------------------------------------------------------
+
+async def reopen(
+    session: AsyncSession,
+    mapping_id: uuid.UUID,
+    *,
+    reviewer: str,
+    reason: str | None,
+    reviewer_user_id: uuid.UUID | None = None,
+    reviewer_role: str | None = None,
+    expected_review_version: int | None = None,
+) -> ReviewOutcome:
+    """
+    Reopen a decided candidate for reconsideration — never an undo.
+
+    The decision being reconsidered stays in the history untouched; this adds a
+    REOPEN event with the reason and who reopened it. The candidate returns to
+    REVIEW_REQUIRED with the interpretation the evidence gave BEFORE that
+    decision (a resolved conflict is a conflict again), so reconsideration
+    starts from the evidence, not from the decision being questioned.
+    """
+    repository = MasterCommercialRepository(session)
+    row = await repository.get(mapping_id, for_update=True)
+    if row is None:
+        raise RecordNotFoundError(
+            message="Commercial candidate not found.", detail={"mapping_id": str(mapping_id)},
+        )
+    mapping = row[0]
+    await _check_version(repository, mapping, expected_review_version)
+    if mapping.approval_state not in {STATE_APPROVED, STATE_REJECTED}:
+        raise ValidationError(
+            message="Only an approved or rejected candidate can be reopened.",
+            detail={"approval_state": mapping.approval_state},
+        )
+    reason_text = _require_basis(reason, DECISION_REOPEN)
+
+    decided = next((entry for entry in await repository.history_for(mapping.id)
+                    if entry.decision in {DECISION_APPROVE, DECISION_REJECT}), None)
+    previous_state = mapping.approval_state
+    previous_basis, previous_units = mapping.commercial_unit_basis, mapping.units_accounted_for
+    restored_basis = decided.previous_commercial_unit_basis if decided else previous_basis
+    restored_units = decided.previous_units_accounted_for if decided else previous_units
+
+    mapping.approval_state = STATE_REVIEW_REQUIRED
+    mapping.commercial_unit_basis = restored_basis
+    mapping.units_accounted_for = restored_units
+    # The current decision no longer stands; who made it stays in the history.
+    mapping.reviewed_by = None
+    mapping.reviewed_at = None
+
+    await repository.add_review(MasterCommercialReview(
+        mapping_id=mapping.id,
+        decision=DECISION_REOPEN,
+        previous_approval_state=previous_state,
+        new_approval_state=STATE_REVIEW_REQUIRED,
+        previous_commercial_unit_basis=previous_basis,
+        new_commercial_unit_basis=restored_basis,
+        previous_units_accounted_for=previous_units,
+        new_units_accounted_for=restored_units,
+        reviewer=reviewer,
+        reviewer_user_id=reviewer_user_id,
+        reviewer_role=reviewer_role,
+        note=reason_text,
+        evidence_considered=dict(mapping.evidence or {}),
+    ))
+    return ReviewOutcome(mapping.id, previous_state, STATE_REVIEW_REQUIRED, restored_basis, restored_units)
+
+
+MAX_BULK_APPROVAL = 500
+
+
+@dataclass(frozen=True)
+class BulkApprovalItem:
+    mapping_id: uuid.UUID
+    expected_review_version: int
+
+
+def bulk_eligible(mapping, latest_decision: str | None) -> bool:
+    """
+    Whether a candidate may be approved as part of a multi-select approval: it
+    must be READY_FOR_REVIEW — the evidence settled a multiplier, there is no
+    conflict and no pending proposal — and not just reopened for reconsideration.
+    Everything else needs an individual decision.
+    """
+    return review_status(mapping) == REVIEW_READY and latest_decision != DECISION_REOPEN
+
+
+async def bulk_approve(
+    session: AsyncSession,
+    items: list[BulkApprovalItem],
+    *,
+    reviewer: str,
+    note: str | None,
+    reviewer_user_id: uuid.UUID | None = None,
+    reviewer_role: str | None = None,
+) -> list[ReviewOutcome]:
+    """
+    Approve several candidates in one transaction — each through approve().
+
+    All or nothing: every selected candidate is locked and checked first. If
+    any changed since the reviewer saw it, the whole request is refused
+    (StaleReviewError) and nothing is written; if any is not eligible for a
+    multi-select approval (a conflict, a pending proposal, no multiplier, a
+    reopened candidate), it is refused (ValidationError). Otherwise each is
+    approved by the same governed approve(), writing one review event per
+    candidate with the reviewer, role, basis and evidence snapshot — never a
+    single summary record.
+    """
+    if not items:
+        raise ValidationError(message="Select at least one mapping to approve.", detail={"field": "items"})
+    if len(items) > MAX_BULK_APPROVAL:
+        raise ValidationError(message=f"Approve at most {MAX_BULK_APPROVAL} mappings at a time.",
+                              detail={"field": "items", "limit": MAX_BULK_APPROVAL})
+    ids = [item.mapping_id for item in items]
+    if len(set(ids)) != len(ids):
+        raise ValidationError(message="A mapping was selected twice.", detail={"field": "items"})
+    basis = _require_basis(note, DECISION_APPROVE)
+
+    repository = MasterCommercialRepository(session)
+    locked = {}
+    for mapping_id in sorted(ids):   # one lock order for every request: no deadlocks between two bulk approvals
+        row = await repository.get(mapping_id, for_update=True)
+        if row is not None:
+            locked[mapping_id] = row[0]
+    facts = await repository.review_facts(ids)
+
+    stale: list[dict[str, Any]] = []
+    ineligible: list[dict[str, Any]] = []
+    for item in items:
+        mapping = locked.get(item.mapping_id)
+        if mapping is None:
+            ineligible.append({"mapping_id": str(item.mapping_id), "reason": "not_found"})
+            continue
+        version, latest = facts.get(item.mapping_id, (0, None))
+        if version != item.expected_review_version:
+            stale.append({"mapping_id": str(item.mapping_id), "expected_review_version": item.expected_review_version,
+                          "review_version": version, "approval_state": mapping.approval_state})
+        elif not bulk_eligible(mapping, latest):
+            ineligible.append({"mapping_id": str(item.mapping_id), "reason": "individual_review_required",
+                               "review_status": review_status(mapping), "latest_decision": latest})
+    if stale:
+        raise StaleReviewError(
+            message="The queue changed since you selected these mappings. Refresh and select again — nothing was approved.",
+            detail={"stale": stale},
+        )
+    if ineligible:
+        raise ValidationError(
+            message="Some selected mappings need an individual decision. Nothing was approved.",
+            detail={"ineligible": ineligible},
+        )
+    return [
+        await approve(
+            session, item.mapping_id, reviewer=reviewer, note=basis,
+            reviewer_user_id=reviewer_user_id, reviewer_role=reviewer_role,
+            expected_review_version=item.expected_review_version,
+        )
+        for item in items
+    ]

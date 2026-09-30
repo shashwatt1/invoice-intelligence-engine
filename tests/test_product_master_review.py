@@ -60,8 +60,11 @@ class FakeRepository:
         self._mapping = mapping
         self.reviews = []
 
-    async def get(self, mapping_id):
+    async def get(self, mapping_id, *, for_update=False):
         return (self._mapping, None, None) if mapping_id == self._mapping.id else None
+
+    async def review_version(self, mapping_id):
+        return len(self.reviews)
 
     async def add_review(self, review):
         self.reviews.append(review)
@@ -250,7 +253,7 @@ class TestDecisionAccountability:
                              reviewer_user_id=account, reviewer_role="ADMIN")
         assert (repository.reviews[0].reviewer_user_id, repository.reviews[0].reviewer_role) == (account, "ADMIN")
         repository = patched(proposed)
-        await service.propose(None, proposed.id, units_accounted_for=6, proposer="vivek",
+        await service.propose(None, proposed.id, units_accounted_for=6, proposer="vivek", note="Sheet says 6.",
                               proposer_user_id=account, proposer_role="USER")
         assert (repository.reviews[0].reviewer_user_id, repository.reviews[0].reviewer_role) == (account, "USER")
 
@@ -291,7 +294,7 @@ class TestTheSessionDecides:
         account, repository = session_as(role, mapping)
         response = await client.post(
             f"/api/v1/product-master/commercial/{mapping.id}/{action}",
-            json={"note": "Distributor sheet states 4 per case.",
+            json={"note": "Distributor sheet states 4 per case.", "expected_review_version": 0,
                   "reviewer": "someone-else", "reviewer_user_id": str(uuid.uuid4()), "reviewer_role": "ADMIN"},
         )
         assert response.status_code == 200, response.text
@@ -304,7 +307,8 @@ class TestTheSessionDecides:
     async def test_a_decision_without_a_basis_is_refused_over_the_api(self, client, session_as, action):
         mapping = FakeMapping()
         _, repository = session_as(UserRole.MANAGER.value, mapping)
-        response = await client.post(f"/api/v1/product-master/commercial/{mapping.id}/{action}", json={})
+        response = await client.post(f"/api/v1/product-master/commercial/{mapping.id}/{action}",
+                                     json={"expected_review_version": 0})
         assert response.status_code == 422
         assert response.json()["error"]["detail"]["field"] == "note"
         assert repository.reviews == [] and mapping.approval_state == STATE_REVIEW_REQUIRED
