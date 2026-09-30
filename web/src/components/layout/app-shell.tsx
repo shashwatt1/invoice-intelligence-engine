@@ -21,6 +21,7 @@ const CRUMBS: { match: RegExp; trail: { label: string; to?: string }[] }[] = [
   { match: /^\/data-review/, trail: [{ label: "Master Data Review" }] },
   { match: /^\/requires-mapping/, trail: [{ label: "Requires Mapping" }] },
   { match: /^\/stores/, trail: [{ label: "Stores" }] },
+  { match: /^\/vendors/, trail: [{ label: "Vendors" }] },
   { match: /^\/settings/, trail: [{ label: "Settings" }] },
 ];
 

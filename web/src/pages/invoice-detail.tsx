@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
-import type { InvoiceDetail, LineItem, ValidationCheck } from "@/api/types";
+import type { InvoiceDetail, LineItem, ValidationCheck, Vendor } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
 import { PageHeader, SectionHeader } from "@/components/layout/page-header";
 import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
@@ -486,6 +486,16 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
   );
 }
 
+
+/** The confirmed canonical vendor name, with the name first printed beside it; else the printed name. */
+function vendorEyebrow(vendor: Vendor | null): string {
+  if (!vendor) return "vendor not extracted";
+  if (vendor.identity_status === "confirmed" && vendor.display_name) {
+    return vendor.display_name === vendor.name ? vendor.display_name : `${vendor.display_name} (printed ${vendor.name})`;
+  }
+  return vendor.name;
+}
+
 export function InvoiceDetailPage() {
   const { invoiceId } = useParams<{ invoiceId: string }>();
   const { data, isPending, isError, error, refetch } = useInvoice(invoiceId);
@@ -517,7 +527,7 @@ export function InvoiceDetailPage() {
       ) : (
         <>
           <PageHeader
-            eyebrow={`Invoice · ${data.vendor?.name ?? "vendor not extracted"}`}
+            eyebrow={`Invoice · ${vendorEyebrow(data.vendor)}`}
             title={
               <span className="flex flex-wrap items-center gap-3">
                 <span className="tabular-nums">{data.invoice_number ? `#${data.invoice_number}` : "(no invoice number)"}</span>

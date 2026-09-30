@@ -27,6 +27,7 @@ from app.api.v1 import (
     stores,
     upload,
     users,
+    vendors,
 )
 
 api_router = APIRouter()
@@ -50,3 +51,4 @@ api_router.include_router(proposals.router, prefix="")
 api_router.include_router(mapping_queue.router, prefix="")
 api_router.include_router(stores.router, prefix="")
 api_router.include_router(product_master.router, prefix="")
+api_router.include_router(vendors.router, prefix="")

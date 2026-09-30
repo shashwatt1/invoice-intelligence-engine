@@ -929,6 +929,9 @@ class VendorData(BaseModel):
     address: str | None = None
     phone: str | None = None
     email: str | None = None
+    # Vendor Master: the canonical name a person confirmed; `name` stays the observed name.
+    display_name: str | None = None
+    identity_status: str = "unresolved"
 
 
 class DatabaseConfirmation(BaseModel):

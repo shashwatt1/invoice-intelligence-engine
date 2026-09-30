@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
+  Truck,
   UploadCloud,
   Users,
 } from "lucide-react";
@@ -46,6 +47,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { to: "/requires-mapping", label: "Requires Mapping", icon: ListChecks, badge: "mapping", minimum: "MANAGER" },
       { to: "/product-master", label: "Product Master", icon: Boxes, minimum: "USER" },
+      { to: "/vendors", label: "Vendors", icon: Truck, minimum: "USER" },
       { to: "/data-review", label: "Master Data Review", icon: ClipboardCheck, badge: "pending", minimum: "MANAGER" },
       { to: "/stores", label: "Stores", icon: MapPin, minimum: "MANAGER" },
     ],

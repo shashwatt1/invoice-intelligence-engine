@@ -23,6 +23,10 @@ import type {
   InvoiceDetail,
   InvoiceListParams,
   Paginated,
+  VendorDecision,
+  VendorDetail,
+  VendorListParams,
+  VendorRow,
   BulkDecisionResult,
   BulkProposalDecision,
   DuplicateDecision,
@@ -488,3 +492,28 @@ export async function listIdentityUnresolved(): Promise<IdentityUnresolvedRow[]>
   );
   return data.data!;
 }
+
+// ---- Vendor Master ----------------------------------------------------------
+
+/** A collection endpoint: the flat PaginatedResponse body, not the {data} envelope. */
+export async function listVendors(params: VendorListParams): Promise<Paginated<VendorRow>> {
+  const { data } = await apiClient.get<Paginated<VendorRow>>("/vendors", { params });
+  return data;
+}
+
+export async function getVendor(id: string): Promise<VendorDetail> {
+  const { data } = await apiClient.get<ApiEnvelope<VendorDetail>>(`/vendors/${id}`);
+  return data.data!;
+}
+
+/** Who decided is the signed-in account; it is never sent. */
+export async function confirmVendor(id: string, body: { display_name: string; basis: string }): Promise<VendorDecision> {
+  const { data } = await apiClient.post<ApiEnvelope<VendorDecision>>(`/vendors/${id}/confirm`, body);
+  return data.data!;
+}
+
+export async function reopenVendor(id: string, body: { basis: string }): Promise<VendorDecision> {
+  const { data } = await apiClient.post<ApiEnvelope<VendorDecision>>(`/vendors/${id}/reopen`, body);
+  return data.data!;
+}
+

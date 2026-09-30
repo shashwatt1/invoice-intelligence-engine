@@ -305,6 +305,83 @@ export interface Vendor {
   address: string | null;
   phone: string | null;
   email: string | null;
+  /** Vendor Master: the canonical name a person confirmed; `name` stays the observed name. */
+  display_name?: string | null;
+  identity_status?: VendorIdentityStatus;
+}
+
+// ---------------------------------------------------------------------------
+// Vendor Master — canonical vendor identity beside what invoices printed
+// ---------------------------------------------------------------------------
+
+export type VendorIdentityStatus = "unresolved" | "confirmed";
+
+export interface VendorRow {
+  id: string;
+  /** The confirmed canonical name, else the name first observed on an invoice. */
+  label: string;
+  /** The name first observed on an invoice — what extraction matches on. */
+  name: string;
+  display_name: string | null;
+  identity_status: VendorIdentityStatus;
+  tax_id: string | null;
+  invoices: number;
+  /** Distinct vendor wordings printed on this vendor's invoices. */
+  observed_names: number;
+  last_seen_at: string | null;
+}
+
+export interface VendorObservedName {
+  name: string;
+  invoices: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+}
+
+export interface VendorInvoiceRef {
+  invoice_id: string;
+  document_id: string;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  observed_vendor_name: string | null;
+  grand_total: string | null;
+  store: StoreRef | null;
+}
+
+export interface VendorIdentityReviewEntry {
+  decision: "CONFIRM" | "REOPEN";
+  previous_status: VendorIdentityStatus;
+  new_status: VendorIdentityStatus;
+  previous_display_name: string | null;
+  new_display_name: string | null;
+  reviewer: string;
+  reviewer_role: string | null;
+  basis: string;
+  decided_at: string;
+}
+
+export interface VendorDetail extends VendorRow {
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  observed_name_list: VendorObservedName[];
+  observed_tax_ids: { tax_id: string; invoices: number }[];
+  recent_invoices: VendorInvoiceRef[];
+  history: VendorIdentityReviewEntry[];
+}
+
+export interface VendorListParams {
+  identity_status?: VendorIdentityStatus;
+  search?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface VendorDecision {
+  vendor_id: string;
+  previous_status: VendorIdentityStatus;
+  new_status: VendorIdentityStatus;
+  display_name: string | null;
 }
 
 export interface DatabaseConfirmation {

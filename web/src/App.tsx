@@ -16,6 +16,7 @@ import { ProductMasterReviewPage } from "@/pages/product-master-review";
 import { RequiresMappingPage } from "@/pages/requires-mapping";
 import { SettingsPage } from "@/pages/settings";
 import { StoresPage } from "@/pages/stores";
+import { VendorsPage } from "@/pages/vendors";
 import { UsersPage } from "@/pages/users";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -51,6 +52,7 @@ export function App() {
         <Route path="/stores" element={<RequireRole minimum="MANAGER"><StoresPage /></RequireRole>} />
         <Route path="/requires-mapping" element={<RequireRole minimum="MANAGER"><RequiresMappingPage /></RequireRole>} />
         <Route path="/product-master" element={<ProductMasterReviewPage />} />
+        <Route path="/vendors" element={<VendorsPage />} />
         <Route path="/data-review" element={<RequireRole minimum="MANAGER"><DataReviewPage /></RequireRole>} />
         <Route path="/data-review/proposals/:proposalId" element={<RequireRole minimum="MANAGER"><ProposalDetailPage /></RequireRole>} />
         <Route path="/data-review/products/:itemCode" element={<RequireRole minimum="MANAGER"><ProductHistoryPage /></RequireRole>} />

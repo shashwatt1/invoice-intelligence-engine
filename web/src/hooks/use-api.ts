@@ -54,6 +54,10 @@ import {
   stopDocument,
   voidLineItem,
   updateStoreIdentity,
+  confirmVendor,
+  getVendor,
+  listVendors,
+  reopenVendor,
 } from "@/api/endpoints";
 import type {
   CommercialCandidateParams,
@@ -74,6 +78,7 @@ import type {
   StoreCreate,
   StoreIdentityUpdate,
   UserRole,
+  VendorListParams,
 } from "@/api/types";
 
 export function useDashboard() {
@@ -605,3 +610,33 @@ export function useRejectCommercialCandidate() {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Vendor Master
+// ---------------------------------------------------------------------------
+
+export function useVendors(params: VendorListParams) {
+  return useQuery({ queryKey: ["vendors", params], queryFn: () => listVendors(params) });
+}
+
+export function useVendor(id: string | undefined) {
+  return useQuery({ queryKey: ["vendors", "detail", id], queryFn: () => getVendor(id!), enabled: Boolean(id) });
+}
+
+export function useConfirmVendor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, displayName, basis }: { id: string; displayName: string; basis: string }) =>
+      confirmVendor(id, { display_name: displayName, basis }),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["vendors"] }),
+  });
+}
+
+export function useReopenVendor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, basis }: { id: string; basis: string }) => reopenVendor(id, { basis }),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["vendors"] }),
+  });
+}
+
