@@ -127,6 +127,25 @@ describe("Product Master approvals", () => {
     expect(await screen.findByRole("button", { name: "Approve Selected (0)" })).toBeDisabled();
   });
 
+  it("on a timeout tells the reviewer to check the queue, does not resend, and clears the selection", async () => {
+    bulkApproveCommercialCandidates.mockRejectedValue(new ApiError(0, {
+      error_code: "ERR_TIMEOUT",
+      message: "The approval is still processing or may already have completed. Check the approval queue before trying again.",
+    }));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(within(await rowFor("018200000001")).getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Approve Selected (1)" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "checked");
+    await user.click(within(dialog).getByRole("button", { name: "Approve 1" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(
+      "The approval is still processing or may already have completed. Check the approval queue before trying again."));
+    expect(bulkApproveCommercialCandidates).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("button", { name: "Approve Selected (0)" })).toBeDisabled();
+    await waitFor(() => expect(listCommercialCandidates.mock.calls.length).toBeGreaterThan(1));   // the queue is re-read
+  });
+
   it("is for managers and administrators only", async () => {
     currentRole = "USER";
     renderPage();

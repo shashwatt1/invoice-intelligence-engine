@@ -153,6 +153,24 @@ class MasterCommercialRepository:
             statement = statement.with_for_update(of=MasterCommercialMapping)
         return (await self._session.execute(statement)).first()
 
+    async def lock_many(self, mapping_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, MasterCommercialMapping]:
+        """
+        Several candidates, each row locked for the rest of the transaction, in
+        one statement. Rows are locked in id order — the same order for every
+        request — so two multi-select approvals cannot deadlock. A missing id is
+        simply absent from the result.
+        """
+        ids = list(mapping_ids)
+        if not ids:
+            return {}
+        rows = (await self._session.execute(
+            select(MasterCommercialMapping)
+            .where(MasterCommercialMapping.id.in_(ids))
+            .order_by(MasterCommercialMapping.id)
+            .with_for_update()
+        )).scalars().all()
+        return {mapping.id: mapping for mapping in rows}
+
     async def review_version(self, mapping_id: uuid.UUID) -> int:
         """
         How many review events the candidate has. The history is append-only,
@@ -253,3 +271,8 @@ class MasterCommercialRepository:
         self._session.add(review)
         await self._session.flush()
         return review
+
+    async def add_reviews(self, reviews: Sequence[MasterCommercialReview]) -> None:
+        """Several review events — and the decisions pending on their mappings — in one flush."""
+        self._session.add_all(reviews)
+        await self._session.flush()

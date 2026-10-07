@@ -1,8 +1,8 @@
 import { AxiosError, type AxiosAdapter } from "axios";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiClient, ApiError, PROCESS_TIMEOUT_MESSAGE, PROCESS_TIMEOUT_MS } from "./client";
-import { getInvoice, listCommercialCandidates, processInvoice } from "./endpoints";
+import { apiClient, ApiError, BULK_APPROVAL_TIMEOUT_MESSAGE, PROCESS_TIMEOUT_MESSAGE, PROCESS_TIMEOUT_MS } from "./client";
+import { bulkApproveCommercialCandidates, getInvoice, listCommercialCandidates, processInvoice } from "./endpoints";
 import endpointsSource from "./endpoints.ts?raw";
 
 /** What a person sees when a request fails: what and where, a reference, never internals. */
@@ -152,6 +152,49 @@ describe("apiClient failure classification", () => {
 
     await getInvoice("f6f714c0-a326-42df-adbb-eee6ab8d1391");
     expect(sent.mock.calls[1][0].timeout).toBe(30_000);
+  });
+});
+
+/**
+ * The first 409-mapping pilot approval committed in full after the browser
+ * had stopped waiting at 30s and shown a generic timeout. A multi-select
+ * approval gets the long wait, a message that never implies it failed, and
+ * no retry.
+ */
+describe("multi-select Product Master approval", () => {
+  const original = apiClient.defaults.adapter;
+  afterEach(() => {
+    apiClient.defaults.adapter = original;
+  });
+  const adapter = (handler: AxiosAdapter) => {
+    const spy = vi.fn(handler);
+    apiClient.defaults.adapter = spy as unknown as AxiosAdapter;
+    return spy;
+  };
+  const body = { items: [{ mapping_id: "0b6f4a52-2b1c-4b8e-9d0e-6a5f3c2d1e00", expected_review_version: 0 }], note: "checked" };
+
+  it("waits as long as the upload does, while other calls keep the 30s default", async () => {
+    const sent = adapter(async (config) => ({
+      status: 200, statusText: "OK", headers: {}, config, data: { success: true, data: { approved: 1, decisions: [] } },
+    }));
+    await bulkApproveCommercialCandidates(body);
+    expect(sent.mock.calls[0][0].url).toBe("/product-master/commercial/bulk-approve");
+    expect(sent.mock.calls[0][0].timeout).toBe(PROCESS_TIMEOUT_MS);
+    await getInvoice("f6f714c0-a326-42df-adbb-eee6ab8d1391");
+    expect(sent.mock.calls[1][0].timeout).toBe(30_000);
+    expect(apiClient.defaults.timeout).toBe(30_000);
+  });
+
+  it("on a timeout says the approval may have completed, and sends it only once", async () => {
+    const sent = adapter(async (config) => {
+      throw new AxiosError("timeout of 90000ms exceeded", "ECONNABORTED", config);
+    });
+    const error = await bulkApproveCommercialCandidates(body).catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.errorCode).toBe("ERR_TIMEOUT");
+    expect(error.userMessage).toBe(BULK_APPROVAL_TIMEOUT_MESSAGE);
+    expect(error.userMessage).not.toMatch(/failed|Cannot reach/i);
+    expect(sent).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -3,7 +3,7 @@
  * these serialize params, call the API, and return typed payloads.
  */
 
-import { apiClient, PROCESS_TIMEOUT_MS } from "./client";
+import { apiClient, BULK_APPROVAL_PATH, PROCESS_TIMEOUT_MS } from "./client";
 import type {
   ApiEnvelope,
   CommercialCandidateDetail,
@@ -513,8 +513,10 @@ export async function bulkApproveCommercialCandidates(
   body: CommercialBulkApprovalRequest,
 ): Promise<CommercialBulkApprovalResult> {
   const { data } = await apiClient.post<ApiEnvelope<CommercialBulkApprovalResult>>(
-    "/product-master/commercial/bulk-approve",
+    BULK_APPROVAL_PATH,
     body,
+    // Up to 500 mappings in one transaction; wait as long as the upload does (see PROCESS_TIMEOUT_MS).
+    { timeout: PROCESS_TIMEOUT_MS },
   );
   return data.data!;
 }

@@ -5,8 +5,9 @@ tests/test_product_master_governance.py — review safety before broad data-team
   * A decision made against a stale view is refused (409); nothing is overwritten.
   * Reopening is a new, append-only event; the decision it reconsiders is kept.
   * Multi-select approval is all-or-nothing and writes one review event per
-    mapping through the same approve(); conflicts, proposals and reopened rows
-    are refused and need individual review.
+    mapping by the same decision as approve(); conflicts, proposals, reopened
+    and decided rows are refused and need individual review. It locks and
+    checks the whole selection once and flushes once — never per mapping.
   * Only MANAGER/ADMIN decide; who decided is always the session.
   * Only the review service writes a mapping's decision fields; approval never
     touches product identity or the evidence.
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import uuid
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -64,8 +66,10 @@ class Repository:
         self.mappings = {m.id: m for m in mappings}
         self.reviews = []
         self.locked = []
+        self.calls = Counter()   # repository method → times called (each is a database round trip)
 
     async def get(self, mapping_id, *, for_update=False):
+        self.calls["get"] += 1
         if for_update:
             self.locked.append(mapping_id)
         m = self.mappings.get(mapping_id)
@@ -74,18 +78,31 @@ class Repository:
     def _of(self, mapping_id):
         return [r for r in self.reviews if r.mapping_id == mapping_id]
 
+    async def lock_many(self, ids):
+        self.calls["lock_many"] += 1
+        found = sorted(i for i in ids if i in self.mappings)   # the real query locks in id order
+        self.locked.extend(found)
+        return {i: self.mappings[i] for i in found}
+
     async def review_version(self, mapping_id):
+        self.calls["review_version"] += 1
         return len(self._of(mapping_id))
 
     async def review_facts(self, ids):
+        self.calls["review_facts"] += 1
         return {i: (len(self._of(i)), self._of(i)[-1].decision if self._of(i) else None) for i in ids}
 
     async def history_for(self, mapping_id):
         return list(reversed(self._of(mapping_id)))   # newest first, like the real repository
 
     async def add_review(self, review):
+        self.calls["add_review"] += 1
         self.reviews.append(review)
         return review
+
+    async def add_reviews(self, reviews):
+        self.calls["add_reviews"] += 1
+        self.reviews.extend(reviews)
 
 
 @pytest.fixture
@@ -260,6 +277,72 @@ class TestBulkApproval:
             await service.bulk_approve(None, selection, reviewer="barj", note=note)
         assert r.reviews == []
 
+    async def test_an_already_decided_row_refuses_the_whole_batch(self, repo):
+        fresh, approved = Mapping(), Mapping(state=STATE_APPROVED)
+        r = repo(fresh, approved)
+        with pytest.raises(ValidationError) as refused:
+            await service.bulk_approve(None, items(fresh, approved), reviewer="barj", note=BASIS)
+        assert refused.value.detail["ineligible"] == [{
+            "mapping_id": str(approved.id), "reason": "individual_review_required",
+            "review_status": "APPROVED", "latest_decision": None}]
+        assert fresh.approval_state == STATE_REVIEW_REQUIRED and r.reviews == []
+
+    async def test_a_missing_row_refuses_the_whole_batch(self, repo):
+        fresh = Mapping()
+        r = repo(fresh)
+        gone = service.BulkApprovalItem(uuid.uuid4(), 0)
+        with pytest.raises(ValidationError) as refused:
+            await service.bulk_approve(None, [*items(fresh), gone], reviewer="barj", note=BASIS)
+        assert refused.value.detail["ineligible"] == [{"mapping_id": str(gone.mapping_id), "reason": "not_found"}]
+        assert fresh.approval_state == STATE_REVIEW_REQUIRED and r.reviews == []
+
+    async def test_one_stale_row_among_many_writes_nothing(self, repo):
+        ms = [Mapping() for _ in range(5)]
+        r = repo(*ms)
+        selection = items(*ms)
+        selection[2] = service.BulkApprovalItem(ms[2].id, 1)   # this reviewer saw a different version
+        with pytest.raises(StaleReviewError) as refused:
+            await service.bulk_approve(None, selection, reviewer="barj", note=BASIS)
+        assert refused.value.error_code == "ERR_STALE_REVIEW"
+        assert [s["mapping_id"] for s in refused.value.detail["stale"]] == [str(ms[2].id)]
+        assert all(m.approval_state == STATE_REVIEW_REQUIRED and m.reviewed_by is None for m in ms)
+        assert r.reviews == [] and r.calls["add_reviews"] == 0
+
+    async def test_a_large_selection_is_locked_checked_and_written_once_not_per_mapping(self, repo):
+        ms = [Mapping() for _ in range(409)]
+        r = repo(*ms)
+        outcomes = await service.bulk_approve(None, items(*ms), reviewer="barj", note=BASIS,
+                                              reviewer_user_id=uuid.uuid4(), reviewer_role="MANAGER")
+        assert len(outcomes) == 409 and all(m.approval_state == STATE_APPROVED for m in ms)
+        assert len(r.reviews) == 409 and {x.mapping_id for x in r.reviews} == {m.id for m in ms}
+        assert {x.decision for x in r.reviews} == {DECISION_APPROVE}
+        assert r.calls == Counter({"lock_many": 1, "review_facts": 1, "add_reviews": 1}), r.calls
+        assert r.locked == sorted(m.id for m in ms)
+
+    async def test_bulk_and_individual_approval_record_the_same_decision(self, repo):
+        one, other = Mapping(), Mapping()
+        r = repo(one, other)
+        account = uuid.uuid4()
+        who = {"reviewer": "barj", "reviewer_user_id": account, "reviewer_role": "MANAGER"}
+        single = await service.approve(None, one.id, note=BASIS, expected_review_version=0, **who)
+        [bulk] = await service.bulk_approve(None, items(other), note=BASIS, **who)
+        fields = ("decision", "previous_approval_state", "new_approval_state", "previous_commercial_unit_basis",
+                  "new_commercial_unit_basis", "previous_units_accounted_for", "new_units_accounted_for",
+                  "reviewer", "reviewer_user_id", "reviewer_role", "note", "evidence_considered")
+        individual_event, bulk_event = r.reviews
+        assert {f: getattr(individual_event, f) for f in fields} == {f: getattr(bulk_event, f) for f in fields}
+        state = ("approval_state", "commercial_unit_basis", "units_accounted_for", "reviewed_by")
+        assert {f: getattr(one, f) for f in state} == {f: getattr(other, f) for f in state}
+        assert one.reviewed_at is not None and other.reviewed_at is not None
+        assert (single.previous_state, single.new_state, single.units_accounted_for) == (
+            bulk.previous_state, bulk.new_state, bulk.units_accounted_for)
+
+    async def test_individual_approval_still_locks_checks_and_writes_its_one_row(self, repo):
+        m = Mapping()
+        r = repo(m)
+        await service.approve(None, m.id, reviewer="barj", note=BASIS, expected_review_version=0)
+        assert r.calls == Counter({"get": 1, "review_version": 1, "add_review": 1}), r.calls
+
 
 # ---- over the API ------------------------------------------------------------
 
@@ -375,6 +458,31 @@ class TestOneGovernedWritePath:
         await service.approve(None, m.id, reviewer="barj", note=BASIS, expected_review_version=0)
         await service.reopen(None, m.id, reviewer="barj", reason="check", expected_review_version=1)
         assert (m.evidence, m.source_snapshot) == before
+
+    async def test_the_bulk_lock_is_one_statement_in_id_order_on_the_mapping_rows_only(self):
+        from sqlalchemy.dialects import postgresql
+
+        from app.repositories.master_commercial_repository import MasterCommercialRepository
+
+        class _Capture:
+            statement = None
+
+            async def execute(self, statement):
+                _Capture.statement = statement
+
+                class _Result:
+                    def scalars(self):
+                        return self
+
+                    def all(self):
+                        return []
+                return _Result()
+
+        await MasterCommercialRepository(_Capture()).lock_many([uuid.uuid4(), uuid.uuid4()])
+        sql = str(_Capture.statement.compile(dialect=postgresql.dialect()))
+        assert "FROM master_commercial_mappings" in sql and "JOIN" not in sql
+        assert "ORDER BY master_commercial_mappings.id" in sql
+        assert sql.rstrip().endswith("FOR UPDATE")
 
     def test_the_undecided_filter_is_exactly_the_open_states(self):
         from sqlalchemy.dialects import postgresql

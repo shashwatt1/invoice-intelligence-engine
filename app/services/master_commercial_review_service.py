@@ -198,6 +198,34 @@ async def approve(
         )
     note = _require_basis(note, DECISION_APPROVE)
 
+    outcome, review = _approval(
+        mapping, reviewer=reviewer, note=note,
+        commercial_unit_basis=commercial_unit_basis, units_accounted_for=units_accounted_for,
+        reviewer_user_id=reviewer_user_id, reviewer_role=reviewer_role,
+    )
+    await repository.add_review(review)
+    return outcome
+
+
+def _approval(
+    mapping,
+    *,
+    reviewer: str,
+    note: str,
+    commercial_unit_basis: str | None,
+    units_accounted_for: int | None,
+    reviewer_user_id: uuid.UUID | None,
+    reviewer_role: str | None,
+) -> tuple[ReviewOutcome, MasterCommercialReview]:
+    """
+    The approval decision itself, shared by approve() and bulk_approve(): settle
+    the interpretation, move the mapping to APPROVED and build its review event
+    (who, role, basis, before/after, evidence snapshot).
+
+    The caller has already locked the row, checked the version it was decided
+    against, refused a decided candidate and required a basis; the caller adds
+    the review event. Nothing is flushed here.
+    """
     # A pending proposal supplies the number when the reviewer does not
     # override it — approving a proposal is what promotes it.
     if (mapping.approval_state == STATE_PENDING
@@ -243,7 +271,7 @@ async def approve(
     mapping.reviewed_by = reviewer
     mapping.reviewed_at = datetime.now(UTC)
 
-    await repository.add_review(MasterCommercialReview(
+    review = MasterCommercialReview(
         mapping_id=mapping.id,
         decision=DECISION_APPROVE,
         previous_approval_state=previous_state,
@@ -259,8 +287,8 @@ async def approve(
         # A snapshot, so the decision stays explicable even if the candidate
         # is later re-derived from changed source data.
         evidence_considered=dict(mapping.evidence or {}),
-    ))
-    return ReviewOutcome(mapping.id, previous_state, STATE_APPROVED, basis, units)
+    )
+    return ReviewOutcome(mapping.id, previous_state, STATE_APPROVED, basis, units), review
 
 
 async def reject(
@@ -555,16 +583,21 @@ async def bulk_approve(
     reviewer_role: str | None = None,
 ) -> list[ReviewOutcome]:
     """
-    Approve several candidates in one transaction — each through approve().
+    Approve several candidates in one transaction, each by the same decision
+    as approve() (_approval).
 
-    All or nothing: every selected candidate is locked and checked first. If
-    any changed since the reviewer saw it, the whole request is refused
-    (StaleReviewError) and nothing is written; if any is not eligible for a
-    multi-select approval (a conflict, a pending proposal, no multiplier, a
-    reopened candidate), it is refused (ValidationError). Otherwise each is
-    approved by the same governed approve(), writing one review event per
-    candidate with the reviewer, role, basis and evidence snapshot — never a
-    single summary record.
+    All or nothing: every selected candidate is locked (one statement, id
+    order) and checked first. If any changed since the reviewer saw it, the
+    whole request is refused (StaleReviewError) and nothing is written; if any
+    is not eligible for a multi-select approval (a conflict, a pending
+    proposal, no multiplier, a reopened or already decided candidate), it is
+    refused (ValidationError). Otherwise each is approved, writing one review
+    event per candidate with the reviewer, role, basis and evidence snapshot —
+    never a single summary record.
+
+    The checks are made once for the whole selection rather than again per
+    candidate: the locks are held until the caller commits, so nothing can
+    change between the check and the write. All events are flushed together.
     """
     if not items:
         raise ValidationError(message="Select at least one mapping to approve.", detail={"field": "items"})
@@ -577,11 +610,7 @@ async def bulk_approve(
     basis = _require_basis(note, DECISION_APPROVE)
 
     repository = MasterCommercialRepository(session)
-    locked = {}
-    for mapping_id in sorted(ids):   # one lock order for every request: no deadlocks between two bulk approvals
-        row = await repository.get(mapping_id, for_update=True)
-        if row is not None:
-            locked[mapping_id] = row[0]
+    locked = await repository.lock_many(ids)
     facts = await repository.review_facts(ids)
 
     stale: list[dict[str, Any]] = []
@@ -608,11 +637,13 @@ async def bulk_approve(
             message="Some selected mappings need an individual decision. Nothing was approved.",
             detail={"ineligible": ineligible},
         )
-    return [
-        await approve(
-            session, item.mapping_id, reviewer=reviewer, note=basis,
+    decisions = [
+        _approval(
+            locked[item.mapping_id], reviewer=reviewer, note=basis,
+            commercial_unit_basis=None, units_accounted_for=None,
             reviewer_user_id=reviewer_user_id, reviewer_role=reviewer_role,
-            expected_review_version=item.expected_review_version,
         )
         for item in items
     ]
+    await repository.add_reviews([review for _, review in decisions])
+    return [outcome for outcome, _ in decisions]

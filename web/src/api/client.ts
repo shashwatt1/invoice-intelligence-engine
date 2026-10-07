@@ -47,8 +47,9 @@ export class ApiError extends Error {
  * delays the request before the application ever sees it — measured at
  * ~24s on the first pilot upload, and Render documents 50s or more — on
  * top of the ~5s the server then takes to store the file and return 202.
- * Only this endpoint waits that long; every other call keeps the 30s
- * default, so a genuinely dead backend still fails fast. */
+ * Only this endpoint and the multi-select Product Master approval wait that
+ * long; every other call keeps the 30s default, so a genuinely dead backend
+ * still fails fast. */
 export const PROCESS_TIMEOUT_MS = 90_000;
 
 const PROCESS_PATH = "/invoices/process";
@@ -59,6 +60,15 @@ const PROCESS_PATH = "/invoices/process";
 export const PROCESS_TIMEOUT_MESSAGE =
   "Processing is taking longer than expected. Your invoice may already have been received. " +
   "Check the invoice list before trying again.";
+
+/** A multi-select Product Master approval is one transaction that may still
+ * commit after the browser stops waiting — the first 409-mapping pilot
+ * approval did exactly that. Never imply it failed; send the reviewer to the
+ * queue instead. */
+export const BULK_APPROVAL_TIMEOUT_MESSAGE =
+  "The approval is still processing or may already have completed. Check the approval queue before trying again.";
+
+export const BULK_APPROVAL_PATH = "/product-master/commercial/bulk-approve";
 
 const TIMEOUT_MESSAGE =
   "The server took too long to respond. The request was not retried — check before sending it again.";
@@ -93,9 +103,12 @@ apiClient.interceptors.response.use(
     // No response at all. Giving up on our side and never being heard are
     // different failures and must not share one message.
     if (isTimeout(error)) {
+      const url = error.config?.url ?? "";
       throw new ApiError(0, {
         error_code: "ERR_TIMEOUT",
-        message: error.config?.url?.includes(PROCESS_PATH) ? PROCESS_TIMEOUT_MESSAGE : TIMEOUT_MESSAGE,
+        message: url.includes(PROCESS_PATH) ? PROCESS_TIMEOUT_MESSAGE
+          : url.includes(BULK_APPROVAL_PATH) ? BULK_APPROVAL_TIMEOUT_MESSAGE
+          : TIMEOUT_MESSAGE,
       });
     }
     throw new ApiError(0, {
