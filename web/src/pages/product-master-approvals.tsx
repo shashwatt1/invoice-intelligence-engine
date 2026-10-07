@@ -52,8 +52,10 @@ export function ProductMasterApprovalsPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(50);
-  // Selected mapping → the review_version seen when it was selected.
-  const [selected, setSelected] = useState<Map<string, number>>(new Map());
+  // Selected mapping id → the row as it was when selected (its review_version is
+  // what the approval is checked against). Independent of what is on screen:
+  // searching, filtering and paging change the view, never the selection.
+  const [selected, setSelected] = useState<Map<string, CommercialCandidateRow>>(new Map());
   const [confirming, setConfirming] = useState(false);
   const [open, setOpen] = useState<CommercialCandidateRow | null>(null);
 
@@ -67,24 +69,28 @@ export function ProductMasterApprovalsPage() {
   const query = useCommercialCandidates(params);
   const stores = useStores();
 
-  // A new view starts a new selection: nothing selected off-screen is approved.
-  useEffect(() => {
-    setSelected(new Map());
-  }, [status, storeId, search, page, pageSize]);
   useEffect(() => setPage(1), [status, storeId, search]);
 
   const rows = query.data?.items ?? [];
   const eligibleOnPage = rows.filter((r) => r.bulk_eligible);
   const allEligibleSelected = eligibleOnPage.length > 0 && eligibleOnPage.every((r) => selected.has(r.id));
+  const hiddenSelected = [...selected.keys()].filter((id) => !rows.some((r) => r.id === id)).length;
 
   const toggle = (row: CommercialCandidateRow) => setSelected((prev) => {
     const next = new Map(prev);
     if (next.has(row.id)) next.delete(row.id);
-    else next.set(row.id, row.review_version ?? 0);
+    else next.set(row.id, row);
     return next;
   });
-  const toggleAll = () => setSelected(allEligibleSelected ? new Map()
-    : new Map(eligibleOnPage.map((r) => [r.id, r.review_version ?? 0])));
+  // Adds or removes this page's eligible rows; selections elsewhere are kept.
+  const toggleAll = () => setSelected((prev) => {
+    const next = new Map(prev);
+    for (const r of eligibleOnPage) {
+      if (allEligibleSelected) next.delete(r.id);
+      else next.set(r.id, r);
+    }
+    return next;
+  });
 
   if (!canDecide) {
     return (
@@ -126,9 +132,19 @@ export function ProductMasterApprovalsPage() {
             {(stores.data ?? []).map((s) => <SelectItem key={s.id} value={s.id}>{storeOptionLabel(s)}</SelectItem>)}
           </SelectContent>
         </Select>
-        <Button className="ml-auto" disabled={selected.size === 0} onClick={() => setConfirming(true)}>
-          Approve Selected ({selected.size})
-        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          {selected.size > 0 && (
+            <>
+              <span className="text-xs text-muted-foreground" data-testid="selection-summary">
+                {selected.size} selected{hiddenSelected ? ` · ${hiddenSelected} not in this view` : ""}
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => setSelected(new Map())}>Clear selection</Button>
+            </>
+          )}
+          <Button disabled={selected.size === 0} onClick={() => setConfirming(true)}>
+            Approve Selected ({selected.size})
+          </Button>
+        </div>
       </FilterBar>
 
       {query.isLoading ? (
@@ -217,14 +233,16 @@ export function ProductMasterApprovalsPage() {
 }
 
 /**
- * Confirms a multi-select approval against the latest view of the queue. If a
- * selected mapping was decided, proposed on or reopened since it was selected,
- * nothing is sent — the reviewer refreshes and selects again. The server makes
- * the same check under a lock and refuses the whole request if it fails.
+ * Confirms a multi-select approval. Each selected mapping is checked against the
+ * latest row on screen when it is visible, otherwise against the row as it was
+ * selected. If a mapping was decided, proposed on or reopened since it was
+ * selected, nothing is sent — the reviewer refreshes and selects again. The
+ * server makes the authoritative check under a lock (version and eligibility)
+ * and refuses the whole request if any mapping fails it.
  */
 function BulkApprovalDialog({ rows, selected, onClose, onFinished }: {
   rows: CommercialCandidateRow[];
-  selected: Map<string, number>;
+  selected: Map<string, CommercialCandidateRow>;
   onClose: () => void;
   onFinished: () => void;
 }) {
@@ -237,9 +255,9 @@ function BulkApprovalDialog({ rows, selected, onClose, onFinished }: {
   let conflicts = 0;
   let decided = 0;
   let changed = 0;
-  for (const [id, version] of selected) {
-    const row = byId.get(id);
-    if (!row) { changed += 1; continue; }
+  for (const [id, seen] of selected) {
+    const row = byId.get(id) ?? seen;
+    const version = seen.review_version ?? 0;
     if (row.approval_state === "APPROVED" || row.approval_state === "REJECTED") decided += 1;
     else if (row.review_status === "CONFLICT") conflicts += 1;
     else if (!row.bulk_eligible || (row.review_version ?? 0) !== version) changed += 1;
@@ -249,7 +267,7 @@ function BulkApprovalDialog({ rows, selected, onClose, onFinished }: {
 
   const submit = () => bulk.mutate(
     {
-      items: [...selected].map(([mapping_id, expected_review_version]) => ({ mapping_id, expected_review_version })),
+      items: [...selected.values()].map((row) => ({ mapping_id: row.id, expected_review_version: row.review_version ?? 0 })),
       note: basis.trim(),
     },
     {

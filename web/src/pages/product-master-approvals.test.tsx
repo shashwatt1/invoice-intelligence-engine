@@ -135,3 +135,144 @@ describe("Product Master approvals", () => {
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 });
+
+describe("selection is independent of search, filters and paging", () => {
+  const READY_D = row("d", "087692000570");
+  const READY_E = row("e", "018200967214", { review_version: 1 });
+  const QUEUE = [CONFLICT, READY_A, READY_B, READY_D, READY_E];
+
+  // Answers like the server: search, store and paging narrow what is returned.
+  function serveQueue(items: CommercialCandidateRow[]) {
+    listCommercialCandidates.mockImplementation(async (p: { search?: string; store_id?: string; page: number; page_size: number }) => {
+      const matching = items.filter((r) => (!p.search || (r.canonical_identifier ?? "").includes(p.search))
+                                         && (!p.store_id || r.store_id === p.store_id));
+      const start = (p.page - 1) * p.page_size;
+      return { items: matching.slice(start, start + p.page_size), total: matching.length, page: p.page, page_size: p.page_size };
+    });
+  }
+
+  const approveButton = (n: number) => screen.findByRole("button", { name: `Approve Selected (${n})` });
+  const search = async (user: ReturnType<typeof userEvent.setup>, text: string) => {
+    const box = screen.getByPlaceholderText(/search upc/i);
+    await user.clear(box);
+    if (text) await user.type(box, text);
+  };
+  const checkbox = async (upc: string) => within(await rowFor(upc)).getByRole("checkbox");
+
+  beforeEach(() => serveQueue(QUEUE));
+
+  it("keeps the selection through a search, removes only the row unchecked, and approves exactly what is selected", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await rowFor("018200000001");
+    await user.click(screen.getByRole("checkbox", { name: /select every eligible row/i }));
+    await approveButton(4);
+
+    await search(user, "018200967214");
+    await waitFor(() => expect(screen.queryByText("018200000001")).not.toBeInTheDocument());
+    expect(await checkbox("018200967214")).toBeChecked();
+    expect(await approveButton(4)).toBeEnabled();
+    expect(screen.getByTestId("selection-summary")).toHaveTextContent("4 selected · 3 not in this view");
+    await user.click(await checkbox("018200967214"));
+    await approveButton(3);
+
+    await search(user, "087692000570");
+    expect(await checkbox("087692000570")).toBeChecked();
+    await user.click(await checkbox("087692000570"));
+    await approveButton(2);
+
+    await search(user, "");
+    expect(await checkbox("018200000001")).toBeChecked();
+    expect(await checkbox("018200000002")).toBeChecked();
+    expect(await checkbox("018200967214")).not.toBeChecked();
+    expect(await checkbox("087692000570")).not.toBeChecked();
+
+    await user.click(await approveButton(2));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByTestId("bulk-counts")).toHaveTextContent("Selected2Eligible2Conflicts0Already decided0");
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "Reviewed sheet");
+    await user.click(within(dialog).getByRole("button", { name: "Approve 2" }));
+    expect(bulkApproveCommercialCandidates).toHaveBeenCalledWith({
+      items: [{ mapping_id: "a", expected_review_version: 0 }, { mapping_id: "b", expected_review_version: 2 }],
+      note: "Reviewed sheet",
+    });
+  });
+
+  it("approves selected rows that are not in the current view, each with the version it was selected at", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await rowFor("018200000001");
+    await user.click(screen.getByRole("checkbox", { name: /select every eligible row/i }));
+    await search(user, "087692000570");
+    await waitFor(() => expect(screen.queryByText("018200000001")).not.toBeInTheDocument());
+    await user.click(await approveButton(4));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByTestId("bulk-counts")).toHaveTextContent("Selected4Eligible4");
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "Reviewed sheet");
+    await user.click(within(dialog).getByRole("button", { name: "Approve 4" }));
+    expect(bulkApproveCommercialCandidates).toHaveBeenCalledWith({
+      items: [
+        { mapping_id: "a", expected_review_version: 0 }, { mapping_id: "b", expected_review_version: 2 },
+        { mapping_id: "d", expected_review_version: 0 }, { mapping_id: "e", expected_review_version: 1 },
+      ],
+      note: "Reviewed sheet",
+    });
+  });
+
+  it("keeps the selection when a search matches nothing, and a conflict found by search stays unselectable", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await rowFor("018200000001");
+    await user.click(screen.getByRole("checkbox", { name: /select every eligible row/i }));
+    await search(user, "999999999999");
+    expect(await screen.findByText("Nothing awaiting approval")).toBeInTheDocument();
+    expect(await approveButton(4)).toBeEnabled();
+    await search(user, "018200000003");
+    expect(within(await rowFor("018200000003")).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /select every eligible row/i })).toBeDisabled();
+    expect(await approveButton(4)).toBeEnabled();
+  });
+
+  it("keeps the selection across pages and page sizes; select-all adds a page without dropping others", async () => {
+    const many = Array.from({ length: 30 }, (_, i) => row(`m${i}`, `0300000000${String(i).padStart(2, "0")}`));
+    serveQueue([CONFLICT, ...many]);
+    const user = userEvent.setup();
+    renderPage();
+    await rowFor("030000000000");
+    await user.click(screen.getByRole("combobox", { name: "Rows per page" }));
+    await user.click(await screen.findByRole("option", { name: "25" }));
+    await waitFor(() => expect(screen.queryByText("030000000024")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: /select every eligible row/i }));
+    await approveButton(24);   // the conflict is on this page and is not selected
+
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await checkbox("030000000024")).not.toBeChecked();
+    expect(await approveButton(24)).toBeEnabled();
+    await user.click(screen.getByRole("checkbox", { name: /select every eligible row/i }));
+    await approveButton(30);
+
+    await user.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await checkbox("030000000000")).toBeChecked();
+    await user.click(screen.getByRole("combobox", { name: "Rows per page" }));
+    await user.click(await screen.findByRole("option", { name: "100" }));
+    expect(await checkbox("030000000029")).toBeChecked();
+    expect(await approveButton(30)).toBeEnabled();
+  });
+
+  it("keeps the selection when the store filter changes, and clears it only on request", async () => {
+    listStores.mockResolvedValue([{ id: "s2", label: "PB Wolf", display_name: "PB Wolf", identity_status: "confirmed",
+                                    address: null, source_codes: [], kind: "physical", source_identity: null }]);
+    const user = userEvent.setup();
+    renderPage();
+    await rowFor("018200000001");
+    await user.click(await checkbox("018200000001"));
+    await user.click(await checkbox("087692000570"));
+    await approveButton(2);
+    await user.click(screen.getByRole("combobox", { name: "Store" }));
+    await user.click(await screen.findByRole("option", { name: /PB Wolf/ }));
+    expect(await screen.findByText("Nothing awaiting approval")).toBeInTheDocument();
+    expect(await approveButton(2)).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(await approveButton(0)).toBeDisabled();
+  });
+});
