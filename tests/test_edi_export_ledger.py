@@ -173,8 +173,12 @@ class TestTheMigration:
         source = (ROOT / "alembic/versions/20261008_0030_edi_exports.py").read_text()
         assert 'revision = "0030"' in source and 'down_revision = "0029"' in source
         assert source.count("op.create_table(") == 1 and '"edi_exports"' in source
-        for forbidden in ("op.alter_column", "op.drop_column", "op.execute", "UPDATE ", "DELETE "):
+        for forbidden in ("op.alter_column", "op.drop_column", "UPDATE ", "DELETE "):
             assert forbidden not in source, forbidden
+        # The only raw statement: row level security on the new table — no policy, never FORCE.
+        executed = [line.strip() for line in source.splitlines() if "op.execute(" in line]
+        assert executed == ['op.execute("ALTER TABLE edi_exports ENABLE ROW LEVEL SECURITY")']
+        assert "FORCE ROW LEVEL SECURITY" not in source and "CREATE POLICY" not in source
 
     def test_the_migration_matches_the_model_column_for_column(self):
         tree = ast.parse((ROOT / "alembic/versions/20261008_0030_edi_exports.py").read_text())

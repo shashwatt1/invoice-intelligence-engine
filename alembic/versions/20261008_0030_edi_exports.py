@@ -12,6 +12,10 @@ session) and when, the per-line commercial resolution that produced it, and
 the build (git SHA, Alembic revision) that ran. Written only while
 EDI_EXPORT_LEDGER is on, so deploying the code before this migration is safe.
 
+Row level security is enabled on the new table with no policies and without
+FORCE: Supabase's Data API roles (anon, authenticated) see nothing, while the
+backend, which connects as the table owner, is unaffected.
+
 Revises 0029, the deployed head. The unreleased 0025 (identifier resolution
 records) also descends from 0024 and is re-parented when it is released.
 """
@@ -53,9 +57,11 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["exported_by_user_id"], ["users.id"], ondelete="SET NULL"),
         sa.UniqueConstraint("invoice_id", "export_number", name="uq_edi_exports_invoice_number"),
     )
+    op.execute("ALTER TABLE edi_exports ENABLE ROW LEVEL SECURITY")
     op.create_index("idx_edi_exports_invoice", "edi_exports", ["invoice_id"])
     op.create_index("idx_edi_exports_created", "edi_exports", ["created_at"])
 
 
 def downgrade() -> None:
+    # Dropping the table also removes its row level security setting.
     op.drop_table("edi_exports")
