@@ -16,7 +16,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useReviseProposal } from "@/hooks/use-api";
 import { isEditable, parseUnits } from "@/lib/proposals";
-import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
+import { useAuth } from "@/hooks/use-auth";
 
 /**
  * Edit the proposed value of several selected proposals — one input per
@@ -42,7 +42,7 @@ export function BulkEditDialog({
   onDone: (replaced: Record<string, string>) => void;
 }) {
   const revise = useReviseProposal();
-  const [reviewer, setReviewer] = useState(rememberedReviewer);
+  const { user } = useAuth();
   const [note, setNote] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -58,7 +58,7 @@ export function BulkEditDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const name = reviewer.trim();
+  const name = user?.username ?? "";
   const editable = rows.filter(isEditable);
   const changed = editable.filter((row) => {
     const value = parseUnits(drafts[row.id] ?? "");
@@ -83,7 +83,6 @@ export function BulkEditDialog({
       }
     }
     setSaving(false);
-    rememberReviewer(name);
     setErrors(failed);
     onDone(replaced);
     const saved = Object.keys(replaced).length;
@@ -159,17 +158,8 @@ export function BulkEditDialog({
 
         <div className="grid gap-2 sm:grid-cols-2">
           <div className="space-y-1">
-            <label htmlFor="edit-reviewer" className="text-[0.75rem] font-medium">
-              Changed by <span className="text-danger">*</span>
-            </label>
-            <Input
-              id="edit-reviewer"
-              value={reviewer}
-              onChange={(event) => setReviewer(event.target.value)}
-              placeholder="e.g. data-team:shashwat"
-              disabled={saving}
-              autoComplete="off"
-            />
+            <span className="text-[0.75rem] font-medium">Changed by</span>
+            <p className="text-[0.82rem]" data-testid="edit-reviewer">{name || "—"}</p>
           </div>
           <div className="space-y-1">
             <label htmlFor="edit-note" className="text-[0.75rem] font-medium">

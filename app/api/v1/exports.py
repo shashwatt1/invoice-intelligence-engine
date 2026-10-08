@@ -15,14 +15,20 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.dependencies import require_manager
 from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
+from app.models.edi_export import EdiExport
 from app.models.user import User
 from app.repositories.invoice_repository import InvoiceRepository
-from app.services.case_mapping_service import invoice_units_by_item_code
+from app.schemas.base import APIResponse
+from app.schemas.processing import EdiExportRecord
+from app.services.case_mapping_service import invoice_commercial_resolution
+from app.services.edi_export_ledger import record_pdi_export
 from app.services.export_service import (
     build_export_payload,
     build_items_csv,
@@ -85,6 +91,7 @@ async def export_invoice(
         )
 
     basename = export_basename(invoice)
+    headers: dict[str, str] = {}
     if format == "txt":
         content = build_txt(invoice)
         media_type = "text/plain"
@@ -94,7 +101,8 @@ async def export_invoice(
         media_type = "text/csv"
         filename = f"{basename}_items.csv"
     elif format == "pdi":
-        units = await invoice_units_by_item_code(db, invoice)
+        resolution = await invoice_commercial_resolution(db, invoice)
+        units = resolution.units
         eligibility = persisted_pdi_export_eligibility(invoice, units)
         if not eligibility.allowed:
             raise ValidationError(
@@ -109,6 +117,12 @@ async def export_invoice(
         content = build_pdi_export(invoice, units)
         media_type = "text/plain"
         filename = f"{basename}_pdi.txt"
+        if get_settings().edi_export_ledger:
+            # The delivered file is recorded before it leaves, exactly as sent.
+            record = await record_pdi_export(db, invoice, content, resolution, user)
+            await db.commit()
+            headers = {"X-EDI-Export-Id": str(record.id), "X-EDI-Export-Number": str(record.export_number),
+                       "X-EDI-SHA256": record.sha256}
     else:
         content = json.dumps(build_export_payload(invoice), indent=2, ensure_ascii=False)
         media_type = "application/json"
@@ -117,5 +131,42 @@ async def export_invoice(
     return Response(
         content=content,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', **headers},
+    )
+
+
+@router.get(
+    "/invoices/{invoice_id}/edi-exports",
+    response_model=APIResponse[list[EdiExportRecord]],
+    summary="Every PDI file delivered for this invoice, newest first (MANAGER/ADMIN)",
+)
+async def list_edi_exports(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[list[EdiExportRecord]]:
+    rows = (await db.execute(
+        select(EdiExport).where(EdiExport.invoice_id == invoice_id).order_by(EdiExport.export_number.desc())
+    )).scalars().all()
+    return APIResponse(data=[EdiExportRecord.model_validate(r, from_attributes=True) for r in rows])
+
+
+@router.get(
+    "/edi-exports/{export_id}/file",
+    summary="The exact PDI file that was delivered, byte for byte (MANAGER/ADMIN)",
+    responses={200: {"content": {"text/plain": {}}}, 404: {"description": "Not found"}},
+)
+async def download_edi_export(
+    export_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> Response:
+    row = await db.get(EdiExport, export_id)
+    if row is None:
+        raise RecordNotFoundError(message="EDI export not found.", detail={"export_id": str(export_id)})
+    stem = row.invoice_number or str(row.invoice_id or row.id)[:8]
+    return Response(
+        content=row.content, media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{stem}_pdi_export{row.export_number}.txt"',
+                 "X-EDI-SHA256": row.sha256},
     )

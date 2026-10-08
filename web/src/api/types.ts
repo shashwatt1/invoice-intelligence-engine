@@ -731,6 +731,13 @@ export interface ProposalRow {
   source_sheet: string | null;
   source_row: number | null;
   invoice_id: string | null;
+  /** The source invoice's printed number and date, while it exists. */
+  invoice_number?: string | null;
+  invoice_date?: string | null;
+  /** Why this store value cannot be approved: the Product Master governs or
+   * disputes the same item. Such a row needs an individual decision and is
+   * never part of a bulk approval. */
+  product_master_block?: string | null;
   /** The product as the evidence names it. */
   description: string | null;
   /** The invoice this was raised on has since been deleted; the proposal
@@ -766,8 +773,9 @@ export interface ProposalDetail extends ProposalRow {
   current_master_value: unknown | null;
 }
 
+/** The reviewer is always the signed-in account; the server ignores any name sent. */
 export interface ProposalDecision {
-  reviewed_by: string;
+  reviewed_by?: string;
   note?: string | null;
 }
 
@@ -780,7 +788,7 @@ export interface ProposalDecisionResult {
  * fast path. Decided all-or-nothing: one stale row refuses the batch. */
 export interface BulkProposalDecision {
   proposal_ids: string[];
-  reviewed_by: string;
+  reviewed_by?: string;
   note?: string | null;
 }
 
@@ -800,7 +808,7 @@ export interface BulkDecisionResult {
  * creates a new pending proposal and freezes the original as superseded. */
 export interface ProposalRevision {
   proposed_value: number;
-  proposed_by: string;
+  proposed_by?: string;
   note?: string | null;
 }
 
@@ -826,8 +834,21 @@ export interface ProposalListParams {
   store_id?: string;
   item_code?: string;
   invoice_id?: string;
+  /** The source invoice's printed number — every invoice carrying it. */
+  invoice_number?: string;
   page?: number;
   page_size?: number;
+}
+
+/** An invoice that raised proposals: the review queue's Source invoice picker. */
+export interface ProposalSourceInvoice {
+  invoice_id: string;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  /** The invoice's own store — where the proposals came from. */
+  store: StoreRef | null;
+  proposals: number;
+  pending: number;
 }
 
 // ---------------------------------------------------------------------------

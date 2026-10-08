@@ -1,5 +1,6 @@
 import { ClipboardCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
@@ -104,10 +105,16 @@ export function ProductMasterApprovalsPage() {
       <PageHeader
         title="Product Master — Approvals"
         description={
-          "Mappings awaiting a manager decision. Select rows the evidence settled to approve them together — each is " +
-          "approved and recorded individually. Conflicts, proposals and reopened mappings are decided one at a time."
+          "Product Master · Global candidates from distributor evidence, awaiting a manager decision. Select rows the " +
+          "evidence settled to approve them together — each is approved and recorded individually. Conflicts, proposals " +
+          "and reopened mappings are decided one at a time."
         }
       />
+      <p className="t-meta mb-3" data-testid="invoice-proposals-pointer">
+        Values submitted from an invoice are reviewed in{" "}
+        <Link to="/data-review" className="font-medium underline">Master Data Review</Link>, where they can be found by
+        source invoice and store.
+      </p>
 
       <FilterBar>
         <Input placeholder="Search UPC, item code or name" value={search}
@@ -152,7 +159,16 @@ export function ProductMasterApprovalsPage() {
       ) : query.isError ? (
         <ErrorState error={query.error} onRetry={() => void query.refetch()} />
       ) : rows.length === 0 ? (
-        <EmptyState icon={ClipboardCheck} title="Nothing awaiting approval" description="No mappings match these filters." />
+        storeId !== "ALL" && stores.data?.find((x) => x.id === storeId)?.kind === "physical" ? (
+          <EmptyState
+            icon={ClipboardCheck}
+            title="No Product Master mappings held by this store"
+            description="Global mappings are held under the Item Sales source, not a physical store. Proposals from this store's invoices are in Master Data Review."
+            action={<Button asChild variant="outline" size="sm"><Link to={`/data-review?store=${storeId}`}>Open this store's invoice proposals</Link></Button>}
+          />
+        ) : (
+          <EmptyState icon={ClipboardCheck} title="Nothing awaiting approval" description="No mappings match these filters." />
+        )
       ) : (
         <>
           <Table>
@@ -164,7 +180,7 @@ export function ProductMasterApprovalsPage() {
                 </TableHead>
                 <TableHead>Product</TableHead>
                 <TableHead>UPC / PDI item</TableHead>
-                <TableHead>Store</TableHead>
+                <TableHead>Mapping scope</TableHead>
                 <TableHead className="text-right">Units/case</TableHead>
                 <TableHead className="text-right">Case cost</TableHead>
                 <TableHead>Interpretation</TableHead>
@@ -190,7 +206,14 @@ export function ProductMasterApprovalsPage() {
                     {row.canonical_identifier ?? "—"}
                     <div className="text-muted-foreground">{row.pdi_item_code ?? ""}</div>
                   </TableCell>
-                  <TableCell className="text-sm"><StoreContext row={row} /></TableCell>
+                  <TableCell className="text-sm">
+                    {row.store_kind === "source_identity" ? (
+                      <div className="font-medium" data-testid="mapping-scope">Product Master · Global</div>
+                    ) : null}
+                    <div className={row.store_kind === "source_identity" ? "text-xs text-muted-foreground" : undefined}>
+                      <StoreContext row={row} />
+                    </div>
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">{row.units_accounted_for ?? "—"}</TableCell>
                   <TableCell className="text-right tabular-nums">{row.case_cost === null ? "—" : row.case_cost.toFixed(2)}</TableCell>
                   <TableCell className="text-sm">{basisLabel(row.commercial_unit_basis)}</TableCell>

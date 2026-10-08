@@ -49,6 +49,7 @@ class ProductDataProposalRepository:
         entity_key: str | None = None,
         invoice_id: uuid.UUID | None = None,
         store_id: uuid.UUID | None = None,
+        invoice_ids: Sequence[uuid.UUID] | None = None,
     ) -> list[ProductDataProposal]:
         query = select(ProductDataProposal)
         if status:
@@ -61,6 +62,8 @@ class ProductDataProposalRepository:
             query = query.where(ProductDataProposal.entity_key == entity_key)
         if invoice_id:
             query = query.where(ProductDataProposal.invoice_id == invoice_id)
+        if invoice_ids is not None:
+            query = query.where(ProductDataProposal.invoice_id.in_(list(invoice_ids)))
         if store_id:
             query = query.where(ProductDataProposal.store_id == store_id)
         result = await self._session.execute(

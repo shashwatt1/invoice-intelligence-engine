@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     # evidence, not a vendor, not a physical store, not itself the scope.
     product_master_commercial_resolution: bool = False
     commercial_source_identity: str = ""
+    # Record every delivered PDI file in edi_exports (migration 0030). Off by
+    # default so this code can be deployed before the migration is applied.
+    edi_export_ledger: bool = False
     ocr_provider: Literal["google_vision", "paddleocr", "easyocr"] = "google_vision"
     google_vision_api_key: str = ""
 

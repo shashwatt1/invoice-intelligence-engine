@@ -14,13 +14,16 @@ import { DataReviewPage } from "./data-review";
  *
  * What these pin: selection is per row and per page; the toolbar and its
  * count follow the selection; approve / reject / edit go through the bulk
- * and revise endpoints with the reviewer name typed once; a refused batch
+ * and revise endpoints as the signed-in account (never a typed name); a row
+ * the Product Master governs needs an individual decision; a refused batch
  * is reported, never claimed; and a filter change drops rows that are no
  * longer on screen from the selection.
  */
 
+vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { username: "barj", role: "MANAGER" } }) }));
 vi.mock("@/api/endpoints", () => ({
   listProposals: vi.fn(),
+  listProposalSourceInvoices: vi.fn(async () => []),
   listStores: vi.fn(async () => []),
   bulkApproveProposals: vi.fn(),
   bulkRejectProposals: vi.fn(),
@@ -201,10 +204,10 @@ describe("selection", () => {
 });
 
 describe("bulk approve", () => {
-  it("asks for the reviewer once, approves every selected id, and clears the selection", async () => {
+  it("approves every selected id as the signed-in account, and clears the selection", async () => {
     const user = userEvent.setup();
     bulkApprove.mockResolvedValue({
-      reviewed_by: "data-team:shashwat",
+      reviewed_by: "barj",
       decided: [A, B].map((r) => ({ id: r.id, entity_key: r.entity_key, status: "APPROVED", applied_to: `product_case_mappings:${STORE.id}:${r.entity_key}` })),
     });
     renderPage();
@@ -216,20 +219,18 @@ describe("bulk approve", () => {
     const dialog = await screen.findByTestId("bulk-decision-dialog");
     expect(within(dialog).getByText("Approve 2 records")).toBeInTheDocument();
     const confirm = within(dialog).getByRole("button", { name: "Approve 2" });
-    expect(confirm).toBeDisabled();                       // no reviewer yet
-
-    await user.type(within(dialog).getByLabelText(/approved by/i), "data-team:shashwat");
+    expect(within(dialog).getByTestId("bulk-reviewer")).toHaveTextContent("barj · Manager");
+    expect(within(dialog).queryByRole("textbox", { name: /approved by/i })).not.toBeInTheDocument();
     expect(confirm).toBeEnabled();
     await user.click(confirm);
 
     await waitFor(() => expect(bulkApprove).toHaveBeenCalledTimes(1));
     expect(bulkApprove).toHaveBeenCalledWith({
-      proposal_ids: [A.id, B.id], reviewed_by: "data-team:shashwat", note: null,
+      proposal_ids: [A.id, B.id], reviewed_by: "barj", note: null,
     });
     await waitFor(() => expect(screen.queryByTestId("bulk-decision-dialog")).not.toBeInTheDocument());
     expect(screen.queryByTestId("bulk-toolbar")).not.toBeInTheDocument();
     expect(toast.success).toHaveBeenCalledWith("Approved 2 — wrote 2 mappings.");
-    expect(localStorage.getItem("data-review.reviewer")).toBe("data-team:shashwat");
   });
 
   it("reports a refused batch row by row and claims nothing", async () => {
@@ -244,7 +245,6 @@ describe("bulk approve", () => {
     await user.click(screen.getByTestId("select-all"));
     await user.click(screen.getByRole("button", { name: /approve selected/i }));
     const dialog = await screen.findByTestId("bulk-decision-dialog");
-    await user.type(within(dialog).getByLabelText(/approved by/i), "r");
     await user.click(within(dialog).getByRole("button", { name: "Approve 3" }));
 
     const failures = await within(dialog).findByTestId("bulk-failures");
@@ -260,9 +260,8 @@ describe("bulk approve", () => {
 describe("bulk reject", () => {
   it("rejects every selected id with the optional note", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("data-review.reviewer", "data-team:shashwat");   // remembered from last time
     bulkReject.mockResolvedValue({
-      reviewed_by: "data-team:shashwat",
+      reviewed_by: "barj",
       decided: [{ id: C.id, entity_key: C.entity_key, status: "REJECTED", applied_to: null }],
     });
     renderPage();
@@ -272,12 +271,12 @@ describe("bulk reject", () => {
 
     const dialog = await screen.findByTestId("bulk-decision-dialog");
     expect(within(dialog).getByText("Reject 1 record")).toBeInTheDocument();
-    expect(within(dialog).getByLabelText(/rejected by/i)).toHaveValue("data-team:shashwat");
+    expect(within(dialog).getByTestId("bulk-reviewer")).toHaveTextContent("barj · Manager");
     await user.type(within(dialog).getByLabelText(/note/i), "test run, invoice deleted");
     await user.click(within(dialog).getByRole("button", { name: "Reject 1" }));
 
     await waitFor(() => expect(bulkReject).toHaveBeenCalledWith({
-      proposal_ids: [C.id], reviewed_by: "data-team:shashwat", note: "test run, invoice deleted",
+      proposal_ids: [C.id], reviewed_by: "barj", note: "test run, invoice deleted",
     }));
     expect(bulkApprove).not.toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalledWith("Rejected 1 — master data untouched.");
@@ -285,9 +284,8 @@ describe("bulk reject", () => {
 });
 
 describe("editing a proposed value", () => {
-  it("inline: saves a corrected value as a revision under the reviewer's name", async () => {
+  it("inline: saves a corrected value as a revision under the signed-in account", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("data-review.reviewer", "data-team:shashwat");
     const revised = row("55555555-5555-4555-8555-555555555555", B.entity_key, 12, { source: "operator_entered" });
     revise.mockResolvedValue({ proposal: detail(revised), superseded: detail({ ...B, status: "REJECTED" }) });
     renderPage();
@@ -304,7 +302,7 @@ describe("editing a proposed value", () => {
     await user.click(save);
 
     await waitFor(() => expect(revise).toHaveBeenCalledWith(B.id, {
-      proposed_value: 12, proposed_by: "data-team:shashwat",
+      proposed_value: 12, proposed_by: "barj",
     }));
     expect(toast.success).toHaveBeenCalledWith("01820025004: 15 → 12. New proposal pending approval.");
     // nothing was approved by editing
@@ -313,7 +311,6 @@ describe("editing a proposed value", () => {
 
   it("inline: refuses a non-numeric or out-of-range value", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("data-review.reviewer", "r");
     renderPage();
     const [first] = await rowsOnScreen();
     await user.click(within(first).getByRole("button", { name: `Edit proposed value for ${A.entity_key}` }));
@@ -349,14 +346,14 @@ describe("editing a proposed value", () => {
 
     await user.clear(inputs[1]);
     await user.type(inputs[1], "12");
-    await user.type(within(dialog).getByLabelText(/changed by/i), "data-team:shashwat");
+    expect(within(dialog).getByTestId("edit-reviewer")).toHaveTextContent("barj");
     await user.type(within(dialog).getByLabelText(/note/i), "printed package says 12");
     expect(within(dialog).getByRole("button", { name: "Save 1 change" })).toBeEnabled();
     await user.click(within(dialog).getByRole("button", { name: "Save 1 change" }));
 
     await waitFor(() => expect(revise).toHaveBeenCalledTimes(1));
     expect(revise).toHaveBeenCalledWith(B.id, {
-      proposed_value: 12, proposed_by: "data-team:shashwat", note: "printed package says 12",
+      proposed_value: 12, proposed_by: "barj", note: "printed package says 12",
     });
     await waitFor(() => expect(screen.queryByTestId("bulk-edit-dialog")).not.toBeInTheDocument());
     expect(toast.success).toHaveBeenCalledWith("Revised 1 value — still pending approval.");
@@ -364,7 +361,6 @@ describe("editing a proposed value", () => {
 
   it("edit selected: a failed revision is marked on its row and the rest still save", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("data-review.reviewer", "r");
     revise.mockImplementation(async (proposalId, revision) => {
       if (proposalId === A.id) throw new ApiError(422, { error_code: "ERR_VALIDATION_FAILED", message: "Proposal is APPROVED and cannot be revised." });
       const original = [A, B, C].find((r) => r.id === proposalId)!;
@@ -389,5 +385,34 @@ describe("editing a proposed value", () => {
     expect(within(dialog).getByText(/cannot be revised/)).toBeInTheDocument();
     expect(toast.error).toHaveBeenCalledWith("1 revised, 1 failed. The failed rows are marked below.");
     expect(screen.getByTestId("bulk-edit-dialog")).toBeInTheDocument();   // stays open to show it
+  });
+});
+
+describe("provenance and Product Master governance", () => {
+  it("a row the Product Master governs has no checkbox, says why, and is left out of select all", async () => {
+    const user = userEvent.setup();
+    const blocked = row("66666666-6666-4666-8666-666666666666", "08769200057", 18, {
+      product_master_block: "The Product Master mapping for this item is REVIEW_REQUIRED (CONFLICT) — decide it in Product Master Approvals first; a store value approved here would bypass that decision.",
+    });
+    serve([A, blocked]);
+    renderPage();
+    const rows = await screen.findAllByTestId("proposal-row");
+    expect(rows).toHaveLength(2);
+    expect(within(rows[1]).queryByTestId("row-checkbox")).not.toBeInTheDocument();
+    expect(within(rows[1]).getByTestId("individual-review")).toHaveAttribute("title", blocked.product_master_block!);
+    expect(within(rows[1]).getByTestId("product-master-block")).toHaveTextContent("Product Master decision required");
+    await user.click(screen.getByTestId("select-all"));
+    expect(screen.getByTestId("selected-count")).toHaveTextContent("1 selected");
+  });
+
+  it("names the source invoice by number and date, and finds proposals by invoice number", async () => {
+    const user = userEvent.setup();
+    serve([row(A.id, A.entity_key, 12, { invoice_number: "101497", invoice_date: "2026-09-10" })]);
+    renderPage();
+    const [first] = await screen.findAllByTestId("proposal-row");
+    expect(within(first).getByTestId("related-invoice")).toHaveTextContent(/Invoice #101497 · /);
+    await user.type(screen.getByRole("textbox", { name: "Invoice number or ID" }), "101497");
+    await waitFor(() => expect(listProposals).toHaveBeenLastCalledWith(
+      expect.objectContaining({ invoice_number: "101497", invoice_id: undefined })));
   });
 });

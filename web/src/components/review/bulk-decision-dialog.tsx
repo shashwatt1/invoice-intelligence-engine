@@ -15,16 +15,17 @@ import {
 import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useBulkDecideProposals } from "@/hooks/use-api";
+import { useAuth } from "@/hooks/use-auth";
+import { roleLabel } from "@/lib/commercial";
 import { batchFailures } from "@/lib/proposals";
-import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
 
 export type BulkAction = "approve" | "reject";
 
 /**
  * Approve / Reject for a selection of PENDING proposals.
  *
- * The reviewer name is typed once and recorded on every row, the same
- * contract as a single decision or the CLI's --by. A note is optional for
+ * The reviewer is the signed-in account, recorded by the server on every
+ * row — never a typed name. A note is optional for
  * routine approvals. The batch is all-or-nothing on the backend: if one
  * selected row was decided elsewhere meanwhile, nothing lands and the
  * offending rows are named here rather than the UI claiming success.
@@ -41,7 +42,7 @@ export function BulkDecisionDialog({
   onDone: (decidedIds: string[]) => void;
 }) {
   const decide = useBulkDecideProposals();
-  const [reviewer, setReviewer] = useState(rememberedReviewer);
+  const { user } = useAuth();
   const [note, setNote] = useState("");
   const [failures, setFailures] = useState<Record<string, string>>({});
   const open = action !== null && rows.length > 0;
@@ -53,7 +54,7 @@ export function BulkDecisionDialog({
     }
   }, [open, action]);
 
-  const name = reviewer.trim();
+  const name = user?.username ?? "";
   const count = rows.length;
   const verb = action === "approve" ? "Approve" : "Reject";
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -67,7 +68,6 @@ export function BulkDecisionDialog({
       },
       {
         onSuccess: (result) => {
-          rememberReviewer(name);
           onDone(result.decided.map((outcome) => outcome.id));
           onOpenChange(false);
           toast.success(
@@ -119,18 +119,8 @@ export function BulkDecisionDialog({
 
         <div className="space-y-2">
           <div className="space-y-1">
-            <label htmlFor="bulk-reviewer" className="text-[0.75rem] font-medium">
-              {action === "approve" ? "Approved by" : "Rejected by"} <span className="text-danger">*</span>
-            </label>
-            <Input
-              id="bulk-reviewer"
-              value={reviewer}
-              onChange={(event) => setReviewer(event.target.value)}
-              placeholder="e.g. data-team:shashwat"
-              disabled={decide.isPending}
-              autoComplete="off"
-              autoFocus={!reviewer}
-            />
+            <span className="text-[0.75rem] font-medium">{action === "approve" ? "Approved by" : "Rejected by"}</span>
+            <p className="text-[0.82rem]" data-testid="bulk-reviewer">{name || "—"} · {roleLabel(user?.role)}</p>
           </div>
           <div className="space-y-1">
             <label htmlFor="bulk-note" className="text-[0.75rem] font-medium">

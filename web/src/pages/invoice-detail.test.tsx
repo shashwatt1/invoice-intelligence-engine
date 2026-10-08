@@ -276,3 +276,14 @@ describe("InvoiceDetailPage — product nomenclature", () => {
     expect(notes.map((n) => n.textContent).join(" ")).not.toMatch(/vendor|source identity/i);
   });
 });
+
+describe("InvoiceDetailPage — awaiting master data approval", () => {
+  it("links straight to this invoice's proposals, filtered to its store", async () => {
+    const detail = rcmInvoice();
+    detail.review = { status: "PENDING", pending: 15, approved: 0, rejected: 0, proposals: [] } as InvoiceDetail["review"];
+    mount("ADMIN", detail);
+    const link = await screen.findByTestId("awaiting-master-data-approval");
+    expect(link).toHaveTextContent("Awaiting Master Data Approval (15)");
+    expect(link).toHaveAttribute("href", `/data-review?invoice=${detail.invoice_id}&store=store-rcm`);
+  });
+});

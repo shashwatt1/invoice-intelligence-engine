@@ -48,6 +48,7 @@ import {
   getProposal,
   listInvoices,
   listMappingQueue,
+  listProposalSourceInvoices,
   listProposals,
   listStores,
   moveDocumentToBin,
@@ -211,6 +212,14 @@ export function useProposals(params: ProposalListParams) {
     queryKey: ["proposals", params],
     queryFn: () => listProposals(params),
     placeholderData: (previous) => previous,
+  });
+}
+
+/** Invoices that raised proposals (the Source invoice picker), optionally for one store. */
+export function useProposalSourceInvoices(storeId?: string) {
+  return useQuery({
+    queryKey: ["proposals", "source-invoices", storeId ?? "ALL"],
+    queryFn: () => listProposalSourceInvoices(storeId),
   });
 }
 

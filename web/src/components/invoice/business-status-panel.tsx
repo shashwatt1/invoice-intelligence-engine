@@ -55,7 +55,15 @@ export function BusinessStatusPanel({ detail: d, className }: { detail: InvoiceD
             </div>
             {d.review.pending ? (
               canReview ? (
-                <div className="t-meta mt-1.5"><Link to={`/data-review?invoice=${d.invoice_id}`} className="text-warning hover:underline">{d.review.pending} awaiting approval in Master Data Review</Link></div>
+                <div className="t-meta mt-1.5">
+                  <Link
+                    to={`/data-review?invoice=${d.invoice_id}${d.store ? `&store=${d.store.id}` : ""}`}
+                    className="text-warning font-medium hover:underline"
+                    data-testid="awaiting-master-data-approval"
+                  >
+                    Awaiting Master Data Approval ({d.review.pending})
+                  </Link>
+                </div>
               ) : null
             ) : unmapped.length ? (
               <div className="t-meta mt-1.5">{unmapped.length} product{unmapped.length === 1 ? "" : "s"} still need a units-per-case mapping</div>

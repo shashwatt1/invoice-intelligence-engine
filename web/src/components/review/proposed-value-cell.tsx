@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useReviseProposal } from "@/hooks/use-api";
 import { isEditable, parseUnits } from "@/lib/proposals";
-import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
+import { useAuth } from "@/hooks/use-auth";
 
 /**
  * The Proposed column: a number, and for a pending units-per-case row a
@@ -26,16 +26,15 @@ export function ProposedValueCell({
   const revise = useReviseProposal();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const [reviewer, setReviewer] = useState(rememberedReviewer);
+  const { user } = useAuth();
 
   const stop = (event: React.SyntheticEvent) => event.stopPropagation();
-  const name = reviewer.trim();
+  const name = user?.username ?? "";
   const value = parseUnits(draft);
   const unchanged = value === Number(row.proposed_value);
 
   const begin = () => {
     setDraft(String(row.proposed_value));
-    setReviewer(rememberedReviewer());
     setEditing(true);
   };
 
@@ -45,7 +44,6 @@ export function ProposedValueCell({
       { proposalId: row.id, revision: { proposed_value: value, proposed_by: name } },
       {
         onSuccess: (result) => {
-          rememberReviewer(name);
           setEditing(false);
           onRevised(row.id, result.proposal.id);
           toast.success(
@@ -90,16 +88,6 @@ export function ProposedValueCell({
       }}
       data-testid="inline-edit"
     >
-      {!rememberedReviewer() ? (
-        <Input
-          aria-label="Changed by"
-          value={reviewer}
-          onChange={(event) => setReviewer(event.target.value)}
-          placeholder="your name"
-          className="h-7 w-32 text-[0.75rem]"
-          disabled={revise.isPending}
-        />
-      ) : null}
       <Input
         aria-label={`New units per case for ${row.entity_key}`}
         value={draft}

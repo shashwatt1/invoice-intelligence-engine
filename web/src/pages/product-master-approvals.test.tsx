@@ -289,9 +289,32 @@ describe("selection is independent of search, filters and paging", () => {
     await approveButton(2);
     await user.click(screen.getByRole("combobox", { name: "Store" }));
     await user.click(await screen.findByRole("option", { name: /PB Wolf/ }));
-    expect(await screen.findByText("Nothing awaiting approval")).toBeInTheDocument();
+    expect(await screen.findByText("No Product Master mappings held by this store")).toBeInTheDocument();
     expect(await approveButton(2)).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Clear selection" }));
     expect(await approveButton(0)).toBeDisabled();
+  });
+});
+
+describe("mapping scope versus where a proposal came from", () => {
+  it("labels globally held rows Product Master · Global and points to where invoice proposals are reviewed", async () => {
+    renderPage();
+    const first = await rowFor("018200000001");
+    expect(within(first).getByTestId("mapping-scope")).toHaveTextContent("Product Master · Global");
+    expect(screen.getByTestId("invoice-proposals-pointer")).toHaveTextContent("Values submitted from an invoice are reviewed in Master Data Review");
+  });
+
+  it("filtering by a physical store explains where that store's invoice proposals are", async () => {
+    listStores.mockResolvedValue([{ id: "pb-wolf", label: "PB Wolf", display_name: "PB Wolf", identity_status: "confirmed",
+                                    address: null, source_codes: [], kind: "physical", source_identity: null }]);
+    listCommercialCandidates.mockImplementation(async (p: { store_id?: string }) =>
+      p.store_id ? { items: [], total: 0, page: 1, page_size: 50 } : { items: [READY_A], total: 1, page: 1, page_size: 50 });
+    const user = userEvent.setup();
+    renderPage();
+    await rowFor("018200000001");
+    await user.click(screen.getByRole("combobox", { name: "Store" }));
+    await user.click(await screen.findByRole("option", { name: /PB Wolf/ }));
+    expect(await screen.findByText("No Product Master mappings held by this store")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open this store's invoice proposals" })).toHaveAttribute("href", "/data-review?store=pb-wolf");
   });
 });

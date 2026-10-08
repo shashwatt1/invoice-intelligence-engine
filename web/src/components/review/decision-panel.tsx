@@ -16,24 +16,27 @@ import {
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useDecideProposal } from "@/hooks/use-api";
-import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
+import { useAuth } from "@/hooks/use-auth";
+import { roleLabel } from "@/lib/commercial";
 
 /**
  * Approve / Reject for one PENDING proposal.
  *
- * There is no login. The reviewer types their name and it is recorded on
- * the proposal exactly as the CLI's --by would record it — a name on the
- * record, not a proof of identity. Each decision is confirmed in a dialog
+ * The reviewer is the signed-in account — the server records it from the
+ * session, never from a typed name. A store value the Product Master governs
+ * or disputes cannot be approved here (product_master_block); it can still be
+ * rejected. Each decision is confirmed in a dialog
  * that restates what approving will write, because approval is the one
  * action in this UI that changes master data.
  */
 export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
   const decide = useDecideProposal();
-  const [reviewer, setReviewer] = useState(rememberedReviewer);
+  const { user } = useAuth();
   const [note, setNote] = useState("");
   const [confirming, setConfirming] = useState<"approve" | "reject" | null>(null);
 
-  const name = reviewer.trim();
+  const name = user?.username ?? "";
+  const blocked = proposal.product_master_block ?? null;
   const proposed = String(proposal.proposed_value);
   const current = proposal.current_master_value;
 
@@ -44,7 +47,6 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
       { proposalId: proposal.id, action, decision: { reviewed_by: name, note: note.trim() || null } },
       {
         onSuccess: (result) => {
-          rememberReviewer(name);
           setConfirming(null);
           toast.success(
             action === "approve"
@@ -63,20 +65,9 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
     <div className="space-y-3">
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
         <div className="space-y-1">
-          <label htmlFor="reviewer" className="text-[0.75rem] font-medium">
-            Reviewed by <span className="text-danger">*</span>
-          </label>
-          <Input
-            id="reviewer"
-            value={reviewer}
-            onChange={(event) => setReviewer(event.target.value)}
-            placeholder="e.g. data-team:shashwat"
-            disabled={decide.isPending}
-            autoComplete="off"
-          />
-          <p className="text-[0.68rem] text-muted-foreground">
-            Recorded as typed. No login yet — this is the same contract as the CLI's <code>--by</code>.
-          </p>
+          <span className="text-[0.75rem] font-medium">Reviewed by</span>
+          <p className="text-[0.82rem]" data-testid="decision-reviewer">{name || "—"} · {roleLabel(user?.role)}</p>
+          <p className="text-[0.68rem] text-muted-foreground">Recorded from your signed-in account.</p>
         </div>
         <div className="space-y-1">
           <label htmlFor="review-note" className="text-[0.75rem] font-medium">
@@ -96,7 +87,7 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
-          disabled={!name || decide.isPending}
+          disabled={!name || decide.isPending || blocked !== null}
           onClick={() => setConfirming("approve")}
         >
           <Check className="size-3.5" strokeWidth={3} /> Approve
@@ -109,8 +100,8 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
         >
           <X className="size-3.5" /> Reject
         </Button>
-        {!name ? (
-          <span className="text-[0.72rem] text-muted-foreground">Enter a reviewer name to decide.</span>
+        {blocked ? (
+          <span className="text-danger text-[0.72rem]" role="alert" data-testid="product-master-block">{blocked}</span>
         ) : null}
       </div>
 

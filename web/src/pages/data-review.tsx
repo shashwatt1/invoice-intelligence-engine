@@ -30,7 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useProposalCounts, useProposals, useStores } from "@/hooks/use-api";
+import { useProposalCounts, useProposalSourceInvoices, useProposals, useStores } from "@/hooks/use-api";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { isEditable } from "@/lib/proposals";
 import { PROPOSAL_SOURCE_META, PROPOSAL_STATUS_META } from "@/lib/status";
@@ -77,6 +77,8 @@ function useDebounced<T>(value: T, delayMs = 300): T {
  * history, a note — for the rows that need it. Both end in the same
  * backend approve(); the table is only quicker.
  */
+const isInvoiceId = (value: string) => /^[0-9a-f-]{36}$/i.test(value);
+
 export function DataReviewPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useSearchParams();
@@ -111,7 +113,9 @@ export function DataReviewPage() {
       source: source === "ALL" ? undefined : source,
       store_id: store === "ALL" ? undefined : store,
       item_code: upc || undefined,
-      invoice_id: /^[0-9a-f-]{36}$/i.test(invoice) ? invoice : undefined,
+      // An invoice is found by its ID or by its printed number.
+      invoice_id: isInvoiceId(invoice) ? invoice : undefined,
+      invoice_number: invoice && !isInvoiceId(invoice) ? invoice : undefined,
       page,
       page_size: PAGE_SIZE,
     }),
@@ -121,6 +125,9 @@ export function DataReviewPage() {
   const { data, isPending, isError, error, refetch, isPlaceholderData } = useProposals(params);
   const counts = useProposalCounts();
   const stores = useStores();
+  // Invoices that raised proposals — newest first, the chosen store's when one is chosen.
+  const sourceInvoices = useProposalSourceInvoices(store === "ALL" ? undefined : store);
+  const chosenInvoice = sourceInvoices.data?.find((x) => x.invoice_id === invoice);
   const hasFilters = source !== "ALL" || store !== "ALL" || Boolean(upc) || Boolean(invoice);
 
   // Selection is always a subset of the rows on screen: when filters or the
@@ -130,7 +137,11 @@ export function DataReviewPage() {
   const [bulkAction, setBulkAction] = useState<BulkAction | null>(null);
   const [editing, setEditing] = useState(false);
   const rows = useMemo(() => data?.items ?? [], [data]);
-  const selectable = useMemo(() => rows.filter((row) => row.status === "PENDING"), [rows]);
+  // A row the Product Master governs or disputes needs an individual decision: never selectable.
+  const selectable = useMemo(
+    () => rows.filter((row) => row.status === "PENDING" && !row.product_master_block),
+    [rows],
+  );
   useEffect(() => {
     setSelected((prev) => {
       const visible = new Set(selectable.map((row) => row.id));
@@ -168,7 +179,12 @@ export function DataReviewPage() {
     ...(store !== "ALL" ? [{ key: "store", label: chosenStore ? storeOptionLabel(chosenStore) : "store", onRemove: () => setStore("ALL") }] : []),
     ...(source !== "ALL" ? [{ key: "source", label: PROPOSAL_SOURCE_META[source].label, onRemove: () => setSource("ALL") }] : []),
     ...(upc ? [{ key: "upc", label: `UPC ${upc}`, onRemove: () => setUpcInput("") }] : []),
-    ...(invoice ? [{ key: "invoice", label: `invoice ${invoice.slice(0, 8)}…`, onRemove: () => setInvoiceInput("") }] : []),
+    ...(invoice ? [{
+      key: "invoice",
+      label: chosenInvoice?.invoice_number ? `Invoice #${chosenInvoice.invoice_number}`
+        : isInvoiceId(invoice) ? `invoice ${invoice.slice(0, 8)}…` : `Invoice #${invoice}`,
+      onRemove: () => setInvoiceInput(""),
+    }] : []),
   ];
 
   return (
@@ -211,7 +227,24 @@ export function DataReviewPage() {
           </SelectContent>
         </Select>
         <SearchInput value={upcInput} onChange={setUpcInput} placeholder="UPC / item code" className="w-44" inputMode="numeric" mono />
-        <SearchInput value={invoiceInput} onChange={setInvoiceInput} placeholder="Invoice ID" className="w-56" mono ariaLabel="Invoice ID" />
+        <Select
+          value={sourceInvoices.data?.some((x) => x.invoice_id === invoice) ? invoice : "ALL"}
+          onValueChange={(value) => setInvoiceInput(value === "ALL" ? "" : value)}
+        >
+          <SelectTrigger className={cn("h-8 w-60 text-[0.8rem]", chosenInvoice && "border-primary/40 bg-accent/40")} aria-label="Source invoice">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All source invoices</SelectItem>
+            {(sourceInvoices.data ?? []).map((x, index) => (
+              <SelectItem key={x.invoice_id} value={x.invoice_id}>
+                {index === 0 && store !== "ALL" ? "Latest · " : ""}Invoice #{x.invoice_number ?? x.invoice_id.slice(0, 8)}
+                {x.store ? ` · ${x.store.label}` : ""} · {x.pending} pending
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <SearchInput value={invoiceInput} onChange={setInvoiceInput} placeholder="Invoice # or ID" className="w-44" mono ariaLabel="Invoice number or ID" />
         <ActiveFilters chips={chips} onClear={() => { setStore("ALL"); setSource("ALL"); setUpcInput(""); setInvoiceInput(""); }} />
       </FilterBar>
 
@@ -321,17 +354,27 @@ export function DataReviewPage() {
                         data-state={selected.has(row.id) ? "selected" : undefined}
                       >
                         <TableCell className="pl-3" onClick={(event) => event.stopPropagation()}>
-                          <Checkbox
-                            aria-label={`Select ${row.entity_key}`}
-                            checked={selected.has(row.id)}
-                            disabled={row.status !== "PENDING"}
-                            onCheckedChange={(on) => toggleOne(row.id, on === true)}
-                            data-testid="row-checkbox"
-                          />
+                          {row.product_master_block && row.status === "PENDING" ? (
+                            <span className="text-danger text-[0.7rem] font-semibold" title={row.product_master_block}
+                                  data-testid="individual-review">!</span>
+                          ) : (
+                            <Checkbox
+                              aria-label={`Select ${row.entity_key}`}
+                              checked={selected.has(row.id)}
+                              disabled={row.status !== "PENDING"}
+                              onCheckedChange={(on) => toggleOne(row.id, on === true)}
+                              data-testid="row-checkbox"
+                            />
+                          )}
                         </TableCell>
                         <TableCell><StoreChip store={row.store} link={false} compact /></TableCell>
                         <TableCell className="max-w-56" title={row.description ?? undefined}>
                           <div className="truncate text-[0.84rem] font-semibold tracking-[-0.01em]">{row.description ?? <span className="font-normal text-muted-foreground">unnamed product</span>}</div>
+                          {row.product_master_block && row.status === "PENDING" ? (
+                            <div className="text-danger truncate text-[0.7rem]" title={row.product_master_block} data-testid="product-master-block">
+                              Individual review — Product Master decision required
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell className="t-mono font-medium">{row.entity_key}</TableCell>
                         <TableCell className="text-[0.78rem] whitespace-nowrap text-muted-foreground">{row.field.replace(/_/g, " ")}</TableCell>
@@ -366,7 +409,8 @@ export function DataReviewPage() {
                                   onClick={(event) => event.stopPropagation()}
                                   data-testid="related-invoice"
                                 >
-                                  invoice {row.invoice_id.slice(0, 8)}…
+                                  {row.invoice_number ? `Invoice #${row.invoice_number}` : `invoice ${row.invoice_id.slice(0, 8)}…`}
+                                  {row.invoice_date ? ` · ${formatDate(row.invoice_date)}` : ""}
                                 </Link>
                               )}
                               {row.invoice_deleted ? (

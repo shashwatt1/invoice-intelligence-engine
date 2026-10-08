@@ -490,6 +490,16 @@ class ProposalRow(BaseModel):
     source_sheet: str | None = None
     source_row: int | None = None
     invoice_id: uuid.UUID | None = None
+    invoice_number: str | None = Field(default=None, description="The source invoice's printed number, when it still exists.")
+    invoice_date: date | None = Field(default=None, description="The source invoice's date.")
+    product_master_block: str | None = Field(
+        default=None,
+        description=(
+            "Why this store value cannot be approved: the Product Master governs or disputes the same item "
+            "(a conflict, an unapproved mapping, or an approved mapping at a different value). Such a row needs "
+            "an individual decision and is never part of a bulk approval."
+        ),
+    )
     description: str | None = Field(
         default=None,
         description="The product as the evidence names it (invoice description, else reference description).",
@@ -506,6 +516,35 @@ class ProposalRow(BaseModel):
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
     review_note: str | None = None
+    created_at: datetime
+
+
+class ProposalSourceInvoice(BaseModel):
+    """An invoice that raised proposals, as the review queue's Source invoice picker lists it."""
+
+    invoice_id: uuid.UUID
+    invoice_number: str | None = None
+    invoice_date: date | None = None
+    store: StoreRef | None = Field(default=None, description="The invoice's own store — where the proposals came from.")
+    proposals: int
+    pending: int
+
+
+class EdiExportRecord(BaseModel):
+    """One delivered PDI file, as the export ledger lists it (the file itself is downloaded separately)."""
+
+    id: uuid.UUID
+    invoice_id: uuid.UUID | None = None
+    invoice_number: str | None = None
+    export_number: int
+    format: str
+    format_version: str
+    exported_by: str
+    exported_by_role: str
+    sha256: str
+    byte_size: int
+    resolution_snapshot: dict[str, Any]
+    build: dict[str, Any]
     created_at: datetime
 
 
@@ -534,12 +573,9 @@ class ProposalDetail(ProposalRow):
 class ProposalDecision(BaseModel):
     """Body of POST /proposals/{id}/approve and /reject."""
 
-    reviewed_by: str = Field(
-        min_length=1, max_length=128,
-        description=(
-            "Who is deciding. There is no login yet; the name is recorded as given, "
-            "which is the same contract the review CLI's --by uses."
-        ),
+    reviewed_by: str | None = Field(
+        default=None, max_length=128,
+        description="Ignored. The reviewer is always the signed-in account; accepted so older clients keep working.",
     )
     note: str | None = Field(default=None, max_length=2000)
 
@@ -558,7 +594,10 @@ class BulkProposalDecision(BaseModel):
         min_length=1, max_length=200,
         description="The selected proposals. Decided all-or-nothing: one stale row refuses the batch.",
     )
-    reviewed_by: str = Field(min_length=1, max_length=128, description="Entered once, recorded on every row.")
+    reviewed_by: str | None = Field(
+        default=None, max_length=128,
+        description="Ignored. The reviewer is always the signed-in account, recorded on every row.",
+    )
     note: str | None = Field(default=None, max_length=2000)
 
 
@@ -588,7 +627,10 @@ class ProposalRevision(BaseModel):
     """
 
     proposed_value: int = Field(ge=1, le=9999)
-    proposed_by: str = Field(min_length=1, max_length=128)
+    proposed_by: str | None = Field(
+        default=None, max_length=128,
+        description="Ignored. The reviser is always the signed-in account; accepted so older clients keep working.",
+    )
     note: str | None = Field(default=None, max_length=2000)
 
 

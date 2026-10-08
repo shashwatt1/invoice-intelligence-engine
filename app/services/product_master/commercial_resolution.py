@@ -111,6 +111,10 @@ class CodeResolution:
     scope_label: str | None = None
     legacy_units: int | None = None
     notes: tuple[str, ...] = ()
+    # Product Master mappings for this code that exist but are not APPROVED
+    # (state, basis) — skipped by the resolution, and the reason a store-level
+    # value must not be approved around them.
+    unapproved: tuple[tuple[str, str], ...] = ()
 
     @property
     def product_master_authoritative(self) -> bool:
@@ -177,13 +181,16 @@ def resolve_code(
             legacy_units=legacy_units, notes=tuple(notes),
         )
 
+    unapproved: list[tuple[str, str]] = []
     for scope, mappings in ((physical_scope, physical), (global_scope, global_)):
         for m in mappings:
             notes.append(f"Product Master mapping in {scope.label if scope else 'scope'} is "
                          f"{m.approval_state} ({m.commercial_unit_basis}) — not used until approved")
+            unapproved.append((m.approval_state, m.commercial_unit_basis))
     if legacy_units is not None:
-        return CodeResolution(code, PATH_LEGACY_FALLBACK, legacy_units, legacy_units=legacy_units, notes=tuple(notes))
-    return CodeResolution(code, PATH_REQUIRES_MAPPING, None, notes=tuple(notes))
+        return CodeResolution(code, PATH_LEGACY_FALLBACK, legacy_units, legacy_units=legacy_units,
+                              notes=tuple(notes), unapproved=tuple(unapproved))
+    return CodeResolution(code, PATH_REQUIRES_MAPPING, None, notes=tuple(notes), unapproved=tuple(unapproved))
 
 
 @dataclass
@@ -201,6 +208,40 @@ class CommercialResolution:
 
     def paths(self) -> dict[str, int]:
         return dict(Counter(r.path for r in self.lines.values()))
+
+
+def store_value_block(line: CodeResolution | None, proposed_units: int | None) -> str | None:
+    """
+    Why a store-level units-per-case value (a Data Review proposal, which
+    approves into product_case_mappings) must not be approved while the
+    Product Master governs or disputes the same item. None when it may be.
+
+      * a Product Master mapping exists but is not APPROVED (a conflict, a
+        pending proposal): a store value approved now would become the
+        LEGACY_FALLBACK and quietly bypass that open decision;
+      * Product Master mappings disagree (CONFLICT): the same, and worse;
+      * an APPROVED Product Master mapping already governs at a different
+        value: the store value would never be used, and would contradict it.
+
+    Only meaningful while Product Master resolution is on — when it is off the
+    resolution never reads the Product Master, so `line` carries none of this.
+    """
+    if line is None:
+        return None
+    if line.path == PATH_CONFLICT:
+        return ("Product Master mappings for this item disagree — decide it in Product Master "
+                "Approvals before approving a store value.")
+    if line.product_master_authoritative:
+        if proposed_units is not None and proposed_units != line.units_per_case:
+            return (f"{line.scope_label or 'An approved Product Master mapping'} already governs this item at "
+                    f"{line.units_per_case}/case; this value ({proposed_units}) would never be used for EDI. "
+                    "Reject it, or reopen the Product Master mapping.")
+        return None
+    if line.unapproved:
+        state, basis = line.unapproved[0]
+        return (f"The Product Master mapping for this item is {state} ({basis}) — decide it in Product "
+                "Master Approvals first; a store value approved here would bypass that decision.")
+    return None
 
 
 async def global_mapping_holder(session: AsyncSession) -> Store | None:

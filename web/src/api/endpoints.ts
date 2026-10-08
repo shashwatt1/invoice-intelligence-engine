@@ -51,6 +51,7 @@ import type {
   ProposalRevision,
   ProposalRevisionResult,
   ProposalRow,
+  ProposalSourceInvoice,
   StoreAssignmentResult,
   StoreCreate,
   StoreDirectoryEntry,
@@ -220,6 +221,14 @@ export async function getInvoiceExport(invoiceId: string): Promise<Record<string
 export async function listProposals(params: ProposalListParams): Promise<Paginated<ProposalRow>> {
   const { data } = await apiClient.get<Paginated<ProposalRow>>("/proposals", { params });
   return data;
+}
+
+/** Invoices that raised proposals, newest first — optionally one store's. */
+export async function listProposalSourceInvoices(storeId?: string): Promise<ProposalSourceInvoice[]> {
+  const { data } = await apiClient.get<ApiEnvelope<ProposalSourceInvoice[]>>("/proposals/source-invoices", {
+    params: storeId ? { store_id: storeId } : {},
+  });
+  return data.data ?? [];
 }
 
 export async function getProposal(proposalId: string): Promise<ProposalDetail> {

@@ -23,7 +23,7 @@ from app.models.product_data_proposal import (
 )
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.repositories.product_data_proposal_repository import ProductDataProposalRepository
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import ADMIN_USERNAME, requires_db, store_id
 from tests.integration.test_api_db import api_client  # noqa: F401 — fixture reuse
 from tests.integration.test_proposal_governance import (  # noqa: F401 — fixture reuse
     NORMALIZED,
@@ -38,6 +38,9 @@ pytestmark = requires_db
 
 CODES = [NORMALIZED, "01820023986", "01820000801"]
 REVIEWER = "data-team:shashwat"
+# Requests still send a typed name; it is ignored. The reviewer recorded is
+# always the signed-in account (api_client signs in as the seeded ADMIN).
+SIGNED_IN = ADMIN_USERNAME
 
 
 async def _three_pending(db_session, values=(4, 24, 6)):
@@ -61,7 +64,7 @@ class TestBulkApprove:
         })
         assert r.status_code == 200, r.text
         d = r.json()["data"]
-        assert d["reviewed_by"] == REVIEWER
+        assert d["reviewed_by"] == SIGNED_IN
         assert [o["id"] for o in d["decided"]] == [str(p.id) for p in pending]
         assert {o["status"] for o in d["decided"]} == {STATUS_APPROVED}
         assert [o["applied_to"] for o in d["decided"]] == [
@@ -71,7 +74,7 @@ class TestBulkApprove:
             await db_session.refresh(p)
             # the proposal's own audit row: reviewer, time, note, id preserved
             assert p.status == STATUS_APPROVED
-            assert p.reviewed_by == REVIEWER
+            assert p.reviewed_by == SIGNED_IN
             assert p.reviewed_at is not None
             assert p.review_note == "printed count and ratio agree"
             assert p.evidence["best"]["kind"] == "reference_ratio"       # evidence untouched
@@ -117,7 +120,7 @@ class TestBulkApprove:
         assert await _mapping(db_session, CODES[0]) is None
         assert await _mapping(db_session, CODES[2]) is None
         await db_session.refresh(stale)
-        assert stale.reviewed_by == "cli:earlier"                   # the first decision stands
+        assert stale.reviewed_by == SIGNED_IN                       # the first decision stands
 
     async def test_one_already_rejected_row_refuses_the_whole_batch(self, api_client, db_session):  # noqa: F811
         pending = await _three_pending(db_session)
@@ -173,7 +176,7 @@ class TestBulkReject:
         for p in pending:
             await db_session.refresh(p)
             assert p.status == STATUS_REJECTED
-            assert p.reviewed_by == REVIEWER
+            assert p.reviewed_by == SIGNED_IN
             assert p.reviewed_at is not None
             assert p.review_note == "test run, invoice deleted"
         assert await _no_mappings(db_session)
@@ -209,7 +212,7 @@ class TestRevise:
         assert new["id"] != old["id"]
         assert new["status"] == STATUS_PENDING
         assert new["proposed_value"] == 15
-        assert new["proposed_by"] == REVIEWER
+        assert new["proposed_by"] == SIGNED_IN
         assert new["source"] == SOURCE_OPERATOR_ENTERED
         assert new["entity_key"] == NORMALIZED and new["store"]["id"] == str(store_id(STORE))
         assert (new["source_file"], new["source_sheet"], new["source_row"]) == ("Item Sales.xlsx", "data", 17)
@@ -224,7 +227,7 @@ class TestRevise:
         # the original: frozen, names its successor, master data untouched
         assert old["id"] == str(original.id)
         assert old["status"] == STATUS_REJECTED
-        assert old["reviewed_by"] == REVIEWER
+        assert old["reviewed_by"] == SIGNED_IN
         assert old["reviewed_at"] is not None
         assert new["id"] in old["review_note"] and "12 -> 15" in old["review_note"]
         assert old["proposed_value"] == 12                                   # history not rewritten
@@ -251,8 +254,8 @@ class TestRevise:
                                         params={"store_id": str(store_id(STORE))})).json()["data"]
         statuses = [(p["proposed_value"], p["status"], p["proposed_by"], p["reviewed_by"])
                     for p in history["proposals"]]
-        assert statuses == [(12, STATUS_REJECTED, "test", "reviewer:edit"),
-                            (15, STATUS_APPROVED, "reviewer:edit", REVIEWER)]
+        assert statuses == [(12, STATUS_REJECTED, "test", SIGNED_IN),
+                            (15, STATUS_APPROVED, SIGNED_IN, SIGNED_IN)]
         assert history["proposals"][1]["evidence"]["revised_from"] == str(original.id)
         assert history["current_mapping"]["approved_proposal_id"] == revised["id"]
 

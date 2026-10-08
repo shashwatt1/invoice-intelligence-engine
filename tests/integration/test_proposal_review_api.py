@@ -22,7 +22,7 @@ from app.models.product_data_proposal import (
 )
 from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.repositories.product_data_proposal_repository import ProductDataProposalRepository
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import ADMIN_USERNAME, requires_db, store_id
 from tests.integration.test_api_db import api_client  # noqa: F401 — fixture reuse
 from tests.integration.test_proposal_governance import (  # noqa: F401 — fixture reuse
     NORMALIZED,
@@ -135,7 +135,7 @@ class TestDecisions:
         d = r.json()["data"]
         assert d["applied_to"] == f"product_case_mappings:{store_id(STORE)}:{NORMALIZED}"
         assert d["proposal"]["status"] == STATUS_APPROVED
-        assert d["proposal"]["reviewed_by"] == "data-team:shashwat"
+        assert d["proposal"]["reviewed_by"] == ADMIN_USERNAME          # the signed-in account, not the typed name
         assert d["proposal"]["reviewed_at"] is not None
         assert d["proposal"]["review_note"] == "ratio + doc agree"
         # the linkage is visible in the response…
@@ -165,15 +165,18 @@ class TestDecisions:
         assert again.json()["error"]["detail"]["status"] == STATUS_REJECTED
         assert await ProductCaseMappingRepository(db_session).get(store_id(STORE), NORMALIZED) is None
         await db_session.refresh(p)
-        assert p.reviewed_by == "r1"                      # the first decision stands
+        assert p.reviewed_by == ADMIN_USERNAME            # the first decision stands
 
-    async def test_reviewer_name_is_required(self, api_client, db_session):  # noqa: F811
+    async def test_the_reviewer_is_always_the_signed_in_account(self, api_client, db_session):  # noqa: F811
         p = await _pending(db_session, 4)
-        assert (await api_client.post(f"/api/v1/proposals/{p.id}/approve", json={})).status_code == 422
-        assert (await api_client.post(f"/api/v1/proposals/{p.id}/approve",
-                                      json={"reviewed_by": ""})).status_code == 422
+        r = await api_client.post(f"/api/v1/proposals/{p.id}/approve", json={"reviewed_by": "someone-else"})
+        assert r.status_code == 200, r.text
         await db_session.refresh(p)
-        assert p.status == STATUS_PENDING
+        assert (p.status, p.reviewed_by) == (STATUS_APPROVED, ADMIN_USERNAME)
+        other = await _pending(db_session, 6)
+        assert (await api_client.post(f"/api/v1/proposals/{other.id}/reject", json={})).status_code == 200
+        await db_session.refresh(other)
+        assert other.reviewed_by == ADMIN_USERNAME
 
     async def test_deciding_an_unknown_proposal_is_404(self, api_client):  # noqa: F811
         r = await api_client.post(f"/api/v1/proposals/{uuid.uuid4()}/approve", json={"reviewed_by": "r"})
