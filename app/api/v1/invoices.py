@@ -75,6 +75,7 @@ from app.schemas.processing import (
 )
 from app.services.case_mapping_service import (
     build_case_mapping_status,
+    invoice_commercial_resolution,
     invoice_units_by_item_code,
 )
 from app.services.document_lifecycle import ensure_document_visible
@@ -84,6 +85,7 @@ from app.services.export_service import (
     unmapped_item_codes,
 )
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
+from app.services.product_master.commercial_resolution import line_product_names, resolution_fields
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
 from app.services.storage_service import get_storage_service
@@ -386,6 +388,7 @@ async def get_invoice(
     document = invoice.document
     store = invoice.store_id
     pdi_eligibility_units: dict = {}
+    resolution = None
     if store is None:
         # STORE_PENDING: the invoice is readable and correctable, but nothing
         # store-scoped is consulted or shown — no reference data, no mapping
@@ -393,7 +396,8 @@ async def get_invoice(
         case_mappings: list[CaseMappingRow] = []
         proposals = []
     else:
-        units = await invoice_units_by_item_code(db, invoice)
+        resolution = await invoice_commercial_resolution(db, invoice)
+        units = resolution.units
         pdi_eligibility_units = units
         reference = await match_invoice_against_reference(db, invoice)
         # Queued-but-unreviewed values, so the operator sees what is already
@@ -403,12 +407,13 @@ async def get_invoice(
         ]
         pending = await pending_by_item_code(db, store, codes)
         case_mappings = [
-            CaseMappingRow(**vars(status))
+            CaseMappingRow(**vars(status), **resolution_fields(resolution, status.item_code))
             for status in build_case_mapping_status(invoice, units, reference, pending)
         ]
         proposals = await ProductDataProposalRepository(db).list(invoice_id=invoice.id, store_id=store)
     pdi_eligibility = persisted_pdi_export_eligibility(invoice, pdi_eligibility_units)
     photos = await DocumentRepository(db).pages(document)
+    names = await line_product_names(db, invoice, resolution)
 
     data = InvoiceDetailData(
         invoice_id=invoice.id,
@@ -467,6 +472,7 @@ async def get_invoice(
                 line_type=item.line_type,
                 sort_order=item.sort_order,
                 product_code=item.product_sku,
+                **names.get(item.sort_order, {}),
                 unit_discount=float(item.discount) if item.discount is not None else None,
                 entry_source=item.entry_source or "extracted",
                 correction_history=item.correction_history or [],
@@ -650,7 +656,8 @@ async def confirm_case_mappings(
                     "a mapping belongs to a store.",
             detail={"invoice_id": str(invoice_id), "store_pending": True},
         )
-    units = await invoice_units_by_item_code(db, invoice)
+    resolution = await invoice_commercial_resolution(db, invoice)
+    units = resolution.units
     reference = await match_invoice_against_reference(db, invoice)
     # The review rows tell the system how each value relates to what the
     # invoice offered, so the proposal's source is decided here, not by
@@ -698,7 +705,7 @@ async def confirm_case_mappings(
         data=CaseMappingResult(
             saved=submitted,
             case_mappings=[
-                CaseMappingRow(**vars(status))
+                CaseMappingRow(**vars(status), **resolution_fields(resolution, status.item_code))
                 for status in build_case_mapping_status(invoice, units, reference, pending)
             ],
             pdi_export_allowed=eligibility.allowed,

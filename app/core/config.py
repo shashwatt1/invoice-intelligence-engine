@@ -121,6 +121,15 @@ class Settings(BaseSettings):
     # invoices. Reference costs are store-specific, so this scopes every
     # lookup; a second store means a second value, not a schema change.
     store_number: str = "47708760"
+    # Product Master commercial resolution (app/services/product_master/
+    # commercial_resolution.py). Off by default: lines resolve from legacy
+    # product_case_mappings exactly as before. When on, an APPROVED
+    # physical-store override comes first, then the APPROVED global mapping.
+    # `commercial_source_identity` names the Item Sales location code the
+    # global mappings are held under — provenance of their distributor
+    # evidence, not a vendor, not a physical store, not itself the scope.
+    product_master_commercial_resolution: bool = False
+    commercial_source_identity: str = ""
     ocr_provider: Literal["google_vision", "paddleocr", "easyocr"] = "google_vision"
     google_vision_api_key: str = ""
 

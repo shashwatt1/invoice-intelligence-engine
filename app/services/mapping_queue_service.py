@@ -7,7 +7,9 @@ so the same master-data gap seen on several invoices is one work item,
 not several.
 
 Purely a read over existing state — invoice_items, joined against
-product_case_mappings for what already has an authoritative value.
+the commercial resolution (product_case_mappings, and approved Product
+Master mappings when that resolution is on) for what already has an
+authoritative value.
 There is no separate queue table (see PART 17 of the phase spec): a
 gap disappears from here the instant proposal_service.approve() writes
 the mapping, because this is recomputed fresh on every call, never
@@ -30,8 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice
-from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.services.export_service import normalize_item_code, pdi_items
+from app.services.product_master.commercial_resolution import resolve_store_codes
 from app.services.proposal_service import pending_by_item_code
 
 
@@ -89,9 +91,10 @@ async def list_unresolved_mapping_groups(
             if code is not None:
                 codes_by_store.setdefault(invoice.store_id, set()).add(code)
 
-    mappings_repo = ProductCaseMappingRepository(session)
+    # The same resolution the export gate uses, so a line the export accepts
+    # is never listed here and a line it blocks always is.
     mapped_by_store: dict[uuid.UUID, dict[str, int]] = {
-        store: await mappings_repo.units_by_item_code(store, codes)
+        store: (await resolve_store_codes(session, store, sorted(codes))).units
         for store, codes in codes_by_store.items()
     }
 

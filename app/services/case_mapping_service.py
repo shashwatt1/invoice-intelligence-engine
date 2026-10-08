@@ -18,12 +18,15 @@ from typing import Any, Protocol
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice
-from app.repositories.product_case_mapping_repository import ProductCaseMappingRepository
 from app.services.export_service import (
     normalize_item_code,
     pack_candidates,
     pdi_items,
     suggest_units_per_case,
+)
+from app.services.product_master.commercial_resolution import (
+    CommercialResolution,
+    resolve_store_codes,
 )
 from app.services.store_reference_service import ReferenceMatch
 
@@ -87,19 +90,25 @@ async def invoice_units_by_item_code(
 ) -> dict[str, int]:
     """
     Confirmed units-per-case for every product on this invoice, in the
-    invoice's own store. Another store's confirmation of the same UPC is
-    not consulted: the store is part of the mapping's identity.
+    invoice's own store. Another physical store's confirmation of the same
+    UPC is not consulted: the store is part of the mapping's identity.
+
+    Resolved by commercial_resolution: legacy product_case_mappings only,
+    unless Product Master resolution is switched on (see that module).
     """
+    return (await invoice_commercial_resolution(session, invoice)).units
+
+
+async def invoice_commercial_resolution(session: AsyncSession, invoice: Invoice) -> CommercialResolution:
+    """Every item code on this invoice, resolved — with the path each took."""
     if invoice.store_id is None:
-        return {}                                   # STORE_PENDING: no store, no mappings
+        return CommercialResolution()               # STORE_PENDING: no store, no mappings
     codes = [
         code
         for code in (normalize_item_code(item.product_sku) for item in invoice.items)
         if code
     ]
-    return await ProductCaseMappingRepository(session).units_by_item_code(
-        invoice.store_id, codes
-    )
+    return await resolve_store_codes(session, invoice.store_id, codes)
 
 
 def build_case_mapping_status(

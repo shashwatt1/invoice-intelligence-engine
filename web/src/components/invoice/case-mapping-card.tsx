@@ -97,6 +97,20 @@ function bandOf(row: CaseMappingRow): Band {
 /** Where a value came from, in the operator's terms. Also used by the
  * Requires Mapping workbench, so evidence phrasing never drifts between
  * the two entry points. */
+/** Which governed path supplied this line's units per case. Silent for an ordinary legacy mapping. */
+function ResolutionNote({ row }: { row: CaseMappingRow }) {
+  const scope = row.resolution_scope ?? "";
+  if (row.resolution_path === "PRODUCT_MASTER_PHYSICAL_STORE")
+    return <div className="t-meta truncate" data-testid="resolution-note">Product Master · store override ({scope})</div>;
+  if (row.resolution_path === "PRODUCT_MASTER_GLOBAL")
+    return <div className="t-meta truncate" data-testid="resolution-note" title={scope}>Product Master · Global</div>;
+  if (row.resolution_path === "CONFLICT")
+    return <div className="text-danger truncate text-[0.72rem]" data-testid="resolution-note" title={row.resolution_notes?.join("; ")}>Store override and global mapping disagree — needs a decision</div>;
+  if (row.resolution_path === "LEGACY_FALLBACK" && row.resolution_notes?.length)
+    return <div className="t-meta truncate" data-testid="resolution-note" title={row.resolution_notes.join("; ")}>Legacy mapping · Product Master mapping not yet approved</div>;
+  return null;
+}
+
 export function Evidence({ row }: { row: CaseMappingRow }) {
   if (row.suggestion_source === "database") {
     return <span className="text-muted-foreground">confirmed — reused on every future invoice</span>;
@@ -243,7 +257,10 @@ export function CaseMappingCard({
 
   const productCells = (row: CaseMappingRow) => (
     <>
-      <TableCell className="max-w-64 truncate font-medium">{row.description ?? "—"}</TableCell>
+      <TableCell className="max-w-64 font-medium">
+        <div className="truncate">{row.description ?? "—"}</div>
+        <ResolutionNote row={row} />
+      </TableCell>
       <TableCell className="font-mono text-[0.78rem] tabular-nums">{row.item_code}</TableCell>
       <TableCell className="max-w-56 truncate text-[0.78rem] text-muted-foreground">
         {row.reference_description ?? <span className="opacity-60">no match</span>}

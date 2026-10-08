@@ -283,6 +283,10 @@ export interface LineItem {
   /** "product", "charge", "duplicate" (resolved as seen twice) or "voided" (a person removed it). */
   line_type: string;
   product_code: string | null;
+  /** The product's normalized name: the Product Master canonical description when one exists,
+   * otherwise this line's own `description`. Never a PDI description — none is held. */
+  normalized_description?: string | null;
+  normalized_description_source?: NormalizedDescriptionSource | null;
   unit_discount: number | null;
   /** "extracted" or "manual" (a person added the row). */
   entry_source: string;
@@ -467,6 +471,19 @@ export type SuggestionSource =
   | "description"
   | "description_ambiguous";
 
+export type NormalizedDescriptionSource =
+  | "PRODUCT_MASTER_CANONICAL_DESCRIPTION"
+  | "PRODUCT_MASTER_CANONICAL_NAME"
+  | "INVOICE_DESCRIPTION";
+
+/** Which path produced a line's units per case. Only the first two are Product Master authoritative. */
+export type CommercialResolutionPath =
+  | "PRODUCT_MASTER_PHYSICAL_STORE"
+  | "PRODUCT_MASTER_GLOBAL"
+  | "LEGACY_FALLBACK"
+  | "REQUIRES_MAPPING"
+  | "CONFLICT";
+
 export interface CaseMappingRow {
   /** Normalized UPC — the mapping key. Null when the line has no usable code. */
   item_code: string | null;
@@ -491,6 +508,12 @@ export interface CaseMappingRow {
   pending_proposal_id: string | null;
   pending_value: number | null;
   mapped: boolean;
+  resolution_path?: CommercialResolutionPath | null;
+  /** Where the approved mapping applied from: the physical store (an override), or
+   * "Global (distributor evidence, held under Item Sales · 47708760)". */
+  resolution_scope?: string | null;
+  resolution_mapping_id?: string | null;
+  resolution_notes?: string[];
 }
 
 /** Body of PATCH /invoices/{id}/items/{sort_order}. Only the transaction

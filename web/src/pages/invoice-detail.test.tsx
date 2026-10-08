@@ -228,3 +228,51 @@ describe("InvoiceDetailPage — USER", () => {
     expect(screen.queryByTestId("add-row-toggle")).toBeNull();
   });
 });
+
+describe("InvoiceDetailPage — product nomenclature", () => {
+  it("shows the Product Master name and keeps the printed wording as evidence", async () => {
+    const detail = rcmInvoice();
+    detail.line_items = [
+      line({ sort_order: 0, description: "Bud Lt 24pk", normalized_description: "BUD LIGHT 24/12 CAN",
+             normalized_description_source: "PRODUCT_MASTER_CANONICAL_DESCRIPTION" }),
+      line({ sort_order: 1, description: "LB REG", normalized_description: "LB REG",
+             normalized_description_source: "INVOICE_DESCRIPTION" }),
+    ];
+    mount("ADMIN", detail);
+
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(2));
+    const [mastered, plain] = screen.getAllByTestId("line-item-row");
+    expect(mastered).toHaveTextContent("BUD LIGHT 24/12 CAN");
+    expect(mastered.querySelector("[data-testid=source-description]")).toHaveTextContent(
+      "Product Master name · as printed: Bud Lt 24pk");
+    expect(plain).toHaveTextContent("LB REG");
+    expect(plain.querySelector("[data-testid=source-description]")).toBeNull();
+  });
+
+  it("falls back to the printed wording when the backend sends no normalized name", async () => {
+    mount("ADMIN", rcmInvoice());
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    expect(screen.queryByTestId("source-description")).toBeNull();
+    expect(screen.getAllByText("GM VAN MINI CRE").length).toBeGreaterThan(0);
+  });
+
+  it("says when units per case came from the global mapping, with its provenance, and flags a disagreeing override", async () => {
+    const detail = rcmInvoice();
+    detail.case_mappings = [
+      { ...CASE_MAPPINGS[0], mapped: true, units_per_case: 12, resolution_path: "PRODUCT_MASTER_GLOBAL",
+        resolution_scope: "Global (distributor evidence, held under Item Sales · 47708760)",
+        resolution_mapping_id: "m1", resolution_notes: [] },
+      { ...CASE_MAPPINGS[1], resolution_path: "CONFLICT", resolution_scope: null, resolution_mapping_id: null,
+        resolution_notes: ["physical-store override (UNIT_IS_SELLING_UNIT x24) and global mapping (UNIT_IS_SELLING_UNIT x12) disagree"] },
+    ] as InvoiceDetail["case_mappings"];
+    mount("ADMIN", detail);
+    const notes = await screen.findAllByTestId("resolution-note");
+    expect(notes.map((n) => n.textContent)).toEqual(expect.arrayContaining([
+      "Product Master · Global",
+      "Store override and global mapping disagree — needs a decision",
+    ]));
+    const global = notes.find((n) => n.textContent === "Product Master · Global")!;
+    expect(global).toHaveAttribute("title", "Global (distributor evidence, held under Item Sales · 47708760)");
+    expect(notes.map((n) => n.textContent).join(" ")).not.toMatch(/vendor|source identity/i);
+  });
+});

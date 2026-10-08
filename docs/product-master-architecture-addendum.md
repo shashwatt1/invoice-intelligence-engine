@@ -213,3 +213,20 @@ this model would only make the two candidate answers expressible instead of cont
 **Not done here.** No schema, no migration, no normalization change, no mapping edits, no
 bridge modification. The two `18` mappings identified in the conflict investigation remain
 exactly as they are.
+
+---
+
+## Decision — 2026-10-08: global commercial mappings, store overrides
+
+Adopted as a transitional business rule. APPROVED commercial mappings derived from
+distributor/product evidence are **global**: they apply to every physical store. A physical
+store's own Product Master mapping is an explicit **store-specific override**. Where an
+override and the global mapping disagree on basis or units, resolution is `CONFLICT` and
+EDI is blocked — neither is chosen silently.
+
+The approved mappings are held under the Item Sales location `47708760` because that is
+where their evidence was imported from. That location is provenance only: it is not a
+vendor, not a physical store, and not itself the global scope. The rows are not moved and
+no schema changes; `commercial_resolution.py` reads the mappings held under the configured
+location as the global set. Rows 6 and 8 of the table above ("store-specific") remain
+possible as overrides; the evidence recorded so far found no genuine store difference.

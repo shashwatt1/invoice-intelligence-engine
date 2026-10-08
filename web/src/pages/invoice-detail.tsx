@@ -401,9 +401,16 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                           </TableCell>
                           <TableCell className="max-w-64">
                             <div className="flex items-center gap-1.5">
-                              <span className={cn("truncate text-[0.84rem] font-medium", inactive && "line-through")}>{item.description}</span>
+                              <span className={cn("truncate text-[0.84rem] font-medium", inactive && "line-through")}>
+                                {hasMasterName(item) ? item.normalized_description : item.description}
+                              </span>
                               <HistoryNote history={item.correction_history} />
                             </div>
+                            {hasMasterName(item) ? (
+                              <div className="t-meta truncate" data-testid="source-description">
+                                <span className="font-semibold">Product Master name</span> · as printed: {item.description}
+                              </div>
+                            ) : null}
                             {item.entry_source === "manual" || item.line_type !== "product" || item.quantity === 0 || flagged ? (
                               <div className="t-meta flex flex-wrap items-center gap-1.5">
                                 {item.entry_source === "manual" ? <span className="rounded-sm bg-accent px-1 text-[0.62rem] font-semibold text-accent-foreground">manual</span> : null}
@@ -494,6 +501,12 @@ function vendorEyebrow(vendor: Vendor | null): string {
     return vendor.display_name === vendor.name ? vendor.display_name : `${vendor.display_name} (printed ${vendor.name})`;
   }
   return vendor.name;
+}
+
+/** A Product Master name differs from what the invoice printed; the printed wording stays visible as evidence. */
+function hasMasterName(item: LineItem): boolean {
+  return Boolean(item.normalized_description) && item.normalized_description_source !== "INVOICE_DESCRIPTION"
+    && item.normalized_description !== item.description;
 }
 
 export function InvoiceDetailPage() {

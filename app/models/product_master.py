@@ -387,8 +387,13 @@ class MasterCommercialMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     product the Item Retail refers to, and therefore why the multiplier is
     1 rather than 18 for a case that physically holds 18 cans.
 
-    Store-scoped, so two stores may account differently without either
-    touching the canonical product.
+    Every row is held under a store record. Business rule (2026-10-08): an
+    APPROVED mapping derived from distributor/product evidence is a GLOBAL
+    commercial mapping; a physical store's own mapping is an explicit
+    store-specific override, and an override that disagrees with the global
+    mapping is a conflict, never a silent choice. The seeded mappings are held
+    under the Item Sales location 47708760 — the provenance of their evidence,
+    not a vendor and not the scope. See commercial_resolution.py.
     """
 
     __tablename__ = "master_commercial_mappings"
@@ -398,7 +403,8 @@ class MasterCommercialMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     store_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False,
-        doc="Commercial configuration is never inherited by another store.",
+        doc=("The store record the mapping is held under: a physical store for an override, or the "
+              "Item Sales location the global mappings' evidence was imported under (provenance)."),
     )
     pdi_item_code: Mapped[str] = mapped_column(
         String(32), nullable=False, doc="The code PDI product-matches on, as emitted to EDI.",

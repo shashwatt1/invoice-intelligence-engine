@@ -210,6 +210,18 @@ class CaseMappingRow(BaseModel):
         default=None, description="The units-per-case awaiting review, when one is queued."
     )
     mapped: bool = Field(description="False when this product still needs a mapping.")
+    resolution_path: str | None = Field(
+        default=None,
+        description=("Which path produced units_per_case: PRODUCT_MASTER_PHYSICAL_STORE, "
+                     "PRODUCT_MASTER_GLOBAL, LEGACY_FALLBACK, REQUIRES_MAPPING or CONFLICT."),
+    )
+    resolution_scope: str | None = Field(
+        default=None,
+        description=("Where the approved mapping applied from: the physical store (an override), or "
+                     "'Global (distributor evidence, held under Item Sales · 47708760)'."),
+    )
+    resolution_mapping_id: str | None = Field(default=None, description="The Product Master commercial mapping used.")
+    resolution_notes: list[str] = Field(default_factory=list, description="Why this path — skipped or disagreeing mappings.")
 
 
 class CaseMappingConfirmation(BaseModel):
@@ -898,6 +910,16 @@ class LineItemData(BaseModel):
         description="'product' or 'charge' — a charge (delivery/fuel/service) is never a PDI product record.",
     )
     product_code: str | None = None
+    normalized_description: str | None = Field(
+        default=None,
+        description=("The product's normalized name: the Product Master canonical description when one exists, "
+                     "otherwise this line's own description. Never a PDI description — none is held."),
+    )
+    normalized_description_source: str | None = Field(
+        default=None,
+        description=("PRODUCT_MASTER_CANONICAL_DESCRIPTION, PRODUCT_MASTER_CANONICAL_NAME or INVOICE_DESCRIPTION. "
+                     "`description` is always the invoice's own wording, kept as source evidence."),
+    )
     unit_discount: float | None = None
     entry_source: str = Field(default="extracted", description="'extracted' or 'manual'.")
     correction_history: list[CorrectionEntry] = Field(default_factory=list)
