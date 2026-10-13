@@ -75,7 +75,10 @@ def validate_reference_url(value: str | None) -> str | None:
             problem = "The link must not contain a username or password."
     if problem:
         raise ValidationError(message=problem, detail={"field": "reference_url"})
-    return url
+    # Store the scheme in lower case ("HTTPS://" -> "https://"): the database
+    # CHECK (reference_url LIKE 'https://%') is case-sensitive, and one
+    # canonical form keeps the two consistent. Host and path are kept as given.
+    return "https://" + url[len("https://"):]
 
 
 async def set_reference_link(session: AsyncSession, invoice: Invoice, value: str | None, user) -> Invoice:
@@ -172,12 +175,14 @@ async def completion_state(session: AsyncSession, invoice: Invoice) -> Completio
 
 async def _locked(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice | None:
     """
-    Lock the invoice row for the rest of the transaction, then load it: two
-    concurrent marks are decided one at a time, each on the state it can see.
+    Lock the invoice row for the rest of the transaction, then re-read it from
+    the database (fresh=True): a copy this session loaded earlier — before
+    another transaction marked or reopened it — is overwritten, so competing
+    marks and reopens are decided one at a time, each on committed state.
     """
     found = (await session.execute(
         select(Invoice.id).where(Invoice.id == invoice_id).with_for_update())).scalar_one_or_none()
-    return await InvoiceRepository(session).get_detail(invoice_id) if found else None
+    return await InvoiceRepository(session).get_detail(invoice_id, fresh=True) if found else None
 
 
 async def mark_retailed(session: AsyncSession, invoice_id: uuid.UUID, user) -> CompletionState | None:

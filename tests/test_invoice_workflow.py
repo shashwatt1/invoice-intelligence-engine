@@ -31,10 +31,18 @@ class TestReferenceUrl:
         "https://drive.google.com/file/d/xyz/view?usp=sharing",
         "https://teams.microsoft.com/l/message/19:abc@thread.v2/1700000000000",
         "  https://example.com/invoice/50185  ",
-        "HTTPS://Example.com/x",
     ])
     def test_any_https_host_is_accepted(self, url):
         assert validate_reference_url(url) == url.strip()
+
+    @pytest.mark.parametrize("given, stored", [
+        ("HTTPS://Example.com/Path?Q=1", "https://Example.com/Path?Q=1"),
+        ("Https://example.com/a", "https://example.com/a"),
+        ("hTtPs://example.com", "https://example.com"),
+    ])
+    def test_the_scheme_is_stored_in_lower_case_matching_the_database_check(self, given, stored):
+        assert validate_reference_url(given) == stored
+        assert stored.startswith("https://")             # what ck_invoices_reference_url_https requires
 
     @pytest.mark.parametrize("url, message", [
         ("http://example.com/x", "Only https:// links"),

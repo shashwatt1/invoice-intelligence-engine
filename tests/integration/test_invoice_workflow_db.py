@@ -15,13 +15,16 @@ import asyncio
 import uuid
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
+from app.core.exceptions import ValidationError
 from app.models.document import Document
 from app.models.edi_export import EdiExport
 from app.models.invoice import Invoice
@@ -31,7 +34,16 @@ from app.models.product_case_mapping import ProductCaseMapping
 from app.models.product_master import MasterCommercialMapping, MasterProduct
 from app.models.store import Store
 from app.models.user import UserRole
-from tests.integration.conftest import USER_PASSWORD, USER_USERNAME, requires_db, user_id
+from app.repositories.invoice_repository import InvoiceRepository
+from app.services.invoice_workflow_service import mark_retailed, reopen_retailed
+from tests.integration.conftest import (
+    ADMIN_USERNAME,
+    MANAGER_USERNAME,
+    USER_PASSWORD,
+    USER_USERNAME,
+    requires_db,
+    user_id,
+)
 from tests.integration.test_api_db import api_client  # noqa: F401 — fixture reuse
 
 pytestmark = requires_db
@@ -45,6 +57,7 @@ async def corpus(db_session):
     # A migrated database always has alembic_version; the test database is built
     # by create_all and does not. The ledger reads it (and, without it, aborts the
     # export transaction — a pre-existing behaviour, reported, not changed here).
+    # Created for each test and dropped afterwards, in the test database only.
     await db_session.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num varchar(32) PRIMARY KEY)"))
     await db_session.execute(text("INSERT INTO alembic_version VALUES ('0032') ON CONFLICT DO NOTHING"))
     store = Store(display_name="AF Workflow", identity_status="confirmed")
@@ -64,7 +77,10 @@ async def corpus(db_session):
                                unit_price=Decimal("30.0000"), line_total=Decimal("60.00"), line_type="product"))
     db_session.add(ProductCaseMapping(store_id=store.id, item_code=CODE, units_per_case=24, source="APPROVED"))
     await db_session.commit()
-    return {"invoice": str(invoice.id), "invoice_uuid": invoice.id, "document": document.id, "store": store.id}
+    yield {"invoice": str(invoice.id), "invoice_uuid": invoice.id, "document": document.id, "store": store.id}
+    await db_session.rollback()
+    await db_session.execute(text("DROP TABLE IF EXISTS alembic_version"))   # the test database only
+    await db_session.commit()
 
 
 @pytest.fixture
@@ -118,10 +134,20 @@ class TestReferenceLink:
             "reference_link_saved", "reference_link_removed"]
 
     async def test_only_https_and_never_credentials(self, api_client, corpus):  # noqa: F811
-        for bad in ("http://example.com/x", "javascript:alert(1)", "https://u:p@example.com/x"):
+        for bad in ("http://example.com/x", "HTTP://example.com/x", "javascript:alert(1)", "JavaScript:alert(1)",
+                    "ftp://example.com/x", "data:text/html,x", "https://u:p@example.com/x", "https:///no-host"):
             response = await api_client.put(f"/api/v1/invoices/{corpus['invoice']}/reference-link", json={"url": bad})
-            assert response.status_code == 422, bad
+            assert response.status_code == 422, (bad, response.status_code, response.text)
         assert (await _detail(api_client, corpus["invoice"]))["reference_link"] is None
+
+    async def test_any_case_of_https_is_saved_with_a_lower_case_scheme(self, api_client, corpus):  # noqa: F811
+        for given, stored in (("https://chat.example.com/m/50185", "https://chat.example.com/m/50185"),
+                              ("HTTPS://Chat.Example.com/M/50185?x=Y", "https://Chat.Example.com/M/50185?x=Y"),
+                              ("Https://example.com/a", "https://example.com/a")):
+            response = await api_client.put(f"/api/v1/invoices/{corpus['invoice']}/reference-link", json={"url": given})
+            assert response.status_code == 200, (given, response.status_code, response.text)
+            assert response.json()["data"]["url"] == stored
+            assert (await _detail(api_client, corpus["invoice"]))["reference_link"]["url"] == stored
 
     async def test_a_user_can_see_but_not_save(self, app, api_client, corpus):  # noqa: F811
         await api_client.put(f"/api/v1/invoices/{corpus['invoice']}/reference-link",
@@ -248,3 +274,99 @@ class TestRetailed:
         assert await db_session.scalar(select(func.count()).select_from(EdiExport)) == 0
         completion = (await _detail(api_client, corpus["invoice"]))["completion"]
         assert completion["can_mark"] is False and "cannot be exported now" in completion["reason"]
+
+
+def _actors():
+    """The seeded accounts of the current test (ids are re-seeded per test)."""
+    return (SimpleNamespace(id=user_id(UserRole.MANAGER.value), username=MANAGER_USERNAME),
+            SimpleNamespace(id=user_id(UserRole.ADMIN.value), username=ADMIN_USERNAME))
+
+
+async def _waiting_on_lock(probe: AsyncSession, timeout: float = 5.0) -> None:
+    """Wait until some backend of this test database is blocked on a lock (deterministic interleaving)."""
+    for _ in range(int(timeout / 0.05)):
+        waiting = await probe.scalar(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"))
+        if waiting:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("the competing session never waited on the invoice lock")
+
+
+async def _events(session: AsyncSession, document_id) -> list[tuple[str, str]]:
+    rows = (await session.execute(select(ProcessingLog.payload).where(ProcessingLog.document_id == document_id)
+                                  .order_by(ProcessingLog.created_at, ProcessingLog.id))).scalars().all()
+    return [(p["event"], p["by"]) for p in rows if p and "retail" in p.get("event", "")]
+
+
+class TestRetailedConcurrency:
+    """Two real database sessions, genuinely interleaved on the invoice row lock."""
+
+    @pytest.fixture
+    def sessions(self, db_engine):
+        return async_sessionmaker(bind=db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def test_only_the_first_of_two_interleaved_marks_wins(self, api_client, corpus, ledger, sessions):  # noqa: F811
+        manager, admin = _actors()
+        ledger(True)
+        assert (await _export(api_client, corpus["invoice"])).status_code == 200
+        invoice_id = corpus["invoice_uuid"]
+        async with sessions() as first, sessions() as second, sessions() as probe:
+            # 'second' holds a stale copy loaded before the lock, kept alive as a request would keep it
+            # (an unreferenced copy may be garbage-collected and reloaded, which would hide the race).
+            stale = await InvoiceRepository(second).get_detail(invoice_id)
+            assert stale.retailed_at is None
+            won = await mark_retailed(first, invoice_id, manager)            # holds the row lock, not committed
+            assert won.status == "retailed"
+            competing = asyncio.create_task(mark_retailed(second, invoice_id, admin))
+            await _waiting_on_lock(probe)
+            assert not competing.done()
+            await first.commit()
+            with pytest.raises(ValidationError, match="Already marked"):
+                await competing
+            await second.rollback()
+
+            row = (await probe.execute(select(Invoice.retailed_by, Invoice.retailed_at)
+                                       .where(Invoice.id == invoice_id))).one()
+            assert (row.retailed_by, row.retailed_at) == (MANAGER_USERNAME, won.retailed_at)
+            assert await _events(probe, corpus["document"]) == [("invoice_retailed", MANAGER_USERNAME)]
+            assert stale is not None
+
+    async def test_a_mark_waiting_behind_a_reopen_decides_on_the_reopened_state(self, api_client, corpus, ledger, sessions):  # noqa: F811
+        manager, admin = _actors()
+        ledger(True)
+        await _export(api_client, corpus["invoice"])
+        assert (await api_client.post(f"/api/v1/invoices/{corpus['invoice']}/retailed")).status_code == 200
+        invoice_id = corpus["invoice_uuid"]
+        async with sessions() as first, sessions() as second, sessions() as probe:
+            stale = await InvoiceRepository(second).get_detail(invoice_id)  # stale, kept alive: sees it Retailed
+            assert stale.retailed_at is not None
+            reopened = await reopen_retailed(first, invoice_id, manager, "credit note")
+            assert reopened.status == "not_retailed"
+            competing = asyncio.create_task(mark_retailed(second, invoice_id, admin))
+            await _waiting_on_lock(probe)
+            await first.commit()
+            marked = await competing                                         # sees the reopen, so it may mark again
+            assert (marked.status, marked.retailed_by) == ("retailed", ADMIN_USERNAME)
+            await second.commit()
+            assert await _events(probe, corpus["document"]) == [
+                ("invoice_retailed", ADMIN_USERNAME), ("invoice_retail_reopened", MANAGER_USERNAME),
+                ("invoice_retailed", ADMIN_USERNAME)]
+            assert stale is not None
+
+    async def test_a_reopen_from_a_stale_session_sees_the_committed_mark(self, api_client, corpus, ledger, sessions):  # noqa: F811
+        manager, admin = _actors()
+        ledger(True)
+        await _export(api_client, corpus["invoice"])
+        invoice_id = corpus["invoice_uuid"]
+        async with sessions() as stale, sessions() as other, sessions() as probe:
+            cached = await InvoiceRepository(stale).get_detail(invoice_id)  # cached before the mark, kept alive
+            assert cached.retailed_at is None
+            await mark_retailed(other, invoice_id, manager)
+            await other.commit()
+            reopened = await reopen_retailed(stale, invoice_id, admin, "wrong invoice")
+            assert reopened.status == "not_retailed"                         # not refused as "not marked"
+            await stale.commit()
+            row = (await probe.execute(select(Invoice.retailed_at).where(Invoice.id == invoice_id))).one()
+            assert row.retailed_at is None
+            assert cached is not None

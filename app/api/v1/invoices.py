@@ -792,7 +792,7 @@ async def correct_line_item(
         )
 
     item = await repository.correct_item(
-        invoice_id, sort_order, updates, corrected_by=payload.corrected_by, note=payload.note,
+        invoice_id, sort_order, updates, corrected_by=user.username, note=payload.note,
     )
     if item is None:
         raise RecordNotFoundError(
@@ -800,7 +800,7 @@ async def correct_line_item(
             detail={"invoice_id": str(invoice_id), "sort_order": sort_order},
         )
     invoice = await repository.get_detail(invoice_id)
-    await _log_correction(db, invoice, "line_item_corrected", payload.corrected_by, payload.note,
+    await _log_correction(db, invoice, "line_item_corrected", user.username, payload.note,
                           sort_order=sort_order, changes=(item.correction_history or [])[-len(updates):])
     report = await revalidate_invoice(db, invoice)
 
@@ -1027,14 +1027,14 @@ async def add_line_item(
         pack_size=(payload.pack_size or "").strip() or None,
         quantity=payload.quantity, unit_price=payload.unit_price, unit_deposit=payload.unit_deposit,
         unit_discount=payload.unit_discount, line_total=line_total,
-        added_by=payload.added_by, note=payload.note,
+        added_by=user.username, note=payload.note,
     )
     if derived:
         item.correction_history = [*(item.correction_history or []),
                                    {"field": "line_total", "old": None, "new": float(line_total), "by": None,
                                     "at": datetime.now(UTC).isoformat(),
                                     "note": "derived: quantity x unit_price (no extended total given)"}]
-    await _log_correction(db, invoice, "line_item_added", payload.added_by, payload.note,
+    await _log_correction(db, invoice, "line_item_added", user.username, payload.note,
                           sort_order=item.sort_order, description=item.description,
                           product_code=item.product_sku, quantity=float(item.quantity),
                           unit_price=float(item.unit_price) if item.unit_price is not None else None)
@@ -1073,8 +1073,8 @@ async def void_line_item(
     if current.line_type == "voided":
         raise ValidationError(message="This line is already voided.",
                               detail={"invoice_id": str(invoice_id), "sort_order": sort_order})
-    item = await repository.void_item(invoice_id, sort_order, voided_by=payload.voided_by, note=payload.note)
-    await _log_correction(db, invoice, "line_item_voided", payload.voided_by, payload.note,
+    item = await repository.void_item(invoice_id, sort_order, voided_by=user.username, note=payload.note)
+    await _log_correction(db, invoice, "line_item_voided", user.username, payload.note,
                           sort_order=sort_order, description=item.description, product_code=item.product_sku)
     invoice, report, eligibility = await _revalidated(db, invoice_id)
     await db.commit()
@@ -1109,8 +1109,8 @@ async def correct_invoice_date(
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
     await repository.correct_invoice_date(invoice, payload.invoice_date,
-                                          corrected_by=payload.corrected_by, note=payload.note)
-    await _log_correction(db, invoice, "invoice_date_corrected", payload.corrected_by, payload.note,
+                                          corrected_by=user.username, note=payload.note)
+    await _log_correction(db, invoice, "invoice_date_corrected", user.username, payload.note,
                           changes=(invoice.correction_history or [])[-1:])
     invoice, report, eligibility = await _revalidated(db, invoice_id)
     await db.commit()
@@ -1152,8 +1152,8 @@ async def correct_totals(
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
-    await repository.correct_totals(invoice, updates, corrected_by=payload.corrected_by, note=payload.note)
-    await _log_correction(db, invoice, "totals_corrected", payload.corrected_by, payload.note,
+    await repository.correct_totals(invoice, updates, corrected_by=user.username, note=payload.note)
+    await _log_correction(db, invoice, "totals_corrected", user.username, payload.note,
                           changes=(invoice.correction_history or [])[-len(updates):])
     invoice, report, eligibility = await _revalidated(db, invoice_id)
     await db.commit()

@@ -25,6 +25,7 @@ from sqlalchemy import select, text
 from app.models.document import Document
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
+from app.models.processing_log import ProcessingLog
 from app.models.product_master import MasterProduct, MasterProductIdentifier
 from app.models.store import Store
 from app.models.user import UserRole
@@ -70,7 +71,7 @@ async def corpus(db_session):
                     line_type="product"),
     ])
     await db_session.commit()
-    yield {"invoice": str(invoice.id), "store": store.id, "product": product.id}
+    yield {"invoice": str(invoice.id), "store": store.id, "product": product.id, "document": document.id}
     await db_session.execute(text("TRUNCATE master_products CASCADE"))   # the test database only
     await db_session.commit()
 
@@ -150,6 +151,22 @@ class TestCorrectingTheCode:
             assert response.status_code == 200, response.text
         row = (await _rows(api_client, corpus["invoice"]))[1]
         assert (row["description"], row["original_description"]) == ("TWISTED TEA ORIGINAL 12PK", "TWISTD TEA 12PK")
+
+    async def test_the_signed_in_account_is_recorded_whatever_name_is_sent(self, api_client, corpus, db_session):  # noqa: F811
+        corrected = await api_client.patch(f"/api/v1/invoices/{corpus['invoice']}/items/0", json={
+            "description": "BUD LIGHT 24/12OZ CAN", "corrected_by": "someone-else", "note": "spoof attempt"})
+        assert corrected.status_code == 200, corrected.text
+        [entry] = [e for e in corrected.json()["data"]["item"]["correction_history"] if e["field"] == "description"]
+        assert entry["by"] == "testadmin"                                   # the authenticated account
+        added = await api_client.post(f"/api/v1/invoices/{corpus['invoice']}/items", json={
+            "description": "EXTRA LINE", "quantity": "1", "unit_price": "1.00", "line_total": "1.00",
+            "added_by": "someone-else"})
+        assert added.status_code == 201, added.text
+        logs = (await db_session.execute(select(ProcessingLog.payload).where(
+            ProcessingLog.document_id == corpus["document"]))).scalars().all()
+        attributed = [(p["event"], p["by"]) for p in logs if p and p.get("event", "").startswith("line_item_")]
+        assert attributed == [("line_item_corrected", "testadmin"), ("line_item_added", "testadmin")]
+        assert all(p.get("by") != "someone-else" for p in logs if p)
 
     async def test_a_user_cannot_correct_or_approve(self, app, api_client, corpus):  # noqa: F811
         user = AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")

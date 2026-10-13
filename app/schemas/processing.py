@@ -311,10 +311,9 @@ class LineItemCorrection(BaseModel):
     product_code: str | None = Field(
         default=None, max_length=64, description="UPC / item code as printed. Empty string clears it."
     )
-    # Who and why. Optional so the single-value correction path that predates
-    # attribution keeps working; the UI always sends them and the history
-    # entry records whatever was given.
-    corrected_by: str | None = Field(default=None, max_length=128)
+    # Who and why. The author recorded in the history is always the signed-in
+    # account; `corrected_by` is still accepted so existing clients keep working.
+    corrected_by: str | None = Field(default=None, max_length=128, description="Accepted for compatibility and ignored: the signed-in account is recorded as the author.")
     note: str | None = Field(default=None, max_length=500)
 
     # API field name -> ORM column. The column predates the extraction
@@ -395,14 +394,14 @@ class LineItemCreate(BaseModel):
     unit_deposit: Decimal | None = None
     unit_discount: Decimal | None = None
     line_total: Decimal | None = None
-    added_by: str = Field(min_length=1, max_length=128)
+    added_by: str = Field(min_length=1, max_length=128, description="Accepted for compatibility and ignored: the signed-in account is recorded as the author.")
     note: str | None = Field(default=None, max_length=500)
 
 
 class LineItemVoid(BaseModel):
     """Body of DELETE /invoices/{id}/items/{sort_order} — the row is kept, typed 'voided'."""
 
-    voided_by: str = Field(min_length=1, max_length=128)
+    voided_by: str = Field(min_length=1, max_length=128, description="Accepted for compatibility and ignored: the signed-in account is recorded as the author.")
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -420,7 +419,7 @@ class InvoiceTotalsCorrection(BaseModel):
     deposit_total: Decimal | None = None
     fuel_surcharge: Decimal | None = None
     grand_total: Decimal | None = None
-    corrected_by: str = Field(min_length=1, max_length=128)
+    corrected_by: str = Field(min_length=1, max_length=128, description="Accepted for compatibility and ignored: the signed-in account is recorded as the author.")
     note: str | None = Field(default=None, max_length=500)
 
     FIELDS: ClassVar[tuple[str, ...]] = (
@@ -440,7 +439,7 @@ class InvoiceDateCorrection(BaseModel):
     """
 
     invoice_date: date | None = None
-    corrected_by: str = Field(min_length=1, max_length=128)
+    corrected_by: str = Field(min_length=1, max_length=128, description="Accepted for compatibility and ignored: the signed-in account is recorded as the author.")
     note: str | None = Field(default=None, max_length=500)
 
 

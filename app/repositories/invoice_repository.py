@@ -301,9 +301,14 @@ class InvoiceRepository:
     async def get(self, invoice_id: uuid.UUID) -> Invoice | None:
         return await self._session.get(Invoice, invoice_id)
 
-    async def get_detail(self, invoice_id: uuid.UUID) -> Invoice | None:
-        """Invoice with items, vendor, and document eagerly loaded."""
-        result = await self._session.execute(
+    async def get_detail(self, invoice_id: uuid.UUID, *, fresh: bool = False) -> Invoice | None:
+        """
+        Invoice with items, vendor, and document eagerly loaded. `fresh=True`
+        overwrites any copy this session already holds with the current
+        database row — required after taking a row lock, or a decision could
+        be made on a copy loaded before another transaction committed.
+        """
+        statement = (
             select(Invoice)
             .where(Invoice.id == invoice_id)
             .options(
@@ -312,6 +317,9 @@ class InvoiceRepository:
                 selectinload(Invoice.document),
             )
         )
+        if fresh:
+            statement = statement.execution_options(populate_existing=True)
+        result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
     async def get_by_document(self, document_id: uuid.UUID) -> Invoice | None:
