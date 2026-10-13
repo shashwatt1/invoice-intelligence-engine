@@ -29,7 +29,7 @@ from app.models.document import Document
 from app.models.edi_export import EdiExport
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
-from app.models.processing_log import ProcessingLog
+from app.models.processing_log import LogStatus, PipelineStage, ProcessingLog
 from app.models.product_case_mapping import ProductCaseMapping
 from app.models.product_master import MasterCommercialMapping, MasterProduct
 from app.models.store import Store
@@ -76,6 +76,11 @@ async def corpus(db_session):
                                product_sku=PRINTED, pack_size="24/12OZ", quantity=Decimal("2"),
                                unit_price=Decimal("30.0000"), line_total=Decimal("60.00"), line_type="product"))
     db_session.add(ProductCaseMapping(store_id=store.id, item_code=CODE, units_per_case=24, source="APPROVED"))
+    # The pipeline's validation entry: revalidation after a correction carries
+    # its OCR/AI confidence forward, so a consistent correction comes back
+    # VALIDATED and an inconsistent one REVIEW_REQUIRED, as in production.
+    db_session.add(ProcessingLog(document_id=document.id, stage=PipelineStage.VALIDATION, status=LogStatus.SUCCESS,
+                                 payload={"confidence": {"ocr_confidence": 0.99, "ai_confidence": 0.99}}))
     await db_session.commit()
     yield {"invoice": str(invoice.id), "invoice_uuid": invoice.id, "document": document.id, "store": store.id}
     await db_session.rollback()
@@ -107,6 +112,13 @@ async def _list_status(client, invoice_number):
     assert response.status_code == 200, response.text
     [row] = [r for r in response.json()["items"] if r["invoice_number"] == invoice_number]
     return row["completion_status"]
+
+
+async def _set_status(db_session, corpus, status):
+    """Set the invoice's validation status directly (test database only), to isolate one rule at a time."""
+    await db_session.execute(text("UPDATE invoices SET status = :s WHERE id = :i"),
+                             {"s": status, "i": corpus["invoice_uuid"]})
+    await db_session.commit()
 
 
 async def _as_user(app):
@@ -196,7 +208,8 @@ class TestRetailed:
 
         row = (await db_session.execute(select(Invoice).where(Invoice.id == corpus["invoice_uuid"]))).scalar_one()
         export = (await db_session.execute(select(EdiExport))).scalar_one()
-        assert (row.retailed_edi_export_id, row.retailed_pdi_sha256) == (export.id, export.sha256)
+        assert row.retailed_edi_export_id == export.id
+        assert len(row.retailed_attestation_sha256) == 64 and row.retailed_attestation_sha256 != export.sha256
 
     async def test_concurrent_marks_are_decided_once(self, api_client, corpus, ledger):  # noqa: F811
         ledger(True)
@@ -214,13 +227,70 @@ class TestRetailed:
         assert corrected.status_code == 200, corrected.text
         stale = (await _detail(api_client, corpus["invoice"]))["completion"]
         assert (stale["status"], stale["can_mark"]) == ("retailed_stale", False)
-        assert "changed after the last recorded export (#1)" in stale["reason"]
+        assert "must be VALIDATED" in stale["reason"]           # subtotal no longer matches the lines
         assert await _list_status(api_client, "WF-1") == "retailed_stale"
+
+        totals = await api_client.patch(f"/api/v1/invoices/{corpus['invoice']}/totals",
+                                        json={"subtotal": "90.00", "grand_total": "90.00", "corrected_by": "x"})
+        assert totals.status_code == 200, totals.text
+        revalidated = (await _detail(api_client, corpus["invoice"]))
+        assert revalidated["status"] == "VALIDATED", revalidated.get("review_reasons")
+        assert "changed after the last recorded export (#1)" in revalidated["completion"]["reason"]
 
         await _export(api_client, corpus["invoice"])
         assert (await _detail(api_client, corpus["invoice"]))["completion"]["can_mark"] is True
         assert (await api_client.post(f"/api/v1/invoices/{corpus['invoice']}/retailed")).status_code == 200
         assert await _list_status(api_client, "WF-1") == "retailed"
+
+    async def test_a_review_required_invoice_cannot_be_marked_even_with_a_recorded_export(
+        self, api_client, corpus, ledger, db_session,  # noqa: F811
+    ):
+        ledger(True)
+        await _set_status(db_session, corpus, "REVIEW_REQUIRED")
+        assert (await _export(api_client, corpus["invoice"])).status_code == 200      # export is still allowed
+        completion = (await _detail(api_client, corpus["invoice"]))["completion"]
+        assert completion["can_mark"] is False and "must be VALIDATED" in completion["reason"]
+        refused = await api_client.post(f"/api/v1/invoices/{corpus['invoice']}/retailed")
+        assert refused.status_code == 422 and "must be VALIDATED" in refused.text
+
+    async def test_leaving_validated_makes_it_stale_and_returning_restores_it(
+        self, api_client, corpus, ledger, db_session,  # noqa: F811
+    ):
+        ledger(True)
+        await _export(api_client, corpus["invoice"])
+        assert (await api_client.post(f"/api/v1/invoices/{corpus['invoice']}/retailed")).status_code == 200
+        await _set_status(db_session, corpus, "REVIEW_REQUIRED")
+        assert (await _detail(api_client, corpus["invoice"]))["completion"]["status"] == "retailed_stale"
+        await _set_status(db_session, corpus, "VALIDATED")
+        assert (await _detail(api_client, corpus["invoice"]))["completion"]["status"] == "retailed"
+
+    @pytest.mark.parametrize("path, body", [
+        ("items/0", {"line_total": "60.01"}),                          # a line total only (not in the PDI file)
+        ("items/0", {"unit_discount": "0.50"}),                        # a line discount
+        ("items/0", {"unit_deposit": "0.10"}),                         # a line deposit
+        ("totals", {"subtotal": "60.01", "corrected_by": "x"}),        # the subtotal only
+        ("totals", {"discount_amount": "1.00", "corrected_by": "x"}),  # an invoice discount
+        ("totals", {"deposit_total": "1.20", "corrected_by": "x"}),    # an invoice deposit total
+    ])
+    async def test_attested_values_outside_the_pdi_file_still_make_it_stale(
+        self, api_client, corpus, ledger, db_session, path, body,  # noqa: F811
+    ):
+        ledger(True)
+        await _export(api_client, corpus["invoice"])
+        assert (await api_client.post(f"/api/v1/invoices/{corpus['invoice']}/retailed")).status_code == 200
+        response = await api_client.patch(f"/api/v1/invoices/{corpus['invoice']}/{path}", json=body)
+        assert response.status_code == 200, response.text
+        await _set_status(db_session, corpus, "VALIDATED")     # isolate the fingerprint from the status gate
+        completion = (await _detail(api_client, corpus["invoice"]))["completion"]
+        assert completion["status"] == "retailed_stale", body
+        assert await _list_status(api_client, "WF-1") == "retailed_stale"
+
+    async def test_a_reference_link_change_does_not_affect_it(self, api_client, corpus, ledger):  # noqa: F811
+        ledger(True)
+        await _export(api_client, corpus["invoice"])
+        assert (await api_client.post(f"/api/v1/invoices/{corpus['invoice']}/retailed")).status_code == 200
+        await api_client.put(f"/api/v1/invoices/{corpus['invoice']}/reference-link", json={"url": "https://x.example/1"})
+        assert (await _detail(api_client, corpus["invoice"]))["completion"]["status"] == "retailed"
 
     async def test_a_mapping_change_makes_it_no_longer_current(self, api_client, corpus, ledger):  # noqa: F811
         ledger(True)

@@ -1039,9 +1039,13 @@ class ReferenceLinkUpdate(BaseModel):
 
 
 class CompletionData(BaseModel):
-    """Retailed — workflow completion, proven by the EDI export ledger. Not goods receipt; no inventory effect."""
+    """
+    Retailed — a person's attestation that the VALIDATED invoice was checked against the source document,
+    with its PDI file recorded in the EDI export ledger. Not goods receipt; no inventory effect.
+    """
 
-    status: str = Field(description="'not_retailed', 'retailed', or 'retailed_stale' (changed since it was marked).")
+    status: str = Field(description=("'not_retailed', 'retailed', or 'retailed_stale' (an attested value changed, or "
+                                     "the invoice is no longer VALIDATED; re-verify and re-mark)."))
     can_mark: bool
     reason: str | None = Field(default=None, description="Why it cannot be marked now.")
     latest_export_number: int | None = None

@@ -11,11 +11,13 @@ import { useRetailed } from "@/hooks/use-api";
 import { formatDateTime } from "@/lib/format";
 
 /**
- * Retailed, beside the PDI generator. A workflow completion mark — not goods
- * receipt, no inventory effect. The server decides whether it can be set (a
- * ledger-recorded PDI file identical to the one the invoice produces now); this
- * shows its answer, the reason when it is not yet possible, and the status:
- * Retailed, or Retailed but changed since (stale) until exported again.
+ * Retailed, beside the PDI generator: the person's attestation that they checked
+ * the item list, quantities, prices, line totals and totals against the source
+ * invoice. Not goods receipt; no inventory effect. The server decides whether it
+ * can be set (status VALIDATED, and a ledger-recorded PDI file identical to the
+ * one the invoice produces now); this shows its answer, the reason when it is not
+ * yet possible, and the status: Retailed, or "re-verify" when anything attested
+ * changed or the invoice is no longer VALIDATED.
  */
 export function RetailedControl({ invoiceId, completion }: { invoiceId: string; completion: Completion | null | undefined }) {
   const { hasRole } = useAuth();
@@ -43,12 +45,15 @@ export function RetailedControl({ invoiceId, completion }: { invoiceId: string; 
       {completion.status === "retailed" ? (
         <StatusPill tone="success" label="Retailed" meaning={`Marked${by}${at}`} />
       ) : completion.status === "retailed_stale" ? (
-        <StatusPill tone="warning" label="Retailed · changed since" meaning={`Marked${by}${at}; the invoice or its mappings changed after that export`} />
+        <StatusPill tone="warning" label="Retailed · re-verify"
+                    meaning={`Marked${by}${at}; the invoice, its totals or mappings changed, or it is no longer VALIDATED — verify again and re-mark`} />
       ) : null}
       {canAct && completion.status !== "retailed" ? (
         <Button size="sm" variant="outline" onClick={() => run("mark")}
                 disabled={!completion.can_mark || retailed.isPending}
-                title={completion.can_mark ? "Records that this invoice is finished. Does not change inventory." : completion.reason ?? undefined}
+                title={completion.can_mark
+                  ? "Records that you verified the item list, quantities, unit prices, line totals and totals against the source invoice. Does not change inventory."
+                  : completion.reason ?? undefined}
                 data-testid="retailed-mark">
           <CheckCheck className="size-3.5" /> {completion.status === "retailed_stale" ? "Mark Retailed again" : "Mark Retailed"}
         </Button>
@@ -66,6 +71,11 @@ export function RetailedControl({ invoiceId, completion }: { invoiceId: string; 
             <RotateCcw className="size-3.5" /> Reopen
           </Button>
         )
+      ) : null}
+      {canAct && completion.status !== "retailed" && completion.can_mark ? (
+        <span className="t-meta max-w-72 basis-full" data-testid="retailed-attestation-note">
+          Before marking, check the item list, quantities, unit prices, line totals and totals against the source invoice.
+        </span>
       ) : null}
       {canAct && completion.status !== "retailed" && !completion.can_mark && completion.reason ? (
         <span className="t-meta max-w-72 basis-full" data-testid="retailed-reason">{completion.reason}</span>

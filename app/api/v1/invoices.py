@@ -82,12 +82,11 @@ from app.services.case_mapping_service import (
 )
 from app.services.document_lifecycle import ensure_document_visible
 from app.services.export_service import (
-    build_pdi_export,
     normalize_item_code,
     persisted_pdi_export_eligibility,
     unmapped_item_codes,
 )
-from app.services.invoice_workflow_service import completion_state, pdi_sha256, status_for
+from app.services.invoice_workflow_service import completion_state, current_facts, status_for
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.product_master.commercial_resolution import line_product_names, resolution_fields
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
@@ -333,11 +332,10 @@ async def list_invoices(
                 continue
             units = await invoice_units_by_item_code(db, invoice)
             eligibility = persisted_pdi_export_eligibility(invoice, units)
-            # Retailed reads as current only while the PDI the invoice would produce
-            # now is the file it was marked against (see invoice_workflow_service).
-            current_sha = (pdi_sha256(build_pdi_export(invoice, units))
-                           if invoice.retailed_at is not None and eligibility.allowed else None)
-            completion[invoice.id] = status_for(invoice, current_sha)
+            # Retailed reads as current only while the invoice is VALIDATED and
+            # everything attested is unchanged (see invoice_workflow_service).
+            fingerprint = current_facts(invoice, units)[2] if invoice.retailed_at is not None else None
+            completion[invoice.id] = status_for(invoice, fingerprint)
             edi_status = (
                 "blocked" if not eligibility.allowed
                 else "needs_confirmation" if eligibility.requires_confirmation

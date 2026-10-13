@@ -8,29 +8,31 @@ Two invoice-scoped workflow facts, both set by a MANAGER or ADMIN:
    only stored and shown as a link: never fetched, previewed or checked for
    reachability (a private chat link still needs the viewer's own access).
 
-2. Retailed — the team's "this invoice is finished" mark. It is a workflow
-   completion status, NOT goods receipt: it never creates or changes
-   inventory, and never touches a mapping or Product Master.
+2. Retailed — a person's attestation that the invoice was verified against
+   the source document and is finished. NOT goods receipt: it never creates
+   or changes inventory, and never touches a mapping or Product Master.
 
-   It can be set only when the EDI export ledger proves the work is done: a
-   delivered PDI file is recorded for the invoice, and the PDI that would be
-   built from the invoice right now is byte-for-byte that file (same SHA-256).
-   A blocked export writes no ledger row, so a failed attempt can never count.
-   With the ledger off there is no proof, so nothing can be marked.
-
-   It is never trusted blindly afterwards: the SHA-256 of the file it was set
-   against is stored, and the status reads "retailed" only while the current
-   PDI still matches. Any later change to the invoice or to its mappings that
-   would change the file shows it as "retailed_stale" until a person exports
-   again and re-marks it, or reopens it.
+   It can be set only when the invoice is VALIDATED and the EDI export ledger
+   records a delivered PDI file byte-for-byte equal to the file the invoice
+   produces now. A blocked export writes no ledger row, so a failed attempt
+   never counts; with the ledger off there is no proof, so nothing can be
+   marked. It is never trusted blindly afterwards: an attestation fingerprint
+   is stored, and the status reads "retailed" only while the invoice is still
+   VALIDATED and every attested value is unchanged ("retailed_stale" until a
+   person re-verifies and re-marks it, or reopens it). See the Retailed
+   section below for what is automatic and what is the person's check.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from typing import Any
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -101,6 +103,29 @@ async def set_reference_link(session: AsyncSession, invoice: Invoice, value: str
 
 
 # ---- Retailed ----------------------------------------------------------------------------------
+#
+# Retailed is a person's attestation that THIS invoice — its lines, quantities,
+# prices, line totals, subtotal, discounts, deposits and totals, and the
+# mappings that turn it into a PDI file — has been checked against the source
+# document and is finished. It is not goods receipt and never touches inventory.
+#
+# Automatic (enforced here):
+#   * the invoice's status is VALIDATED: the deterministic checks passed (line
+#     arithmetic, subtotal, reconciliation, required fields, date) with enough
+#     confidence. A REVIEW_REQUIRED invoice cannot be marked;
+#   * a delivered PDI file is recorded in the EDI export ledger and is exactly
+#     the file the invoice produces now (same SHA-256);
+#   * staleness: an attestation fingerprint — a SHA-256 over every value the
+#     attestation covers (see attestation_fingerprint) — is stored when marked;
+#     any later change to those values, or the invoice leaving VALIDATED, shows
+#     the mark as no longer current until a person re-verifies and re-marks it.
+# Manual (the person marking it):
+#   * comparing the extracted lines with the paper invoice. No software check
+#     can tell from the extracted data alone that a line on the paper was never
+#     read; marking Retailed is the person's statement that they compared them.
+
+STATUS_VALIDATED = "VALIDATED"
+
 
 @dataclass(frozen=True)
 class CompletionState:
@@ -119,23 +144,63 @@ def pdi_sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def status_for(invoice: Invoice, current_sha: str | None) -> str:
-    """Retailed only while the file it was marked against is still the file the invoice would produce."""
+def _canonical(value: Any) -> Any:
+    """Stable text for hashing: Decimals by value (30 == 30.0000), dates ISO, ids as text."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return format(value.normalize(), "f")
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return value
+
+
+def attestation_fingerprint(invoice: Invoice, units_by_item_code: Mapping[str, int], pdi_sha: str | None) -> str:
+    """
+    SHA-256 over everything a Retailed attestation covers: the header figures,
+    every line (including its type, so an added, voided or duplicate-decided row
+    counts), the units-per-case used for each code, and the PDI file the
+    invoice produces now (None when it cannot be exported). Pure.
+    """
+    header = {name: _canonical(getattr(invoice, name)) for name in (
+        "invoice_number", "invoice_date", "currency", "store_id", "subtotal", "tax_amount",
+        "discount_amount", "deposit_total", "fuel_surcharge", "grand_total")}
+    lines = [
+        {name: _canonical(getattr(item, name)) for name in (
+            "sort_order", "line_type", "product_sku", "description", "pack_size", "quantity",
+            "unit_price", "line_total", "discount", "deposit", "tax_rate")}
+        for item in sorted(invoice.items, key=lambda i: i.sort_order)
+    ]
+    mappings = {code: units_by_item_code[code] for code in sorted(units_by_item_code)}
+    payload = json.dumps({"header": header, "lines": lines, "mappings": mappings, "pdi_sha256": pdi_sha},
+                         sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def status_for(invoice: Invoice, current_fingerprint: str | None) -> str:
+    """Retailed only while the invoice is VALIDATED and everything attested is unchanged."""
     if invoice.retailed_at is None:
         return STATUS_NOT_RETAILED
-    return STATUS_RETAILED if current_sha is not None and current_sha == invoice.retailed_pdi_sha256 \
-        else STATUS_RETAILED_STALE
+    current = (invoice.status == STATUS_VALIDATED and current_fingerprint is not None
+               and current_fingerprint == invoice.retailed_attestation_sha256)
+    return STATUS_RETAILED if current else STATUS_RETAILED_STALE
 
 
-async def current_pdi_sha(session: AsyncSession, invoice: Invoice) -> tuple[str | None, str | None]:
-    """(SHA-256 of the PDI the invoice would produce now, why none) — the export endpoint's own gate and builder."""
+def current_facts(invoice: Invoice, units_by_item_code: Mapping[str, int]) -> tuple[str | None, str | None, str]:
+    """
+    (SHA-256 of the PDI the invoice produces now or None, why not exportable,
+    attestation fingerprint) — the export endpoint's own gate and builder.
+    """
     if invoice.store_id is None:
-        return None, "The invoice has no store yet."
-    resolution = await invoice_commercial_resolution(session, invoice)
-    eligibility = persisted_pdi_export_eligibility(invoice, resolution.units)
+        return None, "The invoice has no store yet.", attestation_fingerprint(invoice, units_by_item_code, None)
+    eligibility = persisted_pdi_export_eligibility(invoice, units_by_item_code)
     if not eligibility.allowed:
-        return None, eligibility.blocked_reason or "The invoice cannot be exported for PDI right now."
-    return pdi_sha256(build_pdi_export(invoice, resolution.units)), None
+        return (None, eligibility.blocked_reason or "The invoice cannot be exported for PDI right now.",
+                attestation_fingerprint(invoice, units_by_item_code, None))
+    pdi = pdi_sha256(build_pdi_export(invoice, units_by_item_code))
+    return pdi, None, attestation_fingerprint(invoice, units_by_item_code, pdi)
 
 
 async def latest_export(session: AsyncSession, invoice_id: uuid.UUID) -> EdiExport | None:
@@ -145,32 +210,42 @@ async def latest_export(session: AsyncSession, invoice_id: uuid.UUID) -> EdiExpo
     )).scalar_one_or_none()
 
 
-async def completion_state(session: AsyncSession, invoice: Invoice) -> CompletionState:
+async def _evaluate(session: AsyncSession, invoice: Invoice) -> tuple[CompletionState, str, EdiExport | None]:
     ledger_enabled = get_settings().edi_export_ledger
-    current_sha, blocked = await current_pdi_sha(session, invoice)
+    units = ((await invoice_commercial_resolution(session, invoice)).units
+             if invoice.store_id is not None else {})
+    current_pdi, blocked, fingerprint = current_facts(invoice, units)
     latest = await latest_export(session, invoice.id)
-    status = status_for(invoice, current_sha)
+    status = status_for(invoice, fingerprint)
 
     reason: str | None
     if status == STATUS_RETAILED:
         reason = "Already marked Retailed."
-    elif current_sha is None:
+    elif invoice.status != STATUS_VALIDATED:
+        reason = (f"The invoice must be VALIDATED before it can be marked Retailed (it is {invoice.status}). "
+                  "Resolve the failed checks or correct the invoice first.")
+    elif current_pdi is None:
         reason = f"The invoice cannot be exported now: {blocked}"
     elif latest is None:
         reason = "No delivered PDI file is recorded for this invoice yet." + (
             "" if ledger_enabled else " The EDI export ledger is off, so exports are not recorded.")
-    elif latest.sha256 != current_sha:
+    elif latest.sha256 != current_pdi:
         reason = (f"The invoice or its mappings changed after the last recorded export (#{latest.export_number}). "
                   "Generate the PDI file again, then mark it.")
     else:
         reason = None
-    return CompletionState(
+    state = CompletionState(
         status=status, can_mark=reason is None, reason=reason,
         latest_export_number=latest.export_number if latest else None,
         latest_export_at=latest.created_at if latest else None,
         ledger_enabled=ledger_enabled,
         retailed_at=invoice.retailed_at, retailed_by=invoice.retailed_by,
     )
+    return state, fingerprint, latest
+
+
+async def completion_state(session: AsyncSession, invoice: Invoice) -> CompletionState:
+    return (await _evaluate(session, invoice))[0]
 
 
 async def _locked(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice | None:
@@ -187,29 +262,29 @@ async def _locked(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice | Non
 
 async def mark_retailed(session: AsyncSession, invoice_id: uuid.UUID, user) -> CompletionState | None:
     """
-    Mark the invoice Retailed against its current, recorded PDI file. Refused
-    unless the ledger proves it. None when the invoice does not exist.
+    Record the person's attestation. Refused unless the invoice is VALIDATED
+    and the ledger records its current PDI file. None when it does not exist.
     """
     invoice = await _locked(session, invoice_id)
     if invoice is None:
         return None
-    state = await completion_state(session, invoice)
+    state, fingerprint, latest = await _evaluate(session, invoice)
     if not state.can_mark:
         raise ValidationError(message=state.reason or "This invoice cannot be marked Retailed now.",
                               detail={"invoice_id": str(invoice.id), "status": state.status})
-    latest = await latest_export(session, invoice.id)
     assert latest is not None                                # can_mark guarantees it
     invoice.retailed_at = datetime.now(UTC)
     invoice.retailed_by = user.username
     invoice.retailed_by_user_id = user.id
     invoice.retailed_edi_export_id = latest.id
-    invoice.retailed_pdi_sha256 = latest.sha256
+    invoice.retailed_attestation_sha256 = fingerprint
     await ProcessingLogRepository(session).add(
         document_id=invoice.document_id,
         stage=PipelineStage.LIFECYCLE,
         message=f"Marked Retailed by {user.username} (PDI export #{latest.export_number}).",
         payload={"event": "invoice_retailed", "by": user.username, "edi_export_id": str(latest.id),
-                 "export_number": latest.export_number, "sha256": latest.sha256,
+                 "export_number": latest.export_number, "pdi_sha256": latest.sha256,
+                 "attestation_sha256": fingerprint, "invoice_status": invoice.status,
                  "previous_status": state.status},
     )
     await session.flush()
@@ -230,7 +305,7 @@ async def reopen_retailed(session: AsyncSession, invoice_id: uuid.UUID, user,
     invoice.retailed_by = None
     invoice.retailed_by_user_id = None
     invoice.retailed_edi_export_id = None
-    invoice.retailed_pdi_sha256 = None
+    invoice.retailed_attestation_sha256 = None
     await ProcessingLogRepository(session).add(
         document_id=invoice.document_id,
         stage=PipelineStage.LIFECYCLE,

@@ -91,15 +91,25 @@ describe("original invoice link", () => {
 });
 
 describe("Retailed control", () => {
+  it("explains that a REVIEW_REQUIRED invoice must be VALIDATED first", () => {
+    wrap(<tr><td><RetailedControl invoiceId="i" completion={completion({
+      reason: "The invoice must be VALIDATED before it can be marked Retailed (it is REVIEW_REQUIRED). Resolve the failed checks or correct the invoice first." })} /></td></tr>);
+    expect(screen.getByTestId("retailed-mark")).toBeDisabled();
+    expect(screen.getByTestId("retailed-reason")).toHaveTextContent("must be VALIDATED");
+    expect(screen.queryByTestId("retailed-attestation-note")).toBeNull();
+  });
+
   it("explains why it cannot be marked yet and keeps the button disabled", () => {
     wrap(<tr><td><RetailedControl invoiceId="i" completion={completion({ reason: "No delivered PDI file is recorded for this invoice yet." })} /></td></tr>);
     expect(screen.getByTestId("retailed-mark")).toBeDisabled();
     expect(screen.getByTestId("retailed-reason")).toHaveTextContent("No delivered PDI file is recorded");
   });
 
-  it("marks when the server says it can", async () => {
+  it("marks when the server says it can, after reminding what the person attests", async () => {
     const user = userEvent.setup();
     wrap(<tr><td><RetailedControl invoiceId="inv-1" completion={completion({ can_mark: true, latest_export_number: 1 })} /></td></tr>);
+    expect(screen.getByTestId("retailed-attestation-note")).toHaveTextContent(
+      "check the item list, quantities, unit prices, line totals and totals against the source invoice");
     await user.click(screen.getByTestId("retailed-mark"));
     await waitFor(() => expect(api.markRetailed).toHaveBeenCalledWith("inv-1"));
   });
@@ -117,7 +127,7 @@ describe("Retailed control", () => {
 
   it("shows a stale mark as changed since, and lets it be marked again once provable", () => {
     wrap(<tr><td><RetailedControl invoiceId="i" completion={completion({ status: "retailed_stale", can_mark: true, retailed_by: "barj" })} /></td></tr>);
-    expect(screen.getByTestId("retailed-control")).toHaveTextContent("Retailed · changed since");
+    expect(screen.getByTestId("retailed-control")).toHaveTextContent("Retailed · re-verify");
     expect(screen.getByTestId("retailed-mark")).toHaveTextContent("Mark Retailed again");
   });
 
@@ -141,6 +151,6 @@ describe("invoice list", () => {
     expect(screen.getByText("Retailed")).toBeInTheDocument();
     unmount();
     wrap(<InvoiceRow row={{ ...base, completion_status: "retailed_stale" }} onOpen={() => {}} showMapping />);
-    expect(screen.getByText("Retailed · changed")).toBeInTheDocument();
+    expect(screen.getByText("Retailed · re-verify")).toBeInTheDocument();
   });
 });

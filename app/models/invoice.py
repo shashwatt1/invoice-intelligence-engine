@@ -154,11 +154,12 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", name="fk_invoices_reference_url_set_by_user"), nullable=True)
     reference_url_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Retailed (migration 0032): a workflow completion status, set by a person
-    # after a PDI file was delivered and recorded in the EDI export ledger. It
-    # is NOT goods receipt and never touches inventory or mappings. The SHA-256
-    # of the delivered file is kept so a later change to the invoice or its
-    # mappings shows the status as no longer current.
+    # Retailed (migration 0032): a person's attestation that the VALIDATED
+    # invoice was checked against the source document and is finished, set
+    # after its PDI file was delivered and recorded in the EDI export ledger.
+    # NOT goods receipt; never touches inventory or mappings. The attestation
+    # fingerprint (lines, figures, totals, mappings and the PDI file) is kept so
+    # any later change to what was attested shows the mark as no longer current.
     retailed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retailed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     retailed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -169,7 +170,7 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UUID(as_uuid=True),
         ForeignKey("edi_exports.id", ondelete="SET NULL", use_alter=True, name="fk_invoices_retailed_edi_export"),
         nullable=True)
-    retailed_pdi_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retailed_attestation_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Relationships
     document = relationship("Document", back_populates="invoice")
@@ -193,7 +194,7 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         CheckConstraint(
             "(retailed_at IS NULL) = (retailed_by IS NULL) "
             "AND (retailed_at IS NULL) = (retailed_edi_export_id IS NULL) "
-            "AND (retailed_at IS NULL) = (retailed_pdi_sha256 IS NULL)",
+            "AND (retailed_at IS NULL) = (retailed_attestation_sha256 IS NULL)",
             name="ck_invoices_retailed_together",
         ),
     )

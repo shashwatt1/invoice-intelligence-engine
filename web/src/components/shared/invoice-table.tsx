@@ -114,8 +114,8 @@ export function InvoiceRow({
             {row.completion_status === "retailed" ? (
               <StatusPill size="xs" tone="success" label="Retailed" meaning="Finished: the recorded PDI file is current" />
             ) : row.completion_status === "retailed_stale" ? (
-              <StatusPill size="xs" tone="warning" label="Retailed · changed"
-                          meaning="Marked Retailed, but the invoice or its mappings changed after that export" />
+              <StatusPill size="xs" tone="warning" label="Retailed · re-verify"
+                          meaning="Marked Retailed, but the invoice, its totals or mappings changed, or it is no longer VALIDATED" />
             ) : null}
           </div>
         </TableCell>
