@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { InvoicePrice } from "@/components/invoice/invoice-price";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useConfirmCaseMappings, useInvoice } from "@/hooks/use-api";
 import { parseUnits } from "@/lib/proposals";
@@ -138,11 +139,10 @@ export function MappingWorkbench({
           {primary ? (
             <div className="rounded-md border bg-muted/30 p-2.5">
               <div className="t-label mb-1">Invoice evidence</div>
-              <div className="text-[0.78rem] text-muted-foreground">
-                qty {primary.quantity}
-                {primary.unit_price !== null ? ` @ $${primary.unit_price.toFixed(2)}` : ""}
-                {primary.pack_size ? ` · pack “${primary.pack_size}”` : ""}
-              </div>
+              <InvoicePrice quantity={primary.quantity} unitPrice={primary.unit_price} lineTotal={primary.line_total} />
+              {primary.pack_size ? (
+                <div className="t-meta">pack “{primary.pack_size}”</div>
+              ) : null}
             </div>
           ) : null}
 

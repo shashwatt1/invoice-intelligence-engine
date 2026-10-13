@@ -54,6 +54,7 @@ async def _rows(db: AsyncSession, groups) -> list[MappingQueueRow]:
                     invoice_id=o.invoice_id, document_id=o.document_id,
                     invoice_number=o.invoice_number, description=o.description,
                     quantity=o.quantity, unit_price=o.unit_price, pack_size=o.pack_size,
+                    line_total=o.line_total,
                 )
                 for o in group.occurrences
             ],

@@ -109,7 +109,15 @@ export function InvoiceRow({
       ) : null}
       {showMapping ? (
         <TableCell>
-          {edi ? <StatusPill size="xs" tone={edi.tone} label={edi.label} /> : <span className="t-meta">—</span>}
+          <div className="flex flex-wrap items-center gap-1">
+            {edi ? <StatusPill size="xs" tone={edi.tone} label={edi.label} /> : <span className="t-meta">—</span>}
+            {row.completion_status === "retailed" ? (
+              <StatusPill size="xs" tone="success" label="Retailed" meaning="Finished: the recorded PDI file is current" />
+            ) : row.completion_status === "retailed_stale" ? (
+              <StatusPill size="xs" tone="warning" label="Retailed · changed"
+                          meaning="Marked Retailed, but the invoice or its mappings changed after that export" />
+            ) : null}
+          </div>
         </TableCell>
       ) : null}
       <TableCell><ConfidenceInline score={row.composite_confidence} /></TableCell>

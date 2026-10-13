@@ -20,6 +20,7 @@ from app.api.v1 import (
     documents,
     exports,
     health,
+    invoice_workflow,
     invoices,
     mapping_queue,
     product_master,
@@ -44,6 +45,7 @@ api_router.include_router(upload.router, prefix="")
 
 # Processing pipeline + read models
 api_router.include_router(invoices.router, prefix="")
+api_router.include_router(invoice_workflow.router, prefix="")
 api_router.include_router(exports.router, prefix="")
 api_router.include_router(documents.router, prefix="")
 api_router.include_router(dashboard.router, prefix="")

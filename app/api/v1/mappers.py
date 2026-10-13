@@ -19,12 +19,14 @@ def to_history_row(
     document: Document, invoice: Invoice | None, store: Store | None = None,
     *, review: InvoiceReviewSummary | None = None, photo_count: int = 1,
     mapping_required: int | None = None, edi_status: str | None = None,
+    completion_status: str | None = None,
 ) -> HistoryRow:
     return HistoryRow(
         review=review,
         photo_count=photo_count,
         mapping_required=mapping_required,
         edi_status=edi_status,
+        completion_status=completion_status,
         document_id=document.id,
         invoice_id=invoice.id if invoice else None,
         filename=document.filename,

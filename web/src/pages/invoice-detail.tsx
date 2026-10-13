@@ -1,4 +1,5 @@
 import { AlertTriangle, ArrowLeft, CheckCircle2, ListOrdered, Pencil, Trash2, X } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -9,6 +10,8 @@ import { PageHeader, SectionHeader } from "@/components/layout/page-header";
 import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
 import { AddRowForm, CorrectingAs, EditableInvoiceDate, HistoryNote, VoidRowButton } from "@/components/invoice/corrections";
 import { BusinessStatusPanel } from "@/components/invoice/business-status-panel";
+import { ReferenceLinkCard } from "@/components/invoice/reference-link-card";
+import { RetailedControl } from "@/components/invoice/retailed-control";
 import { FinancialSummary } from "@/components/invoice/financial-summary";
 import { IntelligencePanel } from "@/components/invoice/intelligence-panel";
 import { WorkflowTimeline } from "@/components/invoice/workflow-timeline";
@@ -75,6 +78,14 @@ function DownloadPdiButton({
   blockedReason: string | null;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const queryClient = useQueryClient();
+  // A plain download link gives no completion signal: re-read the invoice
+  // shortly after, so the Retailed control reflects the newly recorded export.
+  const refreshAfterDownload = () => {
+    for (const delay of [1500, 5000]) {
+      window.setTimeout(() => void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] }), delay);
+    }
+  };
 
   if (!allowed) {
     return (
@@ -100,7 +111,7 @@ function DownloadPdiButton({
   }
   return (
     <Button asChild variant="default" size="sm">
-      <a href={invoiceExportUrl(invoiceId, "pdi")}>
+      <a href={invoiceExportUrl(invoiceId, "pdi")} onClick={refreshAfterDownload}>
         <ListOrdered className="size-3.5" /> Download PDI Format
       </a>
     </Button>
@@ -486,6 +497,7 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
         {/* CONTEXT */}
         <div className="min-w-0 space-y-4">
           {isAdmin ? <IntelligencePanel detail={detail} /> : null}
+          <ReferenceLinkCard invoiceId={detail.invoice_id} link={detail.reference_link} />
           <BusinessStatusPanel detail={detail} />
         </div>
       </div>
@@ -566,6 +578,7 @@ export function InvoiceDetailPage() {
                 <DownloadPdiButton invoiceId={data.invoice_id} allowed={data.pdi_export_allowed}
                                    requiresConfirmation={data.pdi_export_requires_confirmation}
                                    blockedReason={data.pdi_export_blocked_reason} />
+                <RetailedControl invoiceId={data.invoice_id} completion={data.completion} />
                 {isAdmin ? <DeleteInvoiceButton invoiceId={data.invoice_id} /> : null}
               </>
             }

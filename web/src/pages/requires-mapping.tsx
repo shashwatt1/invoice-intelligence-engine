@@ -153,7 +153,8 @@ export function RequiresMappingPage() {
                                 className="rounded-md bg-accent px-1.5 py-0.5 text-[0.72rem] font-medium text-accent-foreground hover:underline"
                                 title={
                                   `${occurrence.invoice_number || occurrence.invoice_id} — qty ${occurrence.quantity}` +
-                                  (occurrence.unit_price !== null ? ` @ $${occurrence.unit_price.toFixed(2)}` : "")
+                                  (occurrence.unit_price !== null ? ` @ $${occurrence.unit_price.toFixed(2)}` : "") +
+                                  (occurrence.line_total != null ? ` = $${occurrence.line_total.toFixed(2)}` : "")
                                 }
                                 data-testid="mapping-queue-invoice-link"
                               >

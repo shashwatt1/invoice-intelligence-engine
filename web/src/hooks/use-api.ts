@@ -36,6 +36,9 @@ import {
   setUserActive,
   resetUserPassword,
   correctLineItem,
+  markRetailed,
+  reopenRetailed,
+  saveReferenceLink,
   correctInvoiceDate,
   correctTotals,
   deleteInvoice,
@@ -179,6 +182,29 @@ export function useConfirmCaseMappings(invoiceId: string | undefined) {
  * figures and the export gate all come back from the backend rather than
  * being patched locally.
  */
+export function useSaveReferenceLink(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (url: string | null) => saveReferenceLink(invoiceId, url),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+    },
+  });
+}
+
+export function useRetailed(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ action, note }: { action: "mark" | "reopen"; note?: string | null }) =>
+      action === "mark" ? markRetailed(invoiceId) : reopenRetailed(invoiceId, note ?? null),
+    onSettled: () => {
+      // Success or refusal, the status shown must be the server's current one.
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+  });
+}
+
 export function useCorrectLineItem(invoiceId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({

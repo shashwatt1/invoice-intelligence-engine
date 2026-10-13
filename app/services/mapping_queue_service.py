@@ -48,6 +48,7 @@ class UnresolvedMappingOccurrence:
     quantity: float
     unit_price: float | None
     pack_size: str | None
+    line_total: float | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,7 @@ async def list_unresolved_mapping_groups(
                 quantity=float(item.quantity),
                 unit_price=float(item.unit_price) if item.unit_price is not None else None,
                 pack_size=item.pack_size,
+                line_total=float(item.line_total) if item.line_total is not None else None,
             ))
             if item.description:
                 description_by_key[key] = item.description

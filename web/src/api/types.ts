@@ -514,6 +514,16 @@ export interface CaseMappingRow {
   resolution_scope?: string | null;
   resolution_mapping_id?: string | null;
   resolution_notes?: string[];
+  /** The line itself (source values, display only; never written or exported from here). */
+  sort_order?: number | null;
+  /** The line's product code exactly as stored; item_code is its normalized form. */
+  product_code?: string | null;
+  quantity?: number | null;
+  unit_price?: number | null;
+  line_total?: number | null;
+  unit_discount?: number | null;
+  /** The description before its first correction; null when never corrected. */
+  original_description?: string | null;
 }
 
 /** Body of PATCH /invoices/{id}/items/{sort_order}. Only the transaction
@@ -605,6 +615,10 @@ export interface LineItemCorrectionResult {
   item: {
     sort_order: number;
     description: string;
+    /** The product code as stored after the correction. */
+    product_code?: string | null;
+    /** That code normalized as the mapping table and the PDI line use it; null when unusable. */
+    item_code?: string | null;
     quantity: number;
     unit_price: number | null;
     line_total: number | null;
@@ -692,6 +706,32 @@ export interface InvoiceDetail {
 
   ocr_text: string | null;
   raw_extraction: Record<string, unknown> | null;
+  /** Original invoice / chat link saved by a manager; null when none. Never fetched. */
+  reference_link?: ReferenceLink | null;
+  /** Retailed status; null when the invoice has no store yet. */
+  completion?: Completion | null;
+}
+
+/** The original invoice / chat link, as saved. */
+export interface ReferenceLink {
+  url: string;
+  set_by: string | null;
+  set_at: string | null;
+}
+
+export type CompletionStatus = "not_retailed" | "retailed" | "retailed_stale";
+
+/** Retailed — workflow completion proven by the EDI export ledger. Not goods receipt; no inventory effect. */
+export interface Completion {
+  status: CompletionStatus;
+  can_mark: boolean;
+  /** Why it cannot be marked now. */
+  reason: string | null;
+  latest_export_number: number | null;
+  latest_export_at: string | null;
+  ledger_enabled: boolean;
+  retailed_at: string | null;
+  retailed_by: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -864,6 +904,8 @@ export interface MappingQueueOccurrence {
   quantity: number;
   unit_price: number | null;
   pack_size: string | null;
+  /** Extended line total as printed (source value). */
+  line_total?: number | null;
 }
 
 /** One master-data gap: a (store, UPC) with no authoritative mapping.
@@ -915,6 +957,8 @@ export interface HistoryRow {
   mapping_required: number | null;
   /** 'ready' | 'needs_confirmation' | 'blocked', or null when not applicable. MANAGER+ only. */
   edi_status: "ready" | "needs_confirmation" | "blocked" | null;
+  /** MANAGER+ only: Retailed status; null for USER and invoices without a store. */
+  completion_status?: CompletionStatus | null;
   created_at: string;
 }
 

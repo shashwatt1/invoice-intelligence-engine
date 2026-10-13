@@ -17,12 +17,14 @@ Design decisions:
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    CheckConstraint,
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Numeric,
@@ -143,6 +145,32 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         JSONB, nullable=True, doc="Raw JSON output from the AI structuring layer."
     )
 
+    # Original invoice / chat link (migration 0032). Saved by a MANAGER or
+    # ADMIN; an https:// URL only. Never fetched or previewed — a private chat
+    # link still needs the viewer's own access to the message.
+    reference_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_url_set_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reference_url_set_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", name="fk_invoices_reference_url_set_by_user"), nullable=True)
+    reference_url_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Retailed (migration 0032): a workflow completion status, set by a person
+    # after a PDI file was delivered and recorded in the EDI export ledger. It
+    # is NOT goods receipt and never touches inventory or mappings. The SHA-256
+    # of the delivered file is kept so a later change to the invoice or its
+    # mappings shows the status as no longer current.
+    retailed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retailed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    retailed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", name="fk_invoices_retailed_by_user"), nullable=True)
+    retailed_edi_export_id: Mapped[uuid.UUID | None] = mapped_column(
+        # use_alter: edi_exports also references invoices, so this key is added
+        # after both tables exist (the migration does the same with an ALTER).
+        UUID(as_uuid=True),
+        ForeignKey("edi_exports.id", ondelete="SET NULL", use_alter=True, name="fk_invoices_retailed_edi_export"),
+        nullable=True)
+    retailed_pdi_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # Relationships
     document = relationship("Document", back_populates="invoice")
     vendor = relationship("Vendor", back_populates="invoices")
@@ -160,6 +188,14 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         # Store / vendor activity over a date range (receiving, store and vendor views).
         Index("idx_invoices_store_date", "store_id", "invoice_date"),
         Index("idx_invoices_vendor_date", "vendor_id", "invoice_date"),
+        CheckConstraint("reference_url IS NULL OR reference_url LIKE 'https://%'",
+                        name="ck_invoices_reference_url_https"),
+        CheckConstraint(
+            "(retailed_at IS NULL) = (retailed_by IS NULL) "
+            "AND (retailed_at IS NULL) = (retailed_edi_export_id IS NULL) "
+            "AND (retailed_at IS NULL) = (retailed_pdi_sha256 IS NULL)",
+            name="ck_invoices_retailed_together",
+        ),
     )
 
     def __repr__(self) -> str:

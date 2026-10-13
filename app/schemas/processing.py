@@ -210,6 +210,16 @@ class CaseMappingRow(BaseModel):
         default=None, description="The units-per-case awaiting review, when one is queued."
     )
     mapped: bool = Field(description="False when this product still needs a mapping.")
+    sort_order: int | None = Field(default=None, description="The line's position on the invoice (its correction key).")
+    product_code: str | None = Field(
+        default=None, description="The line's product code exactly as stored; item_code is its normalized form.")
+    quantity: float | None = Field(default=None, description="Quantity as invoiced (source value).")
+    unit_price: float | None = Field(
+        default=None, description="Price per invoiced unit as printed (source value; null when the invoice gave none).")
+    line_total: float | None = Field(default=None, description="Extended line total as printed (source value).")
+    unit_discount: float | None = Field(default=None, description="Per-unit discount as printed (source value).")
+    original_description: str | None = Field(
+        default=None, description="The description before its first correction; null when never corrected.")
     resolution_path: str | None = Field(
         default=None,
         description=("Which path produced units_per_case: PRODUCT_MASTER_PHYSICAL_STORE, "
@@ -352,6 +362,11 @@ class CorrectedLineItem(BaseModel):
     sort_order: int
     description: str
     product_code: str | None = None
+    item_code: str | None = Field(
+        default=None,
+        description=("product_code normalized exactly as the mapping table and the PDI line use it; "
+                     "null when the code has no usable digits (the line then exports without an item code)."),
+    )
     quantity: float
     unit_price: float | None = None
     line_total: float | None = None
@@ -663,6 +678,7 @@ class MappingQueueOccurrence(BaseModel):
     quantity: float
     unit_price: float | None = None
     pack_size: str | None = None
+    line_total: float | None = Field(default=None, description="Extended line total as printed (source value).")
 
 
 class MappingQueueRow(BaseModel):
@@ -1009,6 +1025,39 @@ class DatabaseConfirmation(BaseModel):
     processing_duration_ms: int
 
 
+class ReferenceLinkData(BaseModel):
+    """The original invoice / chat link, as saved. Shown as a link only; never fetched."""
+
+    url: str
+    set_by: str | None = None
+    set_at: datetime | None = None
+
+
+class ReferenceLinkUpdate(BaseModel):
+    """Body of PUT /invoices/{id}/reference-link. Empty or null clears the link."""
+
+    url: str | None = Field(default=None, max_length=4096, description="An https:// URL, or null to remove it.")
+
+
+class CompletionData(BaseModel):
+    """Retailed — workflow completion, proven by the EDI export ledger. Not goods receipt; no inventory effect."""
+
+    status: str = Field(description="'not_retailed', 'retailed', or 'retailed_stale' (changed since it was marked).")
+    can_mark: bool
+    reason: str | None = Field(default=None, description="Why it cannot be marked now.")
+    latest_export_number: int | None = None
+    latest_export_at: datetime | None = None
+    ledger_enabled: bool
+    retailed_at: datetime | None = None
+    retailed_by: str | None = None
+
+
+class RetailReopenRequest(BaseModel):
+    """Body of POST /invoices/{id}/retailed/reopen."""
+
+    note: str | None = Field(default=None, max_length=500)
+
+
 class InvoiceDetailData(BaseModel):
     """Full invoice detail. `store` is None while the invoice is STORE_PENDING."""
     """Everything the invoice detail view needs in one request."""
@@ -1094,6 +1143,10 @@ class InvoiceDetailData(BaseModel):
     # Developer panel
     ocr_text: str | None = None
     raw_extraction: dict[str, Any] | None = None
+    reference_link: ReferenceLinkData | None = Field(
+        default=None, description="Original invoice / chat link saved by a manager; null when none.")
+    completion: CompletionData | None = Field(
+        default=None, description="Retailed status; null when the invoice has no store yet.")
 
 
 # ---------------------------------------------------------------------------
@@ -1135,6 +1188,11 @@ class HistoryRow(BaseModel):
             "pending an explicit confirm — see pdi_export_requires_confirmation on invoice "
             "detail), 'blocked' (not exportable yet), or null when not applicable."
         ),
+    )
+    completion_status: str | None = Field(
+        default=None,
+        description=("MANAGER/ADMIN only: 'retailed', 'retailed_stale' (changed since it was marked) or "
+                     "'not_retailed'. Null for USER and for invoices without a store."),
     )
     created_at: datetime
 

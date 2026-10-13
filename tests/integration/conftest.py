@@ -111,7 +111,12 @@ async def db_engine():
         # "column does not exist" until someone drops the database by hand.
         # Detect drift once and rebuild instead.
         if await _schema_is_stale(conn, Base.metadata):
-            await conn.run_sync(Base.metadata.drop_all)
+            # DROP ... CASCADE per table rather than drop_all: order-independent,
+            # and it does not depend on which constraints the stale schema has
+            # (drop_all would try to drop a newer use_alter foreign key, e.g.
+            # invoices -> edi_exports, that an older test schema never had).
+            for name in Base.metadata.tables:
+                await conn.execute(text(f'DROP TABLE IF EXISTS "{name}" CASCADE'))
         await conn.run_sync(Base.metadata.create_all)
     yield engine
 

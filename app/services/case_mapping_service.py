@@ -83,6 +83,30 @@ class CaseMappingStatus:
     # it is in the queue; NEVER used for the EDI — only a mapping is.
     pending_proposal_id: str | None = None
     pending_value: int | None = None
+    # The line itself, so a reviewer can identify the product without leaving
+    # the mapping. Source values exactly as stored on the line (invoice prices,
+    # never another store's or a distributor's); nothing here is written
+    # anywhere or used by the export. `original_description` is the text
+    # before the first description correction, kept for traceability.
+    sort_order: int | None = None
+    product_code: str | None = None
+    quantity: float | None = None
+    unit_price: float | None = None
+    line_total: float | None = None
+    unit_discount: float | None = None
+    original_description: str | None = None
+
+
+def _num(value) -> float | None:
+    return float(value) if value is not None else None
+
+
+def original_description(item) -> str | None:
+    """The description before its first correction, or None when it was never corrected."""
+    for entry in item.correction_history or []:
+        if isinstance(entry, dict) and entry.get("field") == "description":
+            return entry.get("old")
+    return None
 
 
 async def invoice_units_by_item_code(
@@ -187,6 +211,13 @@ def build_case_mapping_status(
                 ),
                 pending_proposal_id=str(queued.id) if queued else None,
                 pending_value=int(queued.proposed_value) if queued else None,
+                sort_order=item.sort_order,
+                product_code=item.product_sku,
+                quantity=_num(item.quantity),
+                unit_price=_num(item.unit_price),
+                line_total=_num(item.line_total),
+                unit_discount=_num(item.discount),
+                original_description=original_description(item),
             )
         )
     return statuses

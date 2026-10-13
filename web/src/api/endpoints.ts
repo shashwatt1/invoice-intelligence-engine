@@ -6,6 +6,8 @@
 import { apiClient, BULK_APPROVAL_PATH, PROCESS_TIMEOUT_MS } from "./client";
 import type {
   ApiEnvelope,
+  Completion,
+  ReferenceLink,
   CommercialCandidateDetail,
   CommercialCandidateParams,
   CommercialCandidateRow,
@@ -165,6 +167,24 @@ export async function confirmCaseMappings(
  * Supplies transaction values OCR could not associate for one line, then
  * re-runs validation. No OCR or model call is made.
  */
+/** Save (or, with null, remove) the original invoice / chat link. MANAGER+. */
+export async function saveReferenceLink(invoiceId: string, url: string | null): Promise<ReferenceLink | null> {
+  const { data } = await apiClient.put<ApiEnvelope<ReferenceLink | null>>(`/invoices/${invoiceId}/reference-link`, { url });
+  return data.data ?? null;
+}
+
+/** Mark Retailed — refused unless the export ledger proves the current PDI file was delivered. MANAGER+. */
+export async function markRetailed(invoiceId: string): Promise<Completion> {
+  const { data } = await apiClient.post<ApiEnvelope<Completion>>(`/invoices/${invoiceId}/retailed`);
+  return data.data!;
+}
+
+/** Remove the Retailed mark, with an optional reason. MANAGER+. */
+export async function reopenRetailed(invoiceId: string, note: string | null): Promise<Completion> {
+  const { data } = await apiClient.post<ApiEnvelope<Completion>>(`/invoices/${invoiceId}/retailed/reopen`, { note });
+  return data.data!;
+}
+
 export async function correctLineItem(
   invoiceId: string,
   sortOrder: number,

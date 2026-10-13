@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
 import type { CaseMappingConfirmation, CaseMappingRow, StoreRef } from "@/api/types";
+import { InvoicePrice } from "@/components/invoice/invoice-price";
+import { LineReviewPanel } from "@/components/invoice/line-review-panel";
 import { StoreChip } from "@/components/shared/store-chip";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -163,6 +165,15 @@ export function CaseMappingCard({
   // Lines with no usable product code cannot be keyed to a mapping at
   // all (the backend's export gate skips them for the same reason).
   const mappable = useMemo(() => rows.filter((row) => row.item_code !== null), [rows]);
+  // Lines whose product code has no usable digits: they export without an item
+  // code. Listed so a manager can correct the code in the review panel.
+  const codeless = useMemo(
+    () => rows.filter((row) => row.item_code === null && row.sort_order !== null && row.sort_order !== undefined),
+    [rows],
+  );
+  // The line under review (by position — a line may share its code with another).
+  const [reviewing, setReviewing] = useState<number | null>(null);
+  const reviewRow = rows.find((row) => row.sort_order === reviewing) ?? null;
   const confirmed = useMemo(() => mappable.filter((row) => row.mapped), [mappable]);
   const pending = useMemo(() => mappable.filter((row) => !row.mapped), [mappable]);
   // Submitted but not yet decided — in the Data Review queue, not master data.
@@ -177,7 +188,21 @@ export function CaseMappingCard({
   const confirm = useConfirmCaseMappings(invoiceId);
   const update = useConfirmCaseMappings(invoiceId);
 
-  if (mappable.length === 0) return null;
+  if (mappable.length === 0 && codeless.length === 0) return null;
+
+  const reviewButton = (row: CaseMappingRow) =>
+    row.sort_order !== null && row.sort_order !== undefined ? (
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 px-2 text-[0.72rem] text-primary"
+        onClick={() => setReviewing(row.sort_order ?? null)}
+        aria-label={`Review line ${row.sort_order + 1}: ${row.description ?? row.item_code ?? "unnamed"}`}
+        data-testid="line-review-open"
+      >
+        Review
+      </Button>
+    ) : null;
 
   const parsed = (value: string) => {
     const units = Number(value);
@@ -260,6 +285,14 @@ export function CaseMappingCard({
       <TableCell className="max-w-64 font-medium">
         <div className="truncate">{row.description ?? "—"}</div>
         <ResolutionNote row={row} />
+        <InvoicePrice
+          quantity={row.quantity}
+          unitPrice={row.unit_price}
+          lineTotal={row.line_total}
+          unitDiscount={row.unit_discount}
+          unitsPerCase={row.units_per_case ?? (row.pending_value === null ? parsed(draftFor(row)) : row.pending_value)}
+          unitsLabel={row.units_per_case !== null ? "confirmed" : row.pending_value !== null ? "pending review" : "as entered"}
+        />
       </TableCell>
       <TableCell className="font-mono text-[0.78rem] tabular-nums">{row.item_code}</TableCell>
       <TableCell className="max-w-56 truncate text-[0.78rem] text-muted-foreground">
@@ -365,6 +398,7 @@ export function CaseMappingCard({
                             </span>
                           </div>
                         )}
+                        {reviewButton(row)}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -461,6 +495,7 @@ export function CaseMappingCard({
                           >
                             <Pencil className="size-3" />
                           </Button>
+                          {reviewButton(row)}
                           <Button
                             asChild
                             size="sm"
@@ -484,6 +519,44 @@ export function CaseMappingCard({
             </Table>
           </div>
         )}
+
+        {codeless.length > 0 ? (
+          <div data-testid="codeless-lines">
+            <div className="px-3 pb-1">
+              <div className="flex items-center gap-1.5 text-[0.82rem] font-semibold text-warning">
+                <TriangleAlert className="size-3.5" /> No usable product code ({codeless.length})
+              </div>
+              <p className="text-[0.72rem] text-muted-foreground">
+                These lines export without an item code. A manager can correct the code from the invoice; the change is
+                kept in the line's history.
+              </p>
+            </div>
+            <Table>
+              <TableBody>
+                {codeless.map((row) => (
+                  <TableRow key={`line-${row.sort_order}`}>
+                    <TableCell className="max-w-64 font-medium">
+                      <div className="truncate">{row.description ?? "—"}</div>
+                      <InvoicePrice quantity={row.quantity} unitPrice={row.unit_price} lineTotal={row.line_total} />
+                    </TableCell>
+                    <TableCell className="font-mono text-[0.78rem]">{row.product_code || "—"}</TableCell>
+                    <TableCell className="w-28">{reviewButton(row)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
+
+        {reviewRow ? (
+          <LineReviewPanel
+            invoiceId={invoiceId}
+            row={reviewRow}
+            evidence={reviewRow.item_code ? <Evidence row={reviewRow} /> : null}
+            open={reviewing !== null}
+            onOpenChange={(next) => !next && setReviewing(null)}
+          />
+        ) : null}
       </CardContent>
     </Card>
   );

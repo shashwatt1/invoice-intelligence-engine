@@ -71,6 +71,11 @@ export function UploadDropzone({
           problems.push(`"${candidate.name}" exceeds the ${MAX_SIZE_MB} MB limit.`);
         } else if (files.some((existing) => sameFile(existing, candidate))) {
           problems.push(`"${candidate.name}" is already in the list.`);
+        } else if (candidate.type === "application/pdf" && (files.length > 0 || accepted.length > 0)) {
+          // Several files are photos of ONE invoice; a PDF is processed on its own.
+          problems.push(`"${candidate.name}" is a PDF — process a PDF on its own, not together with other files.`);
+        } else if ([...files, ...accepted].some((existing) => existing.type === "application/pdf")) {
+          problems.push(`"${candidate.name}" was not added: the list already holds a PDF, which is processed on its own.`);
         } else {
           accepted.push(candidate);
         }
@@ -87,6 +92,31 @@ export function UploadDropzone({
     if (disabled) return;
     accept(Array.from(event.dataTransfer.files ?? []));
   };
+
+  const handleDragOver = (event: DragEvent) => {
+    event.preventDefault();
+    if (!disabled) setIsDragging(true);
+  };
+
+  // Leaving a child (a row, the add button) is not leaving the drop area.
+  const handleDragLeave = (event: DragEvent) => {
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+    setIsDragging(false);
+  };
+
+  // A file dropped beside the drop area must not make the browser open it and
+  // leave the page (losing the list). Only file drags are touched.
+  useEffect(() => {
+    const swallow = (event: globalThis.DragEvent) => {
+      if (Array.from(event.dataTransfer?.types ?? []).includes("Files")) event.preventDefault();
+    };
+    window.addEventListener("dragover", swallow);
+    window.addEventListener("drop", swallow);
+    return () => {
+      window.removeEventListener("dragover", swallow);
+      window.removeEventListener("drop", swallow);
+    };
+  }, []);
 
   const move = (index: number, delta: number) => {
     const target = index + delta;
@@ -122,7 +152,14 @@ export function UploadDropzone({
       />
 
       {files.length > 0 ? (
-        <div className="space-y-2" data-testid="photo-list">
+        <div
+          className={cn("space-y-2 rounded-lg transition-[background-color,box-shadow] duration-200",
+                        isDragging && !disabled && "bg-accent/40 ring-2 ring-brand/60")}
+          data-testid="photo-list"
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <div className="flex items-center justify-between">
             <span className="text-[0.78rem] font-medium">
               Invoice {files.length === 1 ? "file" : `photos · ${files.length}`}
@@ -187,17 +224,14 @@ export function UploadDropzone({
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
-              onDragOver={(event) => {
-                event.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
               className={cn(dropzoneClass, "px-4 py-3")}
               data-testid="add-photo"
             >
               <span className="inline-flex items-center gap-2 text-[0.82rem] font-medium">
-                <ImagePlus className="size-4" /> Add {files.length === 1 ? "another photo of this invoice" : "photo"}
+                <ImagePlus className="size-4" />
+                {isDragging
+                  ? "Drop to add to this invoice"
+                  : `Add ${files.length === 1 ? "another photo of this invoice" : "photo"} — or drop more photos anywhere here`}
               </span>
             </button>
           ) : null}

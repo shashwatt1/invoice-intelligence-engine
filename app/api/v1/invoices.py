@@ -50,6 +50,7 @@ from app.schemas.processing import (
     CaseMappingRequest,
     CaseMappingResult,
     CaseMappingRow,
+    CompletionData,
     CorrectedLineItem,
     DatabaseConfirmation,
     DocumentPhoto,
@@ -69,6 +70,7 @@ from app.schemas.processing import (
     LineItemData,
     LineItemVoid,
     ProcessAccepted,
+    ReferenceLinkData,
     StoreAssignment,
     StoreRef,
     VendorData,
@@ -80,10 +82,12 @@ from app.services.case_mapping_service import (
 )
 from app.services.document_lifecycle import ensure_document_visible
 from app.services.export_service import (
+    build_pdi_export,
     normalize_item_code,
     persisted_pdi_export_eligibility,
     unmapped_item_codes,
 )
+from app.services.invoice_workflow_service import completion_state, pdi_sha256, status_for
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.product_master.commercial_resolution import line_product_names, resolution_fields
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
@@ -322,12 +326,18 @@ async def list_invoices(
     # (bounded by page_size), reusing the same gate functions the invoice
     # detail and export endpoints use, so the list can never disagree with them.
     mapping_and_edi: dict[uuid.UUID, tuple[int, str]] = {}
+    completion: dict[uuid.UUID, str] = {}
     if user.role != UserRole.USER.value:
         for _, invoice in rows:
             if invoice is None or invoice.store_id is None:
                 continue
             units = await invoice_units_by_item_code(db, invoice)
             eligibility = persisted_pdi_export_eligibility(invoice, units)
+            # Retailed reads as current only while the PDI the invoice would produce
+            # now is the file it was marked against (see invoice_workflow_service).
+            current_sha = (pdi_sha256(build_pdi_export(invoice, units))
+                           if invoice.retailed_at is not None and eligibility.allowed else None)
+            completion[invoice.id] = status_for(invoice, current_sha)
             edi_status = (
                 "blocked" if not eligibility.allowed
                 else "needs_confirmation" if eligibility.requires_confirmation
@@ -344,7 +354,8 @@ async def list_invoices(
                               mapping_required=mapping_and_edi.get(invoice.id, (None, None))[0]
                               if invoice else None,
                               edi_status=mapping_and_edi.get(invoice.id, (None, None))[1]
-                              if invoice else None), user.role)
+                              if invoice else None,
+                              completion_status=completion.get(invoice.id) if invoice else None), user.role)
                for document, invoice in rows],
         total=total,
         page=page,
@@ -494,8 +505,21 @@ async def get_invoice(
         ),
         ocr_text=document.raw_ocr_text,
         raw_extraction=invoice.raw_extraction_json,
+        reference_link=reference_link_data(invoice),
+        completion=completion_data(await completion_state(db, invoice)) if store is not None else None,
     )
     return APIResponse(data=_redact_invoice_detail(data, user.role))
+
+
+def reference_link_data(invoice) -> ReferenceLinkData | None:
+    if not invoice.reference_url:
+        return None
+    return ReferenceLinkData(url=invoice.reference_url, set_by=invoice.reference_url_set_by,
+                             set_at=invoice.reference_url_set_at)
+
+
+def completion_data(state) -> CompletionData:
+    return CompletionData(**vars(state))
 
 
 def _redact_invoice_detail(data: InvoiceDetailData, role: str) -> InvoiceDetailData:
@@ -932,6 +956,7 @@ def _corrected_line(item) -> CorrectedLineItem:
         sort_order=item.sort_order,
         description=item.description,
         product_code=item.product_sku,
+        item_code=normalize_item_code(item.product_sku),
         quantity=float(item.quantity),
         unit_price=float(item.unit_price) if item.unit_price is not None else None,
         line_total=float(item.line_total) if item.line_total is not None else None,
