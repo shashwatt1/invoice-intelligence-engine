@@ -54,6 +54,7 @@ import {
   listProposalSourceInvoices,
   listProposals,
   listStores,
+  deleteDocument,
   moveDocumentToBin,
   processInvoice,
   rejectProposal,
@@ -482,6 +483,19 @@ export function useMoveDocumentToBin(documentId: string) {
     mutationFn: () => moveDocumentToBin(documentId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+/** Permanently deletes an invoice-less run; the same file can then be processed again. */
+export function useDeleteDocument(documentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => deleteDocument(documentId),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ["document", documentId] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },

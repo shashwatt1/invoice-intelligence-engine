@@ -8,7 +8,15 @@ import type { DocumentStatusData } from "@/api/types";
 
 import { DocumentActions } from "./document-actions";
 
-vi.mock("@/api/endpoints", () => ({ stopDocument: vi.fn(), moveDocumentToBin: vi.fn() }));
+vi.mock("@/api/endpoints", () => ({ stopDocument: vi.fn(), moveDocumentToBin: vi.fn(), deleteDocument: vi.fn() }));
+const role = { current: "USER" as "USER" | "MANAGER" | "ADMIN" };
+const RANK = { USER: 0, MANAGER: 1, ADMIN: 2 } as const;
+vi.mock("@/hooks/use-auth", () => ({
+  useAuth: () => ({
+    user: { username: "u", role: role.current }, isLoading: false,
+    hasRole: (minimum: keyof typeof RANK) => RANK[role.current] >= RANK[minimum],
+  }),
+}));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import * as api from "@/api/endpoints";
@@ -40,6 +48,7 @@ function wrap(node: React.ReactNode) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  role.current = "USER";
 });
 
 describe("DocumentActions — STOP", () => {
@@ -112,5 +121,50 @@ describe("DocumentActions — a FAILED run", () => {
     await waitFor(() => expect(onBinned).toHaveBeenCalled());
     expect(api.moveDocumentToBin).toHaveBeenCalledWith("doc-1");
     expect(toast.success).toHaveBeenCalledWith("Failed invoice removed (moved to bin).");
+  });
+});
+
+
+describe("DocumentActions — permanent delete of an invoice-less run", () => {
+  const failed = { ...BASE, status: "FAILED", is_terminal: true } as DocumentStatusData;
+  const binned = { ...BASE, status: "BINNED", is_terminal: true } as DocumentStatusData;
+
+  it("lets an admin delete a binned run after confirming, then returns to the invoice list", async () => {
+    const user = userEvent.setup();
+    role.current = "ADMIN";
+    vi.mocked(api.deleteDocument).mockResolvedValue(undefined);
+    wrap(<DocumentActions status={binned} />);
+    expect(screen.queryByTestId("move-to-bin")).toBeNull();
+    await user.click(screen.getByTestId("delete-document"));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("there is no undo");
+    expect(api.deleteDocument).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(api.deleteDocument).toHaveBeenCalledWith("doc-1"));
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/invoices"));
+  });
+
+  it("offers it on a failed run next to Remove, and calls back instead of navigating on the process page", async () => {
+    const user = userEvent.setup();
+    role.current = "ADMIN";
+    vi.mocked(api.deleteDocument).mockResolvedValue(undefined);
+    const onBinned = vi.fn();
+    wrap(<DocumentActions status={failed} onBinned={onBinned} />);
+    expect(screen.getByTestId("move-to-bin")).toBeInTheDocument();
+    await user.click(screen.getByTestId("delete-document"));
+    await user.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(onBinned).toHaveBeenCalled());
+  });
+
+  it("is not offered to a manager, for an active run, or for a run with an invoice", () => {
+    role.current = "MANAGER";
+    const { unmount } = wrap(<DocumentActions status={failed} />);
+    expect(screen.queryByTestId("delete-document")).toBeNull();
+    unmount();
+    role.current = "ADMIN";
+    const active = wrap(<DocumentActions status={BASE} />);
+    expect(screen.queryByTestId("delete-document")).toBeNull();
+    active.unmount();
+    wrap(<DocumentActions status={{ ...failed, invoice_id: "inv-1" }} />);
+    expect(screen.queryByTestId("delete-document")).toBeNull();
   });
 });

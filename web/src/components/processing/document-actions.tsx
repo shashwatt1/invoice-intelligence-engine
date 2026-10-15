@@ -1,4 +1,4 @@
-import { Ban, Trash2 } from "lucide-react";
+import { Ban, Trash2, XOctagon } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -15,7 +15,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { useMoveDocumentToBin, useStopDocument } from "@/hooks/use-api";
+import { useDeleteDocument, useMoveDocumentToBin, useStopDocument } from "@/hooks/use-api";
+import { useAuth } from "@/hooks/use-auth";
 
 /**
  * STOP and MOVE TO BIN — both backend-authoritative: the button only
@@ -34,10 +35,18 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
   const navigate = useNavigate();
   const stop = useStopDocument(status.document_id);
   const bin = useMoveDocumentToBin(status.document_id);
+  const remove = useDeleteDocument(status.document_id);
+  const { hasRole } = useAuth();
   const [binOpen, setBinOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const withdrawn = status.status === "STOPPED" || status.status === "BINNED";
   const canStop = !status.is_terminal;
+  // An admin may permanently delete a run that produced no invoice once it is
+  // no longer active (failed, stopped or binned) — the only way to process
+  // the same file again, since duplicate detection counts every stored run.
+  const canDelete = hasRole("ADMIN") && !status.invoice_id
+    && ["FAILED", "STOPPED", "BINNED"].includes(status.status);
   // A failed run produced nothing usable: removing it is the expected next
   // step, so the action is a clear button rather than a quiet ghost link.
   const failed = status.status === "FAILED";
@@ -63,7 +72,61 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
     });
   };
 
-  if (withdrawn) return null;
+  const runDelete = () => {
+    remove.mutate(undefined, {
+      onSuccess: () => {
+        setDeleteOpen(false);
+        toast.success("Deleted permanently. The same file can now be processed again.");
+        if (onBinned) onBinned();
+        else navigate("/invoices");
+      },
+      onError: (error) => toast.error(error instanceof Error ? error.message : "Could not delete."),
+    });
+  };
+
+  const deleteControl = canDelete ? (
+    <>
+      <Button size="sm" variant="ghost" className="text-danger hover:bg-danger-soft/60"
+              onClick={() => setDeleteOpen(true)} data-testid="delete-document">
+        <XOctagon className="size-3.5" /> Delete permanently
+      </Button>
+      <AlertDialog open={deleteOpen} onOpenChange={(open) => !open && !remove.isPending && setDeleteOpen(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this run permanently?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-[0.82rem]">
+                <p>
+                  The document, its stored file(s) and its processing history are deleted for good — there is
+                  no undo. It produced no invoice, so no invoice, mapping or proposal is affected.
+                </p>
+                <p>Afterwards the same file can be uploaded and processed again.</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: "destructive" })}
+              disabled={remove.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                runDelete();
+              }}
+            >
+              {remove.isPending ? "Deleting…" : "Delete permanently"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  ) : null;
+
+  if (withdrawn) {
+    return deleteControl ? (
+      <div className="flex flex-wrap items-center gap-2" data-testid="document-actions">{deleteControl}</div>
+    ) : null;
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-2" data-testid="document-actions">
@@ -87,6 +150,7 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
       >
         <Trash2 className="size-3.5" /> {failed ? "Remove failed invoice" : "Move to bin"}
       </Button>
+      {deleteControl}
 
       <AlertDialog open={binOpen} onOpenChange={(open) => !open && !bin.isPending && setBinOpen(false)}>
         <AlertDialogContent>

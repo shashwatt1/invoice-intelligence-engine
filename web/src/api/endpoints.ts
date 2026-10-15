@@ -391,6 +391,11 @@ export async function stopDocument(documentId: string): Promise<DocumentStatusDa
 /** Backend-authoritative, recoverable removal from the active workflow.
  * Never deletes the source or the invoice; idempotent. The actor is the
  * authenticated session — there is no request body. */
+/** Permanently deletes a failed, stopped or binned run that produced no invoice (admin). */
+export async function deleteDocument(documentId: string): Promise<void> {
+  await apiClient.delete(`/documents/${documentId}`);
+}
+
 export async function moveDocumentToBin(documentId: string): Promise<DocumentStatusData> {
   const { data } = await apiClient.post<ApiEnvelope<DocumentStatusData>>(
     `/documents/${documentId}/move-to-bin`,

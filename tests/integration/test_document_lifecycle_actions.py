@@ -446,3 +446,67 @@ class TestBinnedDocumentsLeaveTheLists:
         dashboard = await api_client.get("/api/v1/dashboard/summary", params={"recent_limit": 25})
         assert dashboard.status_code == 200, dashboard.text
         assert str(removed.id) not in {row["document_id"] for row in dashboard.json()["data"]["recent"]}
+
+
+async def _delete(client, document_id) -> object:
+    return await client.delete(f"/api/v1/documents/{document_id}")
+
+
+class TestDeleteInvoicelessRun:
+    """DELETE /documents/{id}: an admin permanently removes a failed, stopped or
+    binned run that produced no invoice, so the same file can be processed again.
+    Never an active run, never one with an invoice, never by a manager."""
+
+    async def test_admin_deletes_a_binned_run_and_the_file_is_no_longer_a_duplicate(
+        self, api_client, db_session,  # noqa: F811
+    ):
+        document = await _active_document(db_session, uploaded_by_user_id=user_id(UserRole.ADMIN.value))
+        document_id, file_hash = document.id, document.file_hash
+        await _bin(api_client, document_id)
+        response = await _delete(api_client, document_id)
+        assert response.status_code == 200, response.text
+        assert response.json()["data"] == {"document_id": str(document_id), "deleted": True}
+        db_session.expire_all()
+        assert await DocumentRepository(db_session).get(document_id) is None
+        assert await DocumentRepository(db_session).get_by_hash(file_hash) is None
+        assert await _log_count(db_session, document_id) == 0
+
+    async def test_a_failed_run_can_be_deleted_directly(self, api_client, db_session):  # noqa: F811
+        document = await _active_document(db_session, uploaded_by_user_id=user_id(UserRole.ADMIN.value))
+        document.status = "FAILED"
+        await db_session.commit()
+        assert (await _delete(api_client, document.id)).status_code == 200
+
+    async def test_an_active_run_is_refused(self, api_client, db_session):  # noqa: F811
+        document = await _active_document(db_session, uploaded_by_user_id=user_id(UserRole.ADMIN.value))
+        document_id = document.id
+        response = await _delete(api_client, document_id)
+        assert response.status_code == 422, response.text
+        db_session.expire_all()
+        assert await DocumentRepository(db_session).get(document_id) is not None
+
+    async def test_a_run_with_an_invoice_is_refused(self, api_client, db_session):  # noqa: F811
+        document = await _active_document(db_session, uploaded_by_user_id=user_id(UserRole.ADMIN.value))
+        document_id = document.id
+        document.status = "BINNED"
+        db_session.add(Invoice(document_id=document_id, store_id=store_id(STORE), invoice_number="DEL-1",
+                               status="VALIDATED", vendor_name="Test", currency="USD"))
+        await db_session.commit()
+        response = await _delete(api_client, document_id)
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["detail"]["reason"] == "has_invoice"
+        db_session.expire_all()
+        assert await DocumentRepository(db_session).get(document_id) is not None
+
+    async def test_a_manager_cannot_delete(self, app, api_client, db_session):  # noqa: F811
+        document = await _active_document(db_session, uploaded_by_user_id=user_id(UserRole.ADMIN.value))
+        await _bin(api_client, document.id)
+        manager = await _as_manager(app)
+        try:
+            response = await _delete(manager, document.id)
+            assert response.status_code == 403, response.text
+        finally:
+            await manager.aclose()
+
+    async def test_unknown_document_is_404(self, api_client):  # noqa: F811
+        assert (await _delete(api_client, uuid.uuid4())).status_code == 404

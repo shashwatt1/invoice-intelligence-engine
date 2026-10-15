@@ -47,6 +47,13 @@ class InvoiceDeleteResult(BaseModel):
     deleted: bool = True
 
 
+class DocumentDeleteResult(BaseModel):
+    """Returned by DELETE /documents/{id}."""
+
+    document_id: uuid.UUID
+    deleted: bool = True
+
+
 class DocumentPhoto(BaseModel):
     """One photo of an intake, with its own OCR outcome."""
 

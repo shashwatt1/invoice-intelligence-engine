@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.invoices import get_pipeline
 from app.api.v1.mappers import to_stage_entry
 from app.core.dependencies import require_admin, require_authenticated_user, require_manager
-from app.core.exceptions import InvoiceBaseException, RecordNotFoundError, ValidationError
+from app.core.exceptions import (
+    InvoiceBaseException,
+    RecordNotFoundError,
+    StorageError,
+    ValidationError,
+)
 from app.core.logging import get_logger
 from app.database.session import get_db, get_session_factory
 from app.models.document import DocumentStatus
@@ -32,6 +37,7 @@ from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse
 from app.schemas.processing import (
+    DocumentDeleteResult,
     DocumentPhoto,
     DocumentStatusData,
     ReprocessResultData,
@@ -47,6 +53,7 @@ from app.services.document_lifecycle import (
 )
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.reprocess_service import reprocess_document
+from app.services.storage_service import get_storage_service
 from app.services.store_guard import ensure_physical_store
 
 logger = get_logger(__name__)
@@ -177,6 +184,68 @@ async def move_document_to_bin_endpoint(
     return APIResponse(data=_redact_document_status(
         await _status_data(db, document, logs, invoice, None, False), user.role
     ))
+
+
+# A run that produced no invoice and is no longer active: failed, stopped or
+# binned. Only such a document can be deleted here; one with an invoice is
+# deleted through DELETE /invoices/{id}, and an active one must be stopped first.
+DELETABLE_WITHOUT_INVOICE = {DocumentStatus.FAILED, DocumentStatus.STOPPED, DocumentStatus.BINNED}
+
+
+@router.delete(
+    "/documents/{document_id}",
+    response_model=APIResponse[DocumentDeleteResult],
+    summary="Permanently delete a failed, stopped or binned run that produced no invoice",
+    description=(
+        "The counterpart of DELETE /invoices/{id} for a run that never produced an invoice "
+        "(typically one that failed): deletes the document, which cascades through the "
+        "existing foreign keys to its photos and processing logs, and removes the stored "
+        "source file(s) on a best-effort basis. A hard delete with no undo — afterwards the "
+        "same file can be uploaded and processed again. Refused while the document is "
+        "active, or once it has an invoice. Admin only. Proposals and master data are not "
+        "linked to an invoice-less run and are untouched."
+    ),
+    responses={404: {"description": "Document not found"},
+               422: {"description": "The document has an invoice, or is still active"}},
+)
+async def delete_document_endpoint(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+) -> APIResponse[DocumentDeleteResult]:
+    documents = DocumentRepository(db)
+    document = await documents.get(document_id)
+    if document is None:
+        raise RecordNotFoundError(message="Document not found.", detail={"document_id": str(document_id)})
+    if await InvoiceRepository(db).get_by_document(document.id) is not None:
+        raise ValidationError(
+            message="This run produced an invoice; delete the invoice instead.",
+            detail={"document_id": str(document_id), "reason": "has_invoice"},
+        )
+    if document.status not in DELETABLE_WITHOUT_INVOICE:
+        raise ValidationError(
+            message=f"Document is {document.status}; only a failed, stopped or binned run can be deleted.",
+            detail={"document_id": str(document_id), "status": document.status},
+        )
+
+    file_paths = [document.file_path] + [
+        p.file_path for p in await documents.pages(document) if p.file_path != document.file_path
+    ]
+    status, filename = document.status, document.filename
+    await documents.delete(document)
+    await db.commit()
+    logger.info("document_deleted", document_id=str(document_id), status=status,
+                filename=filename, deleted_by=user.username)
+
+    for file_path in file_paths:
+        try:
+            await get_storage_service().delete(file_path)
+        except StorageError as exc:
+            # The database is already clean; a leftover stored file is not user-visible.
+            logger.warning("document_delete_file_cleanup_failed", document_id=str(document_id),
+                           file_path=file_path, error=str(exc))
+
+    return APIResponse(data=DocumentDeleteResult(document_id=document_id))
 
 
 async def _status_data(db, document, logs, invoice, failure, include_payloads) -> DocumentStatusData:
