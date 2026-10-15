@@ -5,6 +5,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { DocumentStatus } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
 import { ActiveFilters, FilterBar, SearchInput } from "@/components/shared/filter-bar";
+import { DeleteRunButton } from "@/components/processing/document-actions";
 import { InvoiceRow, InvoiceTableHead } from "@/components/shared/invoice-table";
 import { Pagination } from "@/components/shared/pagination";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
@@ -54,6 +55,7 @@ export function HistoryPage() {
   const navigate = useNavigate();
   const { hasRole } = useAuth();
   const showMapping = hasRole("MANAGER");
+  const isAdmin = hasRole("ADMIN");
   const [search, setSearch] = useSearchParams();
   const [searchInput, setSearchInput] = useState(search.get("q") ?? "");
   const [statusFilter, setStatusFilter] = useState(search.get("status") ?? "ALL");
@@ -142,7 +144,10 @@ export function HistoryPage() {
               <InvoiceTableHead showMapping={showMapping} />
               <TableBody>
                 {data.items.map((row) => (
-                  <InvoiceRow key={row.document_id} row={row} onOpen={() => navigate(rowDestination(row))} showMapping={showMapping} />
+                  <InvoiceRow key={row.document_id} row={row} onOpen={() => navigate(rowDestination(row))} showMapping={showMapping}
+                              action={statusFilter === "BINNED" && isAdmin && !row.invoice_id
+                                ? <DeleteRunButton documentId={row.document_id} compact />
+                                : undefined} />
                 ))}
               </TableBody>
             </Table>

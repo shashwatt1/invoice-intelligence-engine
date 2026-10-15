@@ -35,10 +35,8 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
   const navigate = useNavigate();
   const stop = useStopDocument(status.document_id);
   const bin = useMoveDocumentToBin(status.document_id);
-  const remove = useDeleteDocument(status.document_id);
   const { hasRole } = useAuth();
   const [binOpen, setBinOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const withdrawn = status.status === "STOPPED" || status.status === "BINNED";
   const canStop = !status.is_terminal;
@@ -72,54 +70,9 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
     });
   };
 
-  const runDelete = () => {
-    remove.mutate(undefined, {
-      onSuccess: () => {
-        setDeleteOpen(false);
-        toast.success("Deleted permanently. The same file can now be processed again.");
-        if (onBinned) onBinned();
-        else navigate("/invoices");
-      },
-      onError: (error) => toast.error(error instanceof Error ? error.message : "Could not delete."),
-    });
-  };
-
   const deleteControl = canDelete ? (
-    <>
-      <Button size="sm" variant="ghost" className="text-danger hover:bg-danger-soft/60"
-              onClick={() => setDeleteOpen(true)} data-testid="delete-document">
-        <XOctagon className="size-3.5" /> Delete permanently
-      </Button>
-      <AlertDialog open={deleteOpen} onOpenChange={(open) => !open && !remove.isPending && setDeleteOpen(false)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this run permanently?</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="space-y-2 text-[0.82rem]">
-                <p>
-                  The document, its stored file(s) and its processing history are deleted for good — there is
-                  no undo. It produced no invoice, so no invoice, mapping or proposal is affected.
-                </p>
-                <p>Afterwards the same file can be uploaded and processed again.</p>
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className={buttonVariants({ variant: "destructive" })}
-              disabled={remove.isPending}
-              onClick={(event) => {
-                event.preventDefault();
-                runDelete();
-              }}
-            >
-              {remove.isPending ? "Deleting…" : "Delete permanently"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
+    <DeleteRunButton documentId={status.document_id}
+                     onDeleted={() => (onBinned ? onBinned() : navigate("/invoices"))} />
   ) : null;
 
   if (withdrawn) {
@@ -183,5 +136,66 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+/**
+ * "Delete permanently" for a run that produced no invoice (admin only; the
+ * server refuses anything else). Always confirms first: there is no undo.
+ * Used on the document page, the processing screen and the bin list.
+ */
+export function DeleteRunButton({ documentId, onDeleted, compact = false }: {
+  documentId: string; onDeleted?: () => void; compact?: boolean;
+}) {
+  const remove = useDeleteDocument(documentId);
+  const [open, setOpen] = useState(false);
+
+  const run = () => {
+    remove.mutate(undefined, {
+      onSuccess: () => {
+        setOpen(false);
+        toast.success("Deleted permanently. The same file can now be processed again.");
+        onDeleted?.();
+      },
+      onError: (error) => toast.error(error instanceof Error ? error.message : "Could not delete."),
+    });
+  };
+
+  return (
+    <>
+      <Button size="sm" variant="ghost" className={compact ? "h-7 px-2 text-danger hover:bg-danger-soft/60" : "text-danger hover:bg-danger-soft/60"}
+              onClick={() => setOpen(true)} data-testid="delete-document">
+        <XOctagon className="size-3.5" /> Delete permanently
+      </Button>
+      <AlertDialog open={open} onOpenChange={(next) => !next && !remove.isPending && setOpen(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this run permanently?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-[0.82rem]">
+                <p>
+                  The document, its stored file(s) and its processing history are deleted for good — there is
+                  no undo. It produced no invoice, so no invoice, mapping or proposal is affected.
+                </p>
+                <p>Afterwards the same file can be uploaded and processed again.</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: "destructive" })}
+              disabled={remove.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                run();
+              }}
+            >
+              {remove.isPending ? "Deleting…" : "Delete permanently"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

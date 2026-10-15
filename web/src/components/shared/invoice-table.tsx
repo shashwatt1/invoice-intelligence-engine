@@ -39,8 +39,8 @@ const EDI_STATUS_META: Record<string, { label: string; tone: "success" | "warnin
 };
 
 export function InvoiceRow({
-  row, onOpen, showReview = true, showMapping = false,
-}: { row: HistoryRow; onOpen: () => void; showReview?: boolean; showMapping?: boolean }) {
+  row, onOpen, showReview = true, showMapping = false, action,
+}: { row: HistoryRow; onOpen: () => void; showReview?: boolean; showMapping?: boolean; action?: React.ReactNode }) {
   const review = row.review;
   const edi = row.edi_status ? EDI_STATUS_META[row.edi_status] : null;
   return (
@@ -123,6 +123,13 @@ export function InvoiceRow({
       <TableCell><ConfidenceInline score={row.composite_confidence} /></TableCell>
       <TableCell className="t-meta text-right whitespace-nowrap" title={formatDateTime(row.created_at)}>{formatDate(row.created_at)}</TableCell>
       <TableCell className="pr-3 pl-0">
+        {action ? (
+          // A row action must not also open the row.
+          <span className="mr-1 inline-flex align-middle" onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()} data-testid="row-action">
+            {action}
+          </span>
+        ) : null}
         <ChevronRight className="size-4 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" aria-hidden />
       </TableCell>
     </TableRow>
