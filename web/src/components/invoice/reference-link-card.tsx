@@ -4,7 +4,7 @@ import { toast } from "sonner";
 
 import type { ReferenceLink } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
 import { useSaveReferenceLink } from "@/hooks/use-api";
@@ -36,54 +36,57 @@ export function ReferenceLinkCard({ invoiceId, link }: { invoiceId: string; link
     });
   };
 
+  // A one-row strip directly under the invoice header: always in the same place,
+  // whatever the invoice's validation, mapping or EDI state and at any width.
   return (
-    <Card className="gap-2 p-0" data-testid="reference-link-card">
-      <CardHeader className="px-4 pt-3 pb-0">
-        <CardTitle className="flex items-center gap-1.5 text-[0.85rem]">
+    <Card className="gap-0 px-4 py-2.5" data-testid="reference-link-card">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[0.8rem]">
+        <span className="inline-flex items-center gap-1.5 text-[0.85rem] font-semibold">
           <Link2 className="size-3.5" /> Original invoice / Chat link
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2 px-4 pb-3 text-[0.8rem]">
+        </span>
+
         {href && !editing ? (
-          <div className="space-y-1">
+          <>
             <a href={href} target="_blank" rel="noopener noreferrer"
                className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
                data-testid="reference-link-open">
               Open original invoice <ExternalLink className="size-3" />
             </a>
-            <div className="t-meta">
+            <span className="t-meta">
               Saved by {link?.set_by ?? "unknown"}{link?.set_at ? ` · ${formatDateTime(link.set_at)}` : ""}. Opens in a new
               tab; a chat link still needs your own access to that chat.
-            </div>
-          </div>
+            </span>
+          </>
         ) : !editing ? (
-          <div className="t-meta">No link saved for this invoice.</div>
+          <span className="t-meta">No link saved for this invoice.</span>
         ) : null}
 
         {editing ? (
-          <div className="space-y-1.5">
+          <div className="flex min-w-72 flex-1 flex-wrap items-center gap-2">
             <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="https://…" autoFocus
-                   aria-label="Original invoice or chat link" disabled={save.isPending} />
-            {problem ? <div className="text-danger text-[0.72rem]" role="alert">{problem}</div> : null}
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => submit(draft.trim() || null)}
-                      disabled={save.isPending || problem !== null || !draft.trim()}>
-                {save.isPending ? "Saving…" : "Save link"}
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setEditing(false)} disabled={save.isPending}>Cancel</Button>
-            </div>
+                   aria-label="Original invoice or chat link" disabled={save.isPending} className="h-8 min-w-60 flex-1"
+                   onKeyDown={(e) => {
+                     if (e.key === "Enter" && problem === null && draft.trim() && !save.isPending) submit(draft.trim());
+                     if (e.key === "Escape") setEditing(false);
+                   }} />
+            <Button size="sm" onClick={() => submit(draft.trim() || null)}
+                    disabled={save.isPending || problem !== null || !draft.trim()}>
+              {save.isPending ? "Saving…" : "Save link"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)} disabled={save.isPending}>Cancel</Button>
+            {problem ? <div className="text-danger basis-full text-[0.72rem]" role="alert">{problem}</div> : null}
           </div>
         ) : canEdit ? (
-          <div className="flex gap-2">
+          <span className="ml-auto flex gap-2">
             <Button size="sm" variant="outline" onClick={() => { setDraft(link?.url ?? ""); setEditing(true); }}>
               {link ? "Change link" : "Add link"}
             </Button>
             {link ? (
               <Button size="sm" variant="ghost" onClick={() => submit(null)} disabled={save.isPending}>Remove</Button>
             ) : null}
-          </div>
+          </span>
         ) : null}
-      </CardContent>
+      </div>
     </Card>
   );
 }

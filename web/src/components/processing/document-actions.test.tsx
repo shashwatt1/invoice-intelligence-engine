@@ -97,3 +97,20 @@ describe("DocumentActions — MOVE TO BIN", () => {
     expect(screen.getByTestId("move-to-bin")).toBeEnabled();
   });
 });
+
+describe("DocumentActions — a FAILED run", () => {
+  it("offers a clear 'Remove failed invoice' that bins the document and calls back", async () => {
+    const user = userEvent.setup();
+    const failed = { ...BASE, status: "FAILED", is_terminal: true } as DocumentStatusData;
+    vi.mocked(api.moveDocumentToBin).mockResolvedValue({ ...failed, status: "BINNED" } as DocumentStatusData);
+    const onBinned = vi.fn();
+    wrap(<DocumentActions status={failed} onBinned={onBinned} />);
+    expect(screen.queryByTestId("stop-document")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Remove failed invoice/ }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("Remove this failed invoice?");
+    await user.click(screen.getByRole("button", { name: "Move to bin" }));
+    await waitFor(() => expect(onBinned).toHaveBeenCalled());
+    expect(api.moveDocumentToBin).toHaveBeenCalledWith("doc-1");
+    expect(toast.success).toHaveBeenCalledWith("Failed invoice removed (moved to bin).");
+  });
+});

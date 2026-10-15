@@ -145,7 +145,7 @@ export function ProposalDetailPage() {
                   </p>
                 </CardHeader>
                 <CardContent className="px-5 pb-4">
-                  <DecisionPanel proposal={data} />
+                  <DecisionPanel key={data.id} proposal={data} />
                 </CardContent>
               </Card>
             ) : (

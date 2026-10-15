@@ -30,7 +30,7 @@ import { useMoveDocumentToBin, useStopDocument } from "@/hooks/use-api";
  * a USER is allowed only on documents they uploaded themselves, and the
  * backend decides that from the session, returning 403 otherwise.
  */
-export function DocumentActions({ status }: { status: DocumentStatusData }) {
+export function DocumentActions({ status, onBinned }: { status: DocumentStatusData; onBinned?: () => void }) {
   const navigate = useNavigate();
   const stop = useStopDocument(status.document_id);
   const bin = useMoveDocumentToBin(status.document_id);
@@ -38,6 +38,9 @@ export function DocumentActions({ status }: { status: DocumentStatusData }) {
 
   const withdrawn = status.status === "STOPPED" || status.status === "BINNED";
   const canStop = !status.is_terminal;
+  // A failed run produced nothing usable: removing it is the expected next
+  // step, so the action is a clear button rather than a quiet ghost link.
+  const failed = status.status === "FAILED";
 
   const runStop = () => {
     stop.mutate(undefined, {
@@ -53,7 +56,8 @@ export function DocumentActions({ status }: { status: DocumentStatusData }) {
     bin.mutate(undefined, {
       onSuccess: () => {
         setBinOpen(false);
-        toast.success("Moved to bin.");
+        toast.success(failed ? "Failed invoice removed (moved to bin)." : "Moved to bin.");
+        onBinned?.();
       },
       onError: (error) => toast.error(error instanceof Error ? error.message : "Could not move to bin."),
     });
@@ -76,18 +80,18 @@ export function DocumentActions({ status }: { status: DocumentStatusData }) {
       ) : null}
       <Button
         size="sm"
-        variant="ghost"
-        className="text-muted-foreground hover:text-danger"
+        variant={failed ? "outline" : "ghost"}
+        className={failed ? "border-danger/40 text-danger hover:bg-danger-soft/60" : "text-muted-foreground hover:text-danger"}
         onClick={() => setBinOpen(true)}
         data-testid="move-to-bin"
       >
-        <Trash2 className="size-3.5" /> Move to bin
+        <Trash2 className="size-3.5" /> {failed ? "Remove failed invoice" : "Move to bin"}
       </Button>
 
       <AlertDialog open={binOpen} onOpenChange={(open) => !open && !bin.isPending && setBinOpen(false)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Move this document to the bin?</AlertDialogTitle>
+            <AlertDialogTitle>{failed ? "Remove this failed invoice?" : "Move this document to the bin?"}</AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-2 text-[0.82rem]">
                 <p>

@@ -353,6 +353,7 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
 
   return (
     <div className="space-y-4">
+      <ReferenceLinkCard invoiceId={detail.invoice_id} link={detail.reference_link} />
       {isAdmin ? <WorkflowTimeline detail={detail} /> : null}
 
       <div className="grid grid-cols-[minmax(0,1fr)_320px] gap-4 max-xl:grid-cols-1">
@@ -497,7 +498,6 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
         {/* CONTEXT */}
         <div className="min-w-0 space-y-4">
           {isAdmin ? <IntelligencePanel detail={detail} /> : null}
-          <ReferenceLinkCard invoiceId={detail.invoice_id} link={detail.reference_link} />
           <BusinessStatusPanel detail={detail} />
         </div>
       </div>

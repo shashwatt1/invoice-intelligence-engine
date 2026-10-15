@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
 import { PageHeader } from "@/components/layout/page-header";
+import { DocumentActions } from "@/components/processing/document-actions";
 import { ProcessingTimeline } from "@/components/processing/processing-timeline";
 import { StoreConfirmation } from "@/components/processing/store-confirmation";
 import { StoreChip } from "@/components/shared/store-chip";
@@ -325,6 +326,9 @@ export function ProcessPage() {
                         {terminal.error?.message ?? "No detail recorded."} The document and its
                         audit trail were preserved for inspection.
                       </p>
+                      <div className="mt-3">
+                        <DocumentActions status={terminal} onBinned={reset} />
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>

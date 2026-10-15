@@ -14,6 +14,25 @@ function formatSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+const TYPE_BY_EXTENSION: Record<string, string> = {
+  pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+};
+
+/**
+ * The file with a usable MIME type. Files dragged from some apps (Photos,
+ * some chat and download managers) arrive with an empty or non-standard
+ * type, which made them look unsupported and the server would refuse them
+ * too (it validates the declared type). The type is then taken from the
+ * extension, the same rule the file picker's accept list already uses.
+ */
+function withKnownType(file: File): File {
+  if (ACCEPTED_TYPES.includes(file.type)) return file;
+  const fromName = TYPE_BY_EXTENSION[file.name.split(".").pop()?.toLowerCase() ?? ""];
+  const type = file.type === "image/jpg" || file.type === "image/pjpeg" ? "image/jpeg" : fromName;
+  if (!type || (file.type && !file.type.startsWith("image/") && file.type !== "application/octet-stream")) return file;
+  return new File([file], file.name, { type, lastModified: file.lastModified });
+}
+
 function sameFile(a: File, b: File): boolean {
   return a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
 }
@@ -64,7 +83,8 @@ export function UploadDropzone({
     (candidates: File[]) => {
       const problems: string[] = [];
       const accepted: File[] = [];
-      for (const candidate of candidates) {
+      for (const original of candidates) {
+        const candidate = withKnownType(original);
         if (!ACCEPTED_TYPES.includes(candidate.type)) {
           problems.push(`"${candidate.name}" is not a PDF, PNG, or JPEG.`);
         } else if (candidate.size > MAX_SIZE_MB * 1024 * 1024) {

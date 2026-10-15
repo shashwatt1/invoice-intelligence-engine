@@ -25,6 +25,7 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: "REVIEW_REQUIRED", label: "Needs review" },
   { value: "STORE_CONFIRMATION_REQUIRED", label: "Waiting for a store" },
   { value: "FAILED", label: "Failed" },
+  { value: "BINNED", label: "Removed (bin)" },
 ];
 
 const SORT_OPTIONS: { value: string; label: string; sortBy: string; descending: boolean }[] = [

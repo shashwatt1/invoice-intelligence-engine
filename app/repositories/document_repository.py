@@ -166,6 +166,10 @@ class DocumentRepository:
             )
         if status is not None:
             query = query.where(Document.status == status)
+        else:
+            # A binned document was removed from the active workflow by a
+            # person; it stays recoverable and is listed only when asked for.
+            query = query.where(Document.status != DocumentStatus.BINNED)
         if uploaded_by_user_id is not None:
             query = query.where(Document.uploaded_by_user_id == uploaded_by_user_id)
 

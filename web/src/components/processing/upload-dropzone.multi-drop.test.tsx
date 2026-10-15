@@ -122,3 +122,25 @@ describe("dropping more photos onto an existing list", () => {
     expect(within(screen.getByTestId("photo-list")).queryByRole("button")).toBeNull();
   });
 });
+
+describe("files whose type the browser did not report", () => {
+  it("accepts photos dragged in with an empty type, by extension, and sends them as JPEG", () => {
+    render(<Harness />);
+    drop(screen.getByTestId("dropzone"), [img("page1.jpg", 1, ""), img("page2.JPEG", 2, "")]);
+    expect(order()).toBe("page1.jpg,page2.JPEG");
+    expect(screen.queryByText(/not a PDF, PNG, or JPEG/)).toBeNull();
+  });
+
+  it("normalises the non-standard image/jpg type", () => {
+    render(<Harness initial={[img("p1.jpg", 1)]} />);
+    drop(screen.getByTestId("photo-list"), [img("p2.jpg", 2, "image/jpg")]);
+    expect(order()).toBe("p1.jpg,p2.jpg");
+  });
+
+  it("still refuses a file that is not a PDF, PNG or JPEG", () => {
+    render(<Harness />);
+    drop(screen.getByTestId("dropzone"), [img("photo.heic", 1, "image/heic")]);
+    expect(order()).toBe("");
+    expect(screen.getByText(/not a PDF, PNG, or JPEG/)).toBeInTheDocument();
+  });
+});

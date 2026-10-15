@@ -422,3 +422,27 @@ class TestInFlightStageCannotResurrectAStoppedDocument:
             select(ProcessingLog).where(ProcessingLog.document_id == document.id)
         )).scalars().all()
         assert not any(log.status == LogStatus.FAILURE for log in logs)
+
+
+class TestBinnedDocumentsLeaveTheLists:
+    """A binned (removed) document — typically a failed run — leaves the active
+    lists; it stays recoverable and is listed only when asked for by status."""
+
+    async def test_binned_document_is_hidden_unless_filtered_for(self, api_client, db_session):  # noqa: F811
+        kept = await _active_document(db_session, uploaded_by_user_id=user_id(UserRole.ADMIN.value))
+        removed = await _active_document(db_session, uploaded_by_user_id=user_id(UserRole.ADMIN.value))
+        assert (await _bin(api_client, removed.id)).status_code == 200
+
+        listed = await api_client.get("/api/v1/invoices", params={"page_size": 100})
+        assert listed.status_code == 200, listed.text
+        ids = {row["document_id"] for row in listed.json()["items"]}
+        assert str(kept.id) in ids
+        assert str(removed.id) not in ids
+
+        binned = await api_client.get("/api/v1/invoices", params={"status": "BINNED", "page_size": 100})
+        assert binned.status_code == 200, binned.text
+        assert str(removed.id) in {row["document_id"] for row in binned.json()["items"]}
+
+        dashboard = await api_client.get("/api/v1/dashboard/summary", params={"recent_limit": 25})
+        assert dashboard.status_code == 200, dashboard.text
+        assert str(removed.id) not in {row["document_id"] for row in dashboard.json()["data"]["recent"]}
