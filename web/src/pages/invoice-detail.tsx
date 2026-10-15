@@ -16,6 +16,7 @@ import { FinancialSummary } from "@/components/invoice/financial-summary";
 import { IntelligencePanel } from "@/components/invoice/intelligence-panel";
 import { WorkflowTimeline } from "@/components/invoice/workflow-timeline";
 import { outcomeToast } from "@/lib/corrections";
+import { MAX_DESCRIPTION } from "@/lib/line-review";
 import { DatabaseConfirmationCard } from "@/components/invoice/database-confirmation";
 import { DeveloperPanel } from "@/components/invoice/developer-panel";
 import { DuplicateReviewCard } from "@/components/invoice/duplicate-review-card";
@@ -188,6 +189,92 @@ function DeleteInvoiceButton({ invoiceId }: { invoiceId: string }) {
  * A corrected value is marked, so a typed figure never goes on reading
  * as extracted data.
  */
+/**
+ * The product name a line shows, with a pencil for a manager or admin to
+ * correct the name printed on THIS invoice line — the wording this invoice's
+ * PDI file carries. It goes through the existing line-correction path: the
+ * old wording is kept in the line's history with who changed it and when.
+ * A Product Master name (global, every store) is never changed from here.
+ */
+function EditableDescription({ invoiceId, item, by, readOnly, inactive }: {
+  invoiceId: string; item: LineItem; by: string; readOnly: boolean; inactive: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const correct = useCorrectLineItem(invoiceId);
+  const shown = hasMasterName(item) ? item.normalized_description : item.description;
+  const edited = item.corrected_fields.includes("description");
+  const value = draft.trim();
+  const problem = !value ? "The name cannot be empty."
+    : value.length > MAX_DESCRIPTION ? `The name is limited to ${MAX_DESCRIPTION} characters.`
+    : value === (item.description ?? "").trim() ? "unchanged" : null;
+
+  const save = () => {
+    if (problem || correct.isPending) return;
+    correct.mutate(
+      { sortOrder: item.sort_order, correction: { description: value, corrected_by: by.trim() || null } },
+      {
+        onSuccess: (result) => {
+          setEditing(false);
+          outcomeToast(result);
+        },
+        onError: (error) => toast.error(error instanceof Error ? error.message : "The name was not changed."),
+      },
+    );
+  };
+
+  if (editing) {
+    return (
+      <div className="space-y-1" data-testid="description-edit">
+        <div className="flex items-center gap-1">
+          <Input
+            autoFocus
+            className="h-7 min-w-56 text-[0.84rem]"
+            aria-label={`Product name printed on this line (row ${item.sort_order})`}
+            value={draft}
+            maxLength={MAX_DESCRIPTION}
+            disabled={correct.isPending}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") save();
+              if (event.key === "Escape") setEditing(false);
+            }}
+          />
+          <Button size="sm" className="h-7 px-2" disabled={correct.isPending || problem !== null} onClick={save}>
+            {correct.isPending ? "…" : "Save"}
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 px-1" disabled={correct.isPending}
+                  onClick={() => setEditing(false)} aria-label="Cancel">
+            <X className="size-3" />
+          </Button>
+        </div>
+        <div className="t-meta">
+          {problem && problem !== "unchanged" ? <span className="text-danger" role="alert">{problem} </span> : null}
+          Changes the name on this invoice line and in its PDI file; the old name stays in the line's history.
+          {hasMasterName(item) ? " The Product Master name is not changed." : ""}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1">
+      <span className={cn("truncate text-[0.84rem] font-medium", inactive && "line-through",
+                          edited && !hasMasterName(item) && "underline decoration-dotted underline-offset-2")}
+            title={edited ? "Name corrected by hand — the original is in the line's history" : undefined}>
+        {shown}
+      </span>
+      {!readOnly ? (
+        <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground"
+                aria-label={`Edit product name for row ${item.sort_order}`} data-testid="edit-description"
+                onClick={() => { setDraft(item.description ?? ""); setEditing(true); }}>
+          <Pencil />
+        </Button>
+      ) : null}
+    </span>
+  );
+}
+
 function EditableAmount({
   invoiceId,
   item,
@@ -413,9 +500,8 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                           </TableCell>
                           <TableCell className="max-w-64">
                             <div className="flex items-center gap-1.5">
-                              <span className={cn("truncate text-[0.84rem] font-medium", inactive && "line-through")}>
-                                {hasMasterName(item) ? item.normalized_description : item.description}
-                              </span>
+                              <EditableDescription invoiceId={detail.invoice_id} item={item} by={by}
+                                                   readOnly={!canEdit} inactive={inactive} />
                               <HistoryNote history={item.correction_history} />
                             </div>
                             {hasMasterName(item) ? (

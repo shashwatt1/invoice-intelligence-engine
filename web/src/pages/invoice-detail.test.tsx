@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
@@ -285,5 +286,47 @@ describe("InvoiceDetailPage — awaiting master data approval", () => {
     const link = await screen.findByTestId("awaiting-master-data-approval");
     expect(link).toHaveTextContent("Awaiting Master Data Approval (15)");
     expect(link).toHaveAttribute("href", `/data-review?invoice=${detail.invoice_id}&store=store-rcm`);
+  });
+});
+
+
+describe("InvoiceDetailPage — editing the product name on a line", () => {
+  it("lets a manager correct the printed name through the line-correction path", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.correctLineItem).mockResolvedValue({
+      item: { sort_order: 2, description: "LB REGULAR", quantity: 8, unit_price: 1.95, line_total: 15.6, unit_deposit: null, corrected_fields: ["description"] },
+      status: "REVIEW_REQUIRED", composite_confidence: 0.9, failed_checks: 3, review_reasons: [],
+      pdi_export_allowed: false, pdi_export_blocked_reason: null,
+    } as never);
+    mount("MANAGER", redactForRole(rcmInvoice(), "MANAGER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    const row = screen.getAllByTestId("line-item-row")[2];
+    await user.click(within(row).getByTestId("edit-description"));
+    const input = within(row).getByRole("textbox", { name: /Product name printed on this line/ });
+    expect(input).toHaveValue("LB REG");
+    expect(within(row).getByTestId("description-edit")).toHaveTextContent("its PDI file");
+    await user.clear(input);
+    await user.type(input, "LB REGULAR{Enter}");
+    await waitFor(() => expect(api.correctLineItem).toHaveBeenCalledWith(
+      "623b4a1c-d91d-4023-b702-d4eb8fc2683e", 2, { description: "LB REGULAR", corrected_by: null }));
+  });
+
+  it("does not save an empty or unchanged name", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.correctLineItem).mockClear();
+    mount("ADMIN", rcmInvoice());
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    const row = screen.getAllByTestId("line-item-row")[0];
+    await user.click(within(row).getByTestId("edit-description"));
+    expect(within(row).getByRole("button", { name: "Save" })).toBeDisabled();
+    await user.clear(within(row).getByRole("textbox"));
+    expect(within(row).getByRole("alert")).toHaveTextContent("The name cannot be empty.");
+    expect(api.correctLineItem).not.toHaveBeenCalled();
+  });
+
+  it("offers no name editing to a USER", async () => {
+    mount("USER", redactForRole(rcmInvoice(), "USER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    expect(screen.queryByTestId("edit-description")).toBeNull();
   });
 });
