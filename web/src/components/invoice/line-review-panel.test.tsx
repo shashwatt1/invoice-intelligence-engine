@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { CaseMappingRow, StoreRef } from "@/api/types";
+import type { CaseMappingRow, LineItem, StoreRef } from "@/api/types";
 
 /**
  * The in-place line review: correct code/description (manager), enter units,
@@ -178,7 +178,7 @@ describe("case-mapping card", () => {
 
   it("opens the review panel for a line and lists lines without a usable code", async () => {
     const user = userEvent.setup();
-    wrap(<CaseMappingCard invoiceId="inv-1" store={STORE}
+    wrap(<CaseMappingCard invoiceId="inv-1" store={STORE} lineItems={lineItems(0, 1, 2, 3, 4, 5)}
                           rows={[row(), row({ item_code: null, product_code: "N/A", description: "FUEL SURCHARGE?", sort_order: 5 })]} />);
     expect(screen.getByTestId("codeless-lines")).toHaveTextContent("No usable product code (1)");
     expect(screen.getByTestId("codeless-lines")).toHaveTextContent("FUEL SURCHARGE?");
@@ -191,5 +191,78 @@ describe("case-mapping card", () => {
     wrap(<CaseMappingCard invoiceId="inv-1" store={STORE} rows={[row({ mapped: true, units_per_case: 24, suggestion_source: "database" })]} />);
     expect(screen.getByTestId("invoice-price")).toHaveTextContent("From invoice: qty 2 · $30.00 each · line $60.00");
     expect(screen.getByTestId("invoice-price-per-unit")).toHaveTextContent("≈ $1.25 per selling unit at 24/case (calculated, confirmed)");
+  });
+});
+
+/** Invoice line items holding exactly these sort_orders, in the order given. */
+function lineItems(...sortOrders: number[]): LineItem[] {
+  return sortOrders.map((sort_order) => ({
+    description: `LINE ${sort_order}`, quantity: 1, unit_price: 1, line_total: 1, tax_rate: null, unit_deposit: null,
+    sort_order, line_type: "product", product_code: null, unit_discount: null, entry_source: "extracted",
+    correction_history: [], source_pages: [], duplicate_candidate: null, corrected_fields: [],
+  }));
+}
+
+describe("case-mapping card — line numbers", () => {
+  const STORE: StoreRef = { id: "s", label: "AF NV Midler", identity_status: "confirmed", display_name: "AF NV Midler",
+                            address: null, source_codes: [] };
+  const codeless = row({ item_code: null, product_code: "N/A", description: "FUEL SURCHARGE?", sort_order: 7 });
+
+  async function openReview(items: LineItem[] | undefined, name: RegExp) {
+    const user = userEvent.setup();
+    wrap(<CaseMappingCard invoiceId="inv-1" store={STORE} rows={[codeless]} lineItems={items} />);
+    await user.click(screen.getByRole("button", { name }));
+    return screen.getByTestId("line-review-panel");
+  }
+
+  it("uses the invoice table's serial, not sort_order + 1, when sort_orders have gaps", async () => {
+    const panel = await openReview(lineItems(0, 3, 7), /^Review line 3: FUEL SURCHARGE\?$/);
+    expect(panel).toHaveTextContent("Review line 3");
+    expect(panel).not.toHaveTextContent("Review line 8");
+  });
+
+  it("numbers from sort_order, not from the order the line items arrive in", async () => {
+    const panel = await openReview(lineItems(7, 0, 3), /^Review line 3: FUEL SURCHARGE\?$/);
+    expect(panel).toHaveTextContent("Review line 3");
+  });
+
+  it("shows no number when the line is not among the invoice's line items", async () => {
+    const panel = await openReview(lineItems(0, 1), /^Review this line: FUEL SURCHARGE\?$/);
+    expect(panel).toHaveTextContent("Review this line");
+    expect(panel).not.toHaveTextContent(/Review line \d/);
+  });
+
+  it("shows no number when two line items hold the same sort_order", async () => {
+    const panel = await openReview(lineItems(0, 7, 7), /^Review this line: FUEL SURCHARGE\?$/);
+    expect(panel).toHaveTextContent("Review this line");
+    expect(panel).not.toHaveTextContent(/Review line \d/);
+  });
+
+  it("shows no number when the card is given no line items", async () => {
+    const panel = await openReview(undefined, /^Review this line: FUEL SURCHARGE\?$/);
+    expect(panel).toHaveTextContent("Review this line");
+  });
+
+  it("still sends a correction against the line's sort_order, whatever number is shown", async () => {
+    const user = userEvent.setup();
+    wrap(<CaseMappingCard invoiceId="inv-1" store={STORE} rows={[codeless]} lineItems={lineItems(0, 3, 7)} />);
+    await user.click(screen.getByRole("button", { name: /^Review line 3: / }));
+    await user.clear(field("Product code (UPC)"));
+    await user.type(field("Product code (UPC)"), "077777000014");
+    await user.type(field("Units per case"), "12");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.correctLineItem).toHaveBeenCalledTimes(1));
+    expect(api.correctLineItem).toHaveBeenCalledWith("inv-1", 7, { corrected_by: "barj", note: null, product_code: "077777000014" });
+  });
+});
+
+describe("line review panel — title", () => {
+  it("names the line by the serial it is given, and neutrally without one", () => {
+    const { unmount } = wrap(<LineReviewPanel invoiceId="inv-1" row={row()} serial={4} open onOpenChange={vi.fn()} />);
+    expect(screen.getByTestId("line-review-panel")).toHaveTextContent("Review line 4");
+    unmount();
+    wrap(<LineReviewPanel invoiceId="inv-1" row={row()} open onOpenChange={vi.fn()} />);
+    expect(screen.getByTestId("line-review-panel")).toHaveTextContent("Review this line");
+    expect(screen.getByTestId("line-review-panel")).not.toHaveTextContent("Review line 3");
   });
 });

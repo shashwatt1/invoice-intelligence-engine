@@ -1,9 +1,11 @@
 import { CheckCircle2, FileScan } from "lucide-react";
 
 import type { InvoiceDetail } from "@/api/types";
+import { RowLinkButton } from "@/components/invoice/validation-report";
 import { ConfidenceMeter } from "@/components/shared/confidence-meter";
 import { StatusBadge, StatusPill } from "@/components/shared/status-badge";
 import { formatPercent } from "@/lib/format";
+import type { RowLinks } from "@/lib/line-references";
 
 function Row({ icon: Icon, label, children }: { icon: React.ElementType; label: string; children: React.ReactNode }) {
   return (
@@ -28,8 +30,11 @@ function Row({ icon: Icon, label, children }: { icon: React.ElementType; label: 
  * (invoice-detail.tsx) only mounts this panel for ADMIN. Business status
  * that every role needs — mapping progress, store, EDI readiness — lives
  * in BusinessStatusPanel instead, which is never redacted away.
+ *
+ * `rowLinks` adds a "Row N" button to a failure or warning that names one
+ * invoice line reliably; invoice-level checks never get one.
  */
-export function IntelligencePanel({ detail: d }: { detail: InvoiceDetail }) {
+export function IntelligencePanel({ detail: d, rowLinks }: { detail: InvoiceDetail; rowLinks?: RowLinks }) {
   const report = d.validation_report;
   const failed = report?.checks.filter((c) => c.status === "FAILED") ?? [];
   const warnings = report?.checks.filter((c) => c.status === "WARNING") ?? [];
@@ -65,26 +70,42 @@ export function IntelligencePanel({ detail: d }: { detail: InvoiceDetail }) {
             </div>
             {failed.length ? (
               <ul className="mt-2 space-y-1">
-                {failed.map((c, i) => (
-                  <li key={`${c.name}-${i}`} className="rounded-md bg-danger-soft/70 px-2 py-1.5 text-[0.74rem] leading-snug">
-                    <span className="font-mono text-[0.68rem] font-semibold text-danger">{c.name}</span>
-                    {c.field ? <span className="ml-1 font-mono text-[0.66rem] text-muted-foreground">{c.field}</span> : null}
-                    <div className="mt-0.5 text-foreground/80">{c.message}</div>
-                    {c.expected !== null && c.expected !== undefined ? (
-                      <div className="t-meta mt-0.5 tabular-nums">expected {c.expected} · got {c.actual}</div>
-                    ) : null}
-                  </li>
-                ))}
+                {failed.map((c, i) => {
+                  const target = rowLinks?.targetOf(c);
+                  return (
+                    <li key={`${c.name}-${i}`} className="rounded-md bg-danger-soft/70 px-2 py-1.5 text-[0.74rem] leading-snug">
+                      <div className="flex items-start justify-between gap-2">
+                        {/* The reference (e.g. line_items[31].line_total) has no break point: it gets its
+                            own line beside the "Row N" button, wrapping only if it still cannot fit. */}
+                        <div className="min-w-0 [overflow-wrap:anywhere]">
+                          <span className="font-mono text-[0.68rem] font-semibold text-danger">{c.name}</span>
+                          {c.field ? <span className="block font-mono text-[0.66rem] text-muted-foreground">{c.field}</span> : null}
+                        </div>
+                        {target && rowLinks ? <RowLinkButton target={target} onSelect={rowLinks.goToRow} /> : null}
+                      </div>
+                      <div className="mt-0.5 text-foreground/80">{c.message}</div>
+                      {c.expected !== null && c.expected !== undefined ? (
+                        <div className="t-meta mt-0.5 tabular-nums">expected {c.expected} · got {c.actual}</div>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             ) : null}
             {warnings.length && !failed.length ? (
               <ul className="mt-2 space-y-1">
-                {warnings.map((c, i) => (
-                  <li key={`${c.name}-${i}`} className="rounded-md bg-warning-soft/70 px-2 py-1.5 text-[0.74rem] leading-snug">
-                    <span className="font-mono text-[0.68rem] font-semibold text-warning">{c.name}</span>
-                    <div className="mt-0.5 text-foreground/80">{c.message}</div>
-                  </li>
-                ))}
+                {warnings.map((c, i) => {
+                  const target = rowLinks?.targetOf(c);
+                  return (
+                    <li key={`${c.name}-${i}`} className="rounded-md bg-warning-soft/70 px-2 py-1.5 text-[0.74rem] leading-snug">
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="min-w-0 font-mono text-[0.68rem] font-semibold text-warning [overflow-wrap:anywhere]">{c.name}</span>
+                        {target && rowLinks ? <RowLinkButton target={target} onSelect={rowLinks.goToRow} /> : null}
+                      </div>
+                      <div className="mt-0.5 text-foreground/80">{c.message}</div>
+                    </li>
+                  );
+                })}
               </ul>
             ) : null}
           </>

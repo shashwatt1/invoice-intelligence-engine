@@ -9,15 +9,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useDecideDuplicate } from "@/hooks/use-api";
 import { formatMoney } from "@/lib/format";
+import { buildRowRefs } from "@/lib/line-references";
 import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
 
-function RowFacts({ item, label }: { item: LineItem; label: string }) {
+function RowFacts({ item, serial, label }: { item: LineItem; serial: number | undefined; label: string }) {
   return (
     <div className="rounded-md border px-3 py-2 text-[0.78rem]">
       <div className="mb-1 flex items-center justify-between">
         <span className="font-semibold">{label}</span>
         <span className="text-[0.68rem] text-muted-foreground">
-          row {item.sort_order}
+          row {serial ?? "—"}
           {item.source_pages.length ? ` · photo ${item.source_pages.join(", ")}` : ""}
         </span>
       </div>
@@ -39,6 +40,11 @@ function RowFacts({ item, label }: { item: LineItem; label: string }) {
  * again (kept for audit, typed duplicate, out of totals and EDI) or a
  * legitimate second row (the flag is cleared). Validation runs again
  * either way, against the printed totals, and no quantity is changed.
+ *
+ * Rows are shown by the same 1-based serial as the line-item table; the
+ * 0-based sort_order stays the key for every lookup and for the decision
+ * sent to the backend. The earlier row is named (and its facts shown) only
+ * when exactly one row holds its sort_order; otherwise "the earlier row".
  */
 export function DuplicateReviewCard({ detail }: { detail: InvoiceDetail }) {
   const decide = useDecideDuplicate(detail.invoice_id);
@@ -47,6 +53,15 @@ export function DuplicateReviewCard({ detail }: { detail: InvoiceDetail }) {
   const name = reviewer.trim();
 
   const bySort = new Map(detail.line_items.map((item) => [item.sort_order, item]));
+  const refs = buildRowRefs(detail.line_items);
+  const flaggedLabel = (item: LineItem) => {
+    const serial = refs.serialOf(item);
+    return serial !== undefined ? `Row ${serial}` : "The flagged row";
+  };
+  const earlierLabel = (sortOrder: number) => {
+    const serial = refs.serialForSortOrder(sortOrder);
+    return serial !== null ? `row ${serial}` : "the earlier row";
+  };
   const pending = detail.line_items.filter(
     (item) => item.duplicate_candidate && !item.duplicate_candidate.resolution,
   );
@@ -61,10 +76,15 @@ export function DuplicateReviewCard({ detail }: { detail: InvoiceDetail }) {
         onSuccess: (result) => {
           rememberReviewer(name);
           setNote("");
+          const now = result.status.replace("_", " ").toLowerCase();
+          const earlier = refs.serialForSortOrder(result.of_sort_order);
+          const flagged = refs.serialOf(item);
           toast.success(
             decision === "same_row"
-              ? `Row ${item.sort_order} recorded as the same row as ${result.of_sort_order} — now ${result.status.replace("_", " ").toLowerCase()}.`
-              : `Rows ${result.of_sort_order} and ${item.sort_order} kept as separate rows — now ${result.status.replace("_", " ").toLowerCase()}.`,
+              ? `${flaggedLabel(item)} recorded as the same row as ${earlierLabel(result.of_sort_order)} — now ${now}.`
+              : earlier !== null && flagged !== undefined
+                ? `Rows ${earlier} and ${flagged} kept as separate rows — now ${now}.`
+                : `${flaggedLabel(item)} and ${earlierLabel(result.of_sort_order)} kept as separate rows — now ${now}.`,
           );
           if (result.status === "REVIEW_REQUIRED") {
             toast.warning(`Still needs review: ${result.review_reasons[0] ?? "see the validation report"}`);
@@ -118,12 +138,14 @@ export function DuplicateReviewCard({ detail }: { detail: InvoiceDetail }) {
         ) : null}
 
         {pending.map((item) => {
-          const other = bySort.get(item.duplicate_candidate!.of_sort_order);
+          const of = item.duplicate_candidate!.of_sort_order;
+          // Shown only when one row holds that sort_order — never a twin picked arbitrarily.
+          const other = refs.isUnique(of) ? bySort.get(of) : undefined;
           return (
             <div key={item.sort_order} className="space-y-2 rounded-lg border border-warning/40 bg-warning-soft/30 p-3" data-testid="duplicate-pair">
               <div className="grid gap-2 sm:grid-cols-2">
-                {other ? <RowFacts item={other} label="Earlier row" /> : null}
-                <RowFacts item={item} label="Flagged row" />
+                {other ? <RowFacts item={other} serial={refs.serialOf(other)} label="Earlier row" /> : null}
+                <RowFacts item={item} serial={refs.serialOf(item)} label="Flagged row" />
               </div>
               {item.duplicate_candidate!.reason ? (
                 <p className="text-[0.75rem] text-muted-foreground">
@@ -147,7 +169,7 @@ export function DuplicateReviewCard({ detail }: { detail: InvoiceDetail }) {
           <ul className="space-y-1 text-[0.75rem] text-muted-foreground">
             {decided.map((item) => (
               <li key={item.sort_order}>
-                Row {item.sort_order} vs row {item.duplicate_candidate!.of_sort_order}:{" "}
+                {flaggedLabel(item)} vs {earlierLabel(item.duplicate_candidate!.of_sort_order)}:{" "}
                 <span className="font-medium text-foreground">
                   {item.duplicate_candidate!.resolution === "same_row" ? "same row, counted once" : "separate rows, both kept"}
                 </span>{" "}

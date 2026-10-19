@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
-import type { CaseMappingConfirmation, CaseMappingRow, StoreRef } from "@/api/types";
+import type { CaseMappingConfirmation, CaseMappingRow, LineItem, StoreRef } from "@/api/types";
 import { InvoicePrice } from "@/components/invoice/invoice-price";
 import { LineReviewPanel } from "@/components/invoice/line-review-panel";
 import { StoreChip } from "@/components/shared/store-chip";
@@ -19,6 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useConfirmCaseMappings } from "@/hooks/use-api";
+import { buildRowRefs } from "@/lib/line-references";
 import { cn } from "@/lib/utils";
 
 /**
@@ -156,12 +157,19 @@ export function CaseMappingCard({
   invoiceId,
   store,
   rows,
+  lineItems,
 }: {
   invoiceId: string;
   /** The invoice's store: every mapping and proposal here is that store's own. */
   store: StoreRef;
   rows: CaseMappingRow[];
+  /** The invoice's line items, so a line is named by the same serial as the line table.
+   * Without them — or when the line cannot be resolved to exactly one row — no number is shown. */
+  lineItems?: LineItem[];
 }) {
+  const refs = useMemo(() => (lineItems ? buildRowRefs(lineItems) : null), [lineItems]);
+  const serialFor = (sortOrder: number | null | undefined): number | null =>
+    refs && sortOrder !== null && sortOrder !== undefined ? refs.serialForSortOrder(sortOrder) : null;
   // Lines with no usable product code cannot be keyed to a mapping at
   // all (the backend's export gate skips them for the same reason).
   const mappable = useMemo(() => rows.filter((row) => row.item_code !== null), [rows]);
@@ -190,6 +198,12 @@ export function CaseMappingCard({
 
   if (mappable.length === 0 && codeless.length === 0) return null;
 
+  const reviewLabel = (row: CaseMappingRow) => {
+    const serial = serialFor(row.sort_order);
+    const name = row.description ?? row.item_code ?? "unnamed";
+    return serial !== null ? `Review line ${serial}: ${name}` : `Review this line: ${name}`;
+  };
+
   const reviewButton = (row: CaseMappingRow) =>
     row.sort_order !== null && row.sort_order !== undefined ? (
       <Button
@@ -197,7 +211,7 @@ export function CaseMappingCard({
         variant="ghost"
         className="h-7 px-2 text-[0.72rem] text-primary"
         onClick={() => setReviewing(row.sort_order ?? null)}
-        aria-label={`Review line ${row.sort_order + 1}: ${row.description ?? row.item_code ?? "unnamed"}`}
+        aria-label={reviewLabel(row)}
         data-testid="line-review-open"
       >
         Review
@@ -552,6 +566,7 @@ export function CaseMappingCard({
           <LineReviewPanel
             invoiceId={invoiceId}
             row={reviewRow}
+            serial={serialFor(reviewRow.sort_order)}
             evidence={reviewRow.item_code ? <Evidence row={reviewRow} /> : null}
             open={reviewing !== null}
             onOpenChange={(next) => !next && setReviewing(null)}

@@ -330,3 +330,146 @@ describe("InvoiceDetailPage — editing the product name on a line", () => {
     expect(screen.queryByTestId("edit-description")).toBeNull();
   });
 });
+
+
+/**
+ * Invoice #501315 (T.J. Sheehan → PB Wolf, 38 rows) as the shape for row
+ * numbers and check links. Rows 31–38 carry the printed values; earlier rows
+ * are fillers. The check fields follow the backend's line_items[<sort_order>]
+ * convention — they are not captured from the live invoice, and nothing here
+ * corrects or reinterprets that invoice's figures.
+ */
+function invoice501315(): InvoiceDetail {
+  const printed: Partial<LineItem>[] = [
+    { description: "BUD LIGHT 24/16 CAN 3/8", quantity: 1, unit_price: 27.6, unit_discount: 2, unit_deposit: 1.2, line_total: 28.8 },
+    { description: "BUSCH 24/12 CAN 2/12", quantity: 1, unit_price: 19.2, unit_discount: 2.55, unit_deposit: 1.2, line_total: 40.8 },
+    { description: "BUDWEISER 24/12 CAN 2/12", quantity: 1, unit_price: 24.35, unit_discount: 0, unit_deposit: 1.2, line_total: 25.55 },
+    { description: "BUD LIGHT 18/12 CAN", quantity: 1, unit_price: 16.85, unit_discount: 0, unit_deposit: 0.9, line_total: 17.75 },
+    { description: "BUDWEISER 18/12 CAN", quantity: 1, unit_price: 16.85, unit_discount: 0, unit_deposit: 0.9, line_total: 35.5 },
+    { description: "SOUTHERN COMFORT PB-12 355ML", quantity: 0, unit_price: 67.12, line_total: 0 },
+    { description: "FIREBALL PB-8/6 100ML", quantity: 0, unit_price: 66.86, unit_deposit: 2.4, line_total: 0 },
+    { description: "MISCELLANEOUS DELIVERY CHARGE", quantity: 1, unit_price: 5, line_total: 5, line_type: "charge", product_code: null },
+  ];
+  const detail = rcmInvoice();
+  detail.invoice_number = "501315";
+  detail.subtotal = 1619.89;
+  detail.grand_total = 1624.89;
+  detail.case_mappings = [];
+  detail.line_items = Array.from({ length: 38 }, (_, sort_order) =>
+    line({ sort_order, description: `SHEEHAN ROW ${sort_order + 1}`, ...(sort_order >= 30 ? printed[sort_order - 30] : {}) }));
+  detail.validation_report = {
+    ...detail.validation_report!,
+    review_reasons: ["LINE_ITEM_MATH: quantity × unit_price does not match the printed line total."],
+    checks: [
+      { name: "LINE_ITEM_UNRECONCILED", status: "WARNING", field: "line_items[31].line_total", expected: "19.20", actual: "40.80", message: "no discount or deposit explains the difference" },
+      { name: "LINE_ITEM_UNRECONCILED", status: "WARNING", field: "line_items[34].line_total", expected: "16.85", actual: "35.50", message: "no discount or deposit explains the difference" },
+      { name: "SUBTOTAL_UNRECONCILED", status: "WARNING", field: "subtotal", expected: "1619.89", actual: "1294.56", message: "Line totals do not sum to the printed subtotal." },
+      { name: "LINE_ITEM_MATH", status: "FAILED", field: "line_items[31].line_total", expected: "19.20", actual: "40.80", message: "quantity × unit_price does not match the printed line total." },
+      { name: "LINE_ITEM_MATH", status: "FAILED", field: "line_items[34].line_total", expected: "16.85", actual: "35.50", message: "quantity × unit_price does not match the printed line total." },
+      { name: "SUBTOTAL_MATCHES_ITEMS", status: "FAILED", field: "subtotal", expected: "1294.56", actual: "1619.89", message: "Sum of line totals does not match the printed subtotal." },
+    ],
+    summary: { passed: 74, failed: 3, warnings: 3, skipped: 3 },
+  };
+  return detail;
+}
+
+function rowFor(sortOrder: number): HTMLElement {
+  const row = document.querySelector<HTMLElement>(`[data-testid="line-item-row"][data-sort-order="${sortOrder}"]`);
+  if (!row) throw new Error(`no row for sort_order ${sortOrder}`);
+  return row;
+}
+
+describe("InvoiceDetailPage — row numbers and check links (Invoice #501315 shape)", () => {
+  it("numbers all 38 rows 1..38 in invoice order, the charge row included", async () => {
+    mount("ADMIN", invoice501315());
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(38));
+    expect(screen.getAllByTestId("row-serial").map((c) => c.textContent))
+      .toEqual(Array.from({ length: 38 }, (_, i) => String(i + 1)));
+    expect(within(rowFor(31)).getByTestId("row-serial")).toHaveTextContent("32");
+    expect(rowFor(31)).toHaveTextContent("BUSCH 24/12 CAN 2/12");
+    expect(within(rowFor(37)).getByTestId("row-serial")).toHaveTextContent("38");
+    expect(rowFor(37)).toHaveTextContent("charge — not a product");
+    expect(screen.getByText(/38 rows · 2 with issues/)).toBeInTheDocument();
+  });
+
+  it("scrolls to, focuses and highlights the row a line check names", async () => {
+    const user = userEvent.setup();
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    mount("ADMIN", invoice501315());
+    const lineChecks = await screen.findByTestId("line-checks");
+    await user.click(within(lineChecks).getAllByRole("button", { name: "Go to row 32" })[0]);
+
+    const target = rowFor(31);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll.mock.contexts[0]).toBe(target);
+    expect(scroll).toHaveBeenCalledWith({ block: "center", behavior: "smooth" });
+    expect(target).toHaveAttribute("data-highlighted", "true");
+    expect(document.activeElement).toBe(target);
+    expect(rowFor(34)).not.toHaveAttribute("data-highlighted");
+    scroll.mockRestore();
+  });
+
+  it("jumps without animation when the user prefers reduced motion", async () => {
+    const user = userEvent.setup();
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ ...original(query), matches: query.includes("reduce") })) as typeof window.matchMedia;
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      mount("ADMIN", invoice501315());
+      const lineChecks = await screen.findByTestId("line-checks");
+      await user.click(within(lineChecks).getAllByRole("button", { name: "Go to row 35" })[0]);
+      expect(scroll).toHaveBeenCalledWith({ block: "center", behavior: "auto" });
+      expect(scroll.mock.contexts[0]).toBe(rowFor(34));
+    } finally {
+      scroll.mockRestore();
+      window.matchMedia = original;
+    }
+  });
+
+  it("clears the highlight after a moment", async () => {
+    const user = userEvent.setup();
+    mount("ADMIN", invoice501315());
+    const lineChecks = await screen.findByTestId("line-checks");
+    await user.click(within(lineChecks).getAllByRole("button", { name: "Go to row 35" })[0]);
+    expect(rowFor(34)).toHaveAttribute("data-highlighted", "true");
+    await waitFor(() => expect(rowFor(34)).not.toHaveAttribute("data-highlighted"), { timeout: 4000 });
+  });
+
+  it("keeps invoice-level checks unlinked and links the Intelligence panel's line failures", async () => {
+    mount("ADMIN", invoice501315());
+    const invoiceChecks = await screen.findByTestId("invoice-checks");
+    expect(invoiceChecks).toHaveTextContent("Subtotal Unreconciled");
+    expect(invoiceChecks).toHaveTextContent("Subtotal Matches Items");
+    expect(within(invoiceChecks).queryByRole("button")).toBeNull();
+
+    const panel = screen.getByTestId("intelligence-panel");
+    expect(within(panel).getAllByTestId("check-row-link").map((b) => b.textContent)).toEqual(["Row 32", "Row 35"]);
+    expect(panel).toHaveTextContent("SUBTOTAL_MATCHES_ITEMS");
+  });
+
+  it("numbers charge, voided, duplicate and manual rows from sort_order, not screen position, and names a duplicate's row by serial", async () => {
+    const detail = rcmInvoice();
+    detail.line_items = [
+      line({ sort_order: 4, description: "ADDED BY HAND", entry_source: "manual" }),
+      line({ sort_order: 0, description: "FIRST PRINTED" }),
+      line({ sort_order: 3, description: "SEEN AGAIN", duplicate_candidate: { of_sort_order: 1, reason: "same UPC and total", resolution: null } }),
+      line({ sort_order: 1, description: "SECOND PRINTED" }),
+      line({ sort_order: 2, description: "REMOVED", line_type: "voided" }),
+      line({ sort_order: 5, description: "DELIVERY", line_type: "charge", product_code: null }),
+      line({ sort_order: 6, description: "STALE FLAG", duplicate_candidate: { of_sort_order: 99, reason: null, resolution: null } }),
+    ];
+    mount("ADMIN", detail);
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(7));
+    expect(screen.getAllByTestId("row-serial").map((c) => c.textContent)).toEqual(["5", "1", "4", "2", "3", "6", "7"]);
+    expect(within(rowFor(3)).getByTestId("duplicate-of")).toHaveTextContent("possible duplicate of row 2");
+    expect(within(rowFor(6)).getByTestId("duplicate-of")).toHaveTextContent("possible duplicate of another row");
+  });
+
+  it("shows row numbers to a MANAGER, labels the name editor by row number, and offers no check links", async () => {
+    mount("MANAGER", redactForRole(invoice501315(), "MANAGER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(38));
+    expect(within(rowFor(34)).getByTestId("row-serial")).toHaveTextContent("35");
+    expect(within(rowFor(34)).getByRole("button", { name: "Edit product name for row 35" })).toBeInTheDocument();
+    expect(screen.queryByTestId("check-row-link")).toBeNull();
+  });
+});

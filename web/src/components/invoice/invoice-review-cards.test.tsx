@@ -53,8 +53,8 @@ describe("possible duplicates across photos", () => {
     const pair = screen.getByTestId("duplicate-pair");
     expect(within(pair).getByText("Earlier row")).toBeInTheDocument();
     expect(within(pair).getByText("Flagged row")).toBeInTheDocument();
-    expect(pair).toHaveTextContent("row 1 · photo 1, 2");
-    expect(pair).toHaveTextContent("row 2 · photo 2");
+    expect(pair).toHaveTextContent("row 2 · photo 1, 2");
+    expect(pair).toHaveTextContent("row 3 · photo 2");
     expect(pair).toHaveTextContent("same figures; neighbours differ");
     expect(screen.getByText("1 to decide")).toBeInTheDocument();
   });
@@ -74,7 +74,7 @@ describe("possible duplicates across photos", () => {
     await waitFor(() => expect(decideDuplicate).toHaveBeenCalledWith("inv-1", 2, {
       decision: "same_row", decided_by: "data-team:shashwat", note: "photo 2 starts where 1 ended",
     }));
-    expect(toast.success).toHaveBeenCalledWith("Row 2 recorded as the same row as 1 — now validated.");
+    expect(toast.success).toHaveBeenCalledWith("Row 3 recorded as the same row as row 2 — now validated.");
   });
 
   it("warns when the totals still disagree after a decision", async () => {
@@ -104,6 +104,84 @@ describe("possible duplicates across photos", () => {
 
     const { container } = wrap(<DuplicateReviewCard detail={{ ...detail, line_items: [line(0)] } as InvoiceDetail} />);
     expect(container.querySelector('[data-testid="duplicate-review"]')).toBeNull();
+  });
+});
+
+describe("possible duplicates across photos — row numbers", () => {
+  const pendingDecision = (of_sort_order: number) => ({
+    sort_order: 2, of_sort_order, decision: "separate_rows", line_type: "product", status: "REVIEW_REQUIRED",
+    failed_checks: 1, review_reasons: [], pdi_export_allowed: false, pdi_export_blocked_reason: "review",
+  });
+
+  it("shows the same 1-based serial as the line table, from sort_order rather than list position", () => {
+    const shuffled = {
+      invoice_id: "inv-1", photos: [],
+      line_items: [
+        line(2, { description: "FLAGGED", duplicate_candidate: { of_sort_order: 1, reason: null, resolution: null } }),
+        line(0, { description: "FIRST" }),
+        line(1, { description: "EARLIER" }),
+      ],
+    } as unknown as InvoiceDetail;
+    wrap(<DuplicateReviewCard detail={shuffled} />);
+    const pair = screen.getByTestId("duplicate-pair");
+    expect(pair).toHaveTextContent("Earlier rowrow 2EARLIER");
+    expect(pair).toHaveTextContent("Flagged rowrow 3FLAGGED");
+  });
+
+  it("names both rows by serial when they are kept separate", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("data-review.reviewer", "r");
+    decideDuplicate.mockResolvedValue(pendingDecision(1));
+    const detail = {
+      invoice_id: "inv-1", photos: [],
+      line_items: [line(0), line(1), line(2, { duplicate_candidate: { of_sort_order: 1, reason: null, resolution: null } })],
+    } as unknown as InvoiceDetail;
+    wrap(<DuplicateReviewCard detail={detail} />);
+    await user.click(screen.getByRole("button", { name: /two separate rows/i }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Rows 2 and 3 kept as separate rows — now review required."));
+    expect(decideDuplicate).toHaveBeenCalledWith("inv-1", 2, expect.objectContaining({ decision: "separate_rows" }));
+  });
+
+  it("lists a decided pair by serial", () => {
+    const decided = {
+      invoice_id: "inv-1", photos: [],
+      line_items: [line(0), line(1, { line_type: "duplicate",
+        duplicate_candidate: { of_sort_order: 0, reason: null, resolution: "same_row", decided_by: "rev", note: null } })],
+    } as unknown as InvoiceDetail;
+    wrap(<DuplicateReviewCard detail={decided} />);
+    expect(screen.getByText(/Row 2 vs row 1:/)).toBeInTheDocument();
+  });
+
+  it("never invents a number for an earlier row that is missing or held by two rows", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("data-review.reviewer", "r");
+    decideDuplicate.mockResolvedValue({ ...pendingDecision(99), decision: "same_row", status: "VALIDATED" });
+    const stale = {
+      invoice_id: "inv-1", photos: [],
+      line_items: [line(0), line(2, { description: "FLAGGED", duplicate_candidate: { of_sort_order: 99, reason: null, resolution: null } })],
+    } as unknown as InvoiceDetail;
+    wrap(<DuplicateReviewCard detail={stale} />);
+    const pair = screen.getByTestId("duplicate-pair");
+    expect(within(pair).queryByText("Earlier row")).toBeNull();
+    expect(pair).toHaveTextContent("Flagged rowrow 2FLAGGED");
+    await user.click(screen.getByRole("button", { name: /same row seen twice/i }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(
+      "Row 2 recorded as the same row as the earlier row — now validated."));
+
+    const ambiguous = {
+      invoice_id: "inv-2", photos: [],
+      line_items: [
+        line(1, { description: "TWIN A" }), line(1, { description: "TWIN B" }),
+        line(2, { line_type: "duplicate",
+          duplicate_candidate: { of_sort_order: 1, reason: null, resolution: "separate_rows", decided_by: "rev", note: null } }),
+        line(3, { description: "FLAGGED", duplicate_candidate: { of_sort_order: 1, reason: null, resolution: null } }),
+      ],
+    } as unknown as InvoiceDetail;
+    const { container } = wrap(<DuplicateReviewCard detail={ambiguous} />);
+    const ambiguousPair = within(container).getByTestId("duplicate-pair");
+    expect(within(ambiguousPair).queryByText("Earlier row")).toBeNull();
+    expect(ambiguousPair).not.toHaveTextContent("TWIN");
+    expect(within(container).getByText(/Row 3 vs the earlier row:/)).toBeInTheDocument();
   });
 });
 

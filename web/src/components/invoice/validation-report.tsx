@@ -8,11 +8,31 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { parseLineReference, type CheckTarget, type RowLinks } from "@/lib/line-references";
 import { CHECK_META, TONE_CLASSES } from "@/lib/status";
 import { titleCase } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-function CheckRow({ check }: { check: ValidationCheck }) {
+/** "Row N" — jumps to the invoice line a check names. Only rendered for a reliable reference. */
+export function RowLinkButton({ target, onSelect }: { target: CheckTarget; onSelect: (sortOrder: number) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(target.sortOrder)}
+      aria-label={`Go to row ${target.serial}`}
+      data-testid="check-row-link"
+      className="shrink-0 rounded-sm bg-background/70 px-1.5 py-px text-[0.7rem] font-semibold tabular-nums hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+    >
+      Row {target.serial}
+    </button>
+  );
+}
+
+function CheckRow({ check, target, onSelectRow }: {
+  check: ValidationCheck;
+  target?: CheckTarget | null;
+  onSelectRow?: (sortOrder: number) => void;
+}) {
   const meta = CHECK_META[check.status];
   const details: string[] = [];
   if (check.message) details.push(check.message);
@@ -23,17 +43,45 @@ function CheckRow({ check }: { check: ValidationCheck }) {
   return (
     <div className={cn("flex items-start gap-2.5 rounded-md px-3 py-2", TONE_CLASSES[meta.tone])}>
       <span className="mt-px w-3 shrink-0 text-center text-[0.8rem] font-bold">{meta.symbol}</span>
-      <div className="min-w-0 text-[0.8rem]">
+      <div className="min-w-0 flex-1 text-[0.8rem]">
         <span className="font-semibold">{titleCase(check.name)}</span>
         {details.length > 0 && (
           <span className="ml-1.5 opacity-80">· {details.join(" · ")}</span>
         )}
       </div>
+      {target && onSelectRow ? <RowLinkButton target={target} onSelect={onSelectRow} /> : null}
     </div>
   );
 }
 
-export function ValidationReportCard({ report }: { report: ValidationReportData }) {
+function GroupLabel({ children }: { children: React.ReactNode }) {
+  return <p className="t-eyebrow px-1 pt-1">{children}</p>;
+}
+
+function AnimatedChecks({ checks, rowLinks, offset = 0 }: {
+  checks: ValidationCheck[];
+  rowLinks?: RowLinks;
+  offset?: number;
+}) {
+  return checks.map((check, index) => (
+    <motion.div
+      key={`${check.name}-${check.field ?? index}`}
+      initial={{ opacity: 0, x: -4 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: (offset + index) * 0.04 }}
+    >
+      <CheckRow check={check} target={rowLinks?.targetOf(check)} onSelectRow={rowLinks?.goToRow} />
+    </motion.div>
+  ));
+}
+
+/**
+ * `rowLinks` (the invoice page passes it) splits failures and warnings
+ * into line checks — linked to their row when the reference is reliable —
+ * and invoice checks, which never link to a row. Without it the card
+ * renders exactly as before.
+ */
+export function ValidationReportCard({ report, rowLinks }: { report: ValidationReportData; rowLinks?: RowLinks }) {
   const blockers = report.checks.filter(
     (check) => check.status === "FAILED" || check.status === "WARNING",
   );
@@ -41,6 +89,8 @@ export function ValidationReportCard({ report }: { report: ValidationReportData 
     (check) => check.status === "PASSED" || check.status === "SKIPPED",
   );
   const { passed, failed, warnings, skipped } = report.summary;
+  const lineBlockers = blockers.filter((check) => parseLineReference(check.field) !== null);
+  const invoiceBlockers = blockers.filter((check) => parseLineReference(check.field) === null);
 
   return (
     <Card>
@@ -63,16 +113,24 @@ export function ValidationReportCard({ report }: { report: ValidationReportData 
       </CardHeader>
       <CardContent className="space-y-1.5">
         {blockers.length > 0 ? (
-          blockers.map((check, index) => (
-            <motion.div
-              key={`${check.name}-${check.field ?? index}`}
-              initial={{ opacity: 0, x: -4 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: index * 0.04 }}
-            >
-              <CheckRow check={check} />
-            </motion.div>
-          ))
+          rowLinks ? (
+            <>
+              {lineBlockers.length > 0 ? (
+                <div className="space-y-1.5" data-testid="line-checks">
+                  <GroupLabel>Line checks</GroupLabel>
+                  <AnimatedChecks checks={lineBlockers} rowLinks={rowLinks} />
+                </div>
+              ) : null}
+              {invoiceBlockers.length > 0 ? (
+                <div className="space-y-1.5" data-testid="invoice-checks">
+                  <GroupLabel>Invoice checks</GroupLabel>
+                  <AnimatedChecks checks={invoiceBlockers} offset={lineBlockers.length} />
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <AnimatedChecks checks={blockers} />
+          )
         ) : (
           <CheckRow
             check={{

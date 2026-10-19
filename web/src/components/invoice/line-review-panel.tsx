@@ -32,12 +32,15 @@ import { MAX_DESCRIPTION, parseUnitsInput, runLineReview, validateLineReview, ty
 export function LineReviewPanel({
   invoiceId,
   row,
+  serial,
   evidence,
   open,
   onOpenChange,
 }: {
   invoiceId: string;
   row: CaseMappingRow;
+  /** The line's 1-based serial in the invoice table; omitted or null when it cannot be resolved to one row. */
+  serial?: number | null;
   /** The card's own evidence display for this row. */
   evidence?: ReactNode;
   open: boolean;
@@ -111,7 +114,7 @@ export function LineReviewPanel({
     <AlertDialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
       <AlertDialogContent className="sm:max-w-xl" data-testid="line-review-panel">
         <AlertDialogHeader>
-          <AlertDialogTitle>Review line {sortOrder + 1}</AlertDialogTitle>
+          <AlertDialogTitle>{serial !== null && serial !== undefined ? `Review line ${serial}` : "Review this line"}</AlertDialogTitle>
           <AlertDialogDescription>
             Corrections are kept in the line's history. Units per case go to Data Review unless a manager approves them
             here; nothing is applied to other stores or to Product Master.

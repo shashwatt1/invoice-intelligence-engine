@@ -1,6 +1,6 @@
 import { AlertTriangle, ArrowLeft, CheckCircle2, ListOrdered, Pencil, Trash2, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -16,6 +16,7 @@ import { FinancialSummary } from "@/components/invoice/financial-summary";
 import { IntelligencePanel } from "@/components/invoice/intelligence-panel";
 import { WorkflowTimeline } from "@/components/invoice/workflow-timeline";
 import { outcomeToast } from "@/lib/corrections";
+import { buildRowRefs, checkTarget, rowDomId, type RowLinks } from "@/lib/line-references";
 import { MAX_DESCRIPTION } from "@/lib/line-review";
 import { DatabaseConfirmationCard } from "@/components/invoice/database-confirmation";
 import { DeveloperPanel } from "@/components/invoice/developer-panel";
@@ -196,8 +197,8 @@ function DeleteInvoiceButton({ invoiceId }: { invoiceId: string }) {
  * old wording is kept in the line's history with who changed it and when.
  * A Product Master name (global, every store) is never changed from here.
  */
-function EditableDescription({ invoiceId, item, by, readOnly, inactive }: {
-  invoiceId: string; item: LineItem; by: string; readOnly: boolean; inactive: boolean;
+function EditableDescription({ invoiceId, item, serial, by, readOnly, inactive }: {
+  invoiceId: string; item: LineItem; serial: number; by: string; readOnly: boolean; inactive: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -230,7 +231,7 @@ function EditableDescription({ invoiceId, item, by, readOnly, inactive }: {
           <Input
             autoFocus
             className="h-7 min-w-56 text-[0.84rem]"
-            aria-label={`Product name printed on this line (row ${item.sort_order})`}
+            aria-label={`Product name printed on this line (row ${serial})`}
             value={draft}
             maxLength={MAX_DESCRIPTION}
             disabled={correct.isPending}
@@ -266,7 +267,7 @@ function EditableDescription({ invoiceId, item, by, readOnly, inactive }: {
       </span>
       {!readOnly ? (
         <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground"
-                aria-label={`Edit product name for row ${item.sort_order}`} data-testid="edit-description"
+                aria-label={`Edit product name for row ${serial}`} data-testid="edit-description"
                 onClick={() => { setDraft(item.description ?? ""); setEditing(true); }}>
           <Pencil />
         </Button>
@@ -412,8 +413,16 @@ function MappingCell({ item, rows, storePending }: { item: LineItem; rows: Invoi
   return <StatusPill size="xs" tone="danger" label="needs mapping" meaning="No approved units-per-case for this product in this store" />;
 }
 
-function ValidationCell({ index, checks }: { index: number; checks: ValidationCheck[] }) {
-  const mine = checks.filter((c) => c.field?.startsWith(`line_items[${index}]`) && c.status !== "PASSED" && c.status !== "SKIPPED");
+/**
+ * This row's own failures and warnings. `checks` holds only the checks that
+ * reliably name this row; a row whose sort_order is held by more than one
+ * row cannot be told apart from its twin, so it claims no check at all.
+ */
+function ValidationCell({ checks, ambiguous }: { checks: ValidationCheck[]; ambiguous: boolean }) {
+  if (ambiguous) {
+    return <span className="text-muted-foreground" aria-label="Row reference ambiguous — see the validation report">—</span>;
+  }
+  const mine = checks.filter((c) => c.status !== "PASSED" && c.status !== "SKIPPED");
   if (mine.length === 0) return <CheckCircle2 className="size-3.5 text-success/70" aria-label="No issues" />;
   const failed = mine.some((c) => c.status === "FAILED");
   return (
@@ -424,6 +433,9 @@ function ValidationCell({ index, checks }: { index: number; checks: ValidationCh
   );
 }
 
+/** How long a row stays highlighted after a check's "Row N" link brings it into view. */
+const ROW_HIGHLIGHT_MS = 2400;
+
 function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; setBy: (v: string) => void }) {
   const { hasRole } = useAuth();
   const isAdmin = hasRole("ADMIN");
@@ -433,10 +445,39 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
   // rank rather than offered and then rejected. A USER's own action on
   // this page is proposing a mapping (CaseMappingCard, unaffected).
   const canEdit = hasRole("MANAGER");
-  const checks = detail.validation_report?.checks ?? [];
+  const checks = useMemo(() => detail.validation_report?.checks ?? [], [detail.validation_report]);
   const storePending = detail.store_pending || !detail.store;
   const multiPhoto = detail.photos.length > 1;
-  const issues = detail.line_items.filter((i) => checks.some((c) => c.field?.startsWith(`line_items[${i.sort_order}]`) && c.status === "FAILED")).length;
+
+  // Row numbers and row references come from sort_order, never from render
+  // position; a check reaches a row only when exactly one row holds it.
+  const refs = useMemo(() => buildRowRefs(detail.line_items), [detail.line_items]);
+  const checksByRow = useMemo(() => {
+    const byRow = new Map<number, ValidationCheck[]>();
+    for (const check of checks) {
+      const target = checkTarget(check, refs);
+      if (target) byRow.set(target.sortOrder, [...(byRow.get(target.sortOrder) ?? []), check]);
+    }
+    return byRow;
+  }, [checks, refs]);
+  const issues = [...checksByRow.values()].filter((list) => list.some((c) => c.status === "FAILED")).length;
+
+  const [highlighted, setHighlighted] = useState<number | null>(null);
+  const highlightTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(highlightTimer.current), []);
+  const goToRow = useCallback((sortOrder: number) => {
+    if (!refs.isUnique(sortOrder)) return;
+    const row = document.getElementById(rowDomId(sortOrder));
+    if (!row) return;
+    const reduceMotion = typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    row.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+    row.focus({ preventScroll: true });
+    setHighlighted(sortOrder);
+    window.clearTimeout(highlightTimer.current);
+    highlightTimer.current = window.setTimeout(() => setHighlighted(null), ROW_HIGHLIGHT_MS);
+  }, [refs]);
+  const rowLinks = useMemo<RowLinks>(() => ({ targetOf: (check) => checkTarget(check, refs), goToRow }), [refs, goToRow]);
 
   return (
     <div className="space-y-4">
@@ -476,7 +517,8 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-surface-2 hover:bg-surface-2">
-                      <TableHead className="w-12 pl-5 text-right">Qty</TableHead>
+                      <TableHead className="w-10 pl-5 text-right" title="Row number, in invoice order">#</TableHead>
+                      <TableHead className="w-12 text-right">Qty</TableHead>
                       <TableHead>Product</TableHead>
                       <TableHead>UPC</TableHead>
                       {multiPhoto ? <TableHead>Photo</TableHead> : null}
@@ -493,14 +535,26 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                     {detail.line_items.map((item) => {
                       const inactive = item.line_type === "duplicate" || item.line_type === "voided";
                       const flagged = item.duplicate_candidate && !item.duplicate_candidate.resolution;
+                      const serial = refs.serialOf(item)!;
+                      const unique = refs.isUnique(item.sort_order);
+                      const duplicateOf = flagged ? refs.serialForSortOrder(item.duplicate_candidate!.of_sort_order) : null;
+                      const isHighlighted = unique && highlighted === item.sort_order;
                       return (
-                        <TableRow key={item.sort_order} className={cn("row-hover", inactive && "text-muted-foreground", flagged && "bg-warning-soft/40")} data-testid="line-item-row">
-                          <TableCell className="pl-5 text-right tabular-nums">
+                        <TableRow key={item.sort_order}
+                                  id={unique ? rowDomId(item.sort_order) : undefined}
+                                  tabIndex={unique ? -1 : undefined}
+                                  data-sort-order={item.sort_order}
+                                  data-highlighted={isHighlighted ? "true" : undefined}
+                                  className={cn("row-hover scroll-mt-20 outline-none", inactive && "text-muted-foreground", flagged && "bg-warning-soft/40",
+                                                isHighlighted && "bg-accent/50 ring-2 ring-inset ring-primary/60")}
+                                  data-testid="line-item-row">
+                          <TableCell className="pl-5 text-right text-muted-foreground tabular-nums" data-testid="row-serial">{serial}</TableCell>
+                          <TableCell className="text-right tabular-nums">
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="quantity" render={(v) => v.toLocaleString()} by={by} readOnly={!canEdit} />
                           </TableCell>
                           <TableCell className="max-w-64">
                             <div className="flex items-center gap-1.5">
-                              <EditableDescription invoiceId={detail.invoice_id} item={item} by={by}
+                              <EditableDescription invoiceId={detail.invoice_id} item={item} serial={serial} by={by}
                                                    readOnly={!canEdit} inactive={inactive} />
                               <HistoryNote history={item.correction_history} />
                             </div>
@@ -516,7 +570,11 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                                 {item.line_type === "duplicate" ? <span>seen twice · counted once</span> : null}
                                 {item.line_type === "voided" ? <span>voided</span> : null}
                                 {item.quantity === 0 && item.line_type === "product" ? <span>shorted — no EDI record</span> : null}
-                                {flagged ? <span className="text-warning">possible duplicate of row {item.duplicate_candidate!.of_sort_order}</span> : null}
+                                {flagged ? (
+                                  <span className="text-warning" data-testid="duplicate-of">
+                                    {duplicateOf !== null ? `possible duplicate of row ${duplicateOf}` : "possible duplicate of another row"}
+                                  </span>
+                                ) : null}
                               </div>
                             ) : null}
                           </TableCell>
@@ -540,7 +598,11 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="line_total" render={(v) => formatMoney(v)} by={by} readOnly={!canEdit} />
                           </TableCell>
                           <TableCell><MappingCell item={item} rows={detail.case_mappings} storePending={storePending} /></TableCell>
-                          {isAdmin ? <TableCell className="text-center"><ValidationCell index={item.sort_order} checks={checks} /></TableCell> : null}
+                          {isAdmin ? (
+                            <TableCell className="text-center">
+                              <ValidationCell checks={checksByRow.get(item.sort_order) ?? []} ambiguous={!unique} />
+                            </TableCell>
+                          ) : null}
                           {canEdit ? <TableCell className="pr-3"><VoidRowButton invoiceId={detail.invoice_id} item={item} by={by} /></TableCell> : null}
                         </TableRow>
                       );
@@ -561,7 +623,8 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
               {/* Case → unit mapping: the remaining gate on the PDI download.
                   Open to every role that reaches this page — USER proposes,
                   MANAGER/ADMIN can also review from here. */}
-              <CaseMappingCard invoiceId={detail.invoice_id} store={detail.store} rows={detail.case_mappings} />
+              <CaseMappingCard invoiceId={detail.invoice_id} store={detail.store} rows={detail.case_mappings}
+                               lineItems={detail.line_items} />
               {/* What this invoice put forward for review, and what became of
                   it — MANAGER+ only: a USER's `review` is always redacted to
                   NONE here (see _redact_invoice_detail), so showing this card
@@ -574,7 +637,7 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
 
           {isAdmin ? (
             <>
-              {detail.validation_report ? <ValidationReportCard report={detail.validation_report} /> : null}
+              {detail.validation_report ? <ValidationReportCard report={detail.validation_report} rowLinks={rowLinks} /> : null}
               <DatabaseConfirmationCard database={detail.database} />
               <DeveloperPanel detail={detail} />
             </>
@@ -583,7 +646,7 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
 
         {/* CONTEXT */}
         <div className="min-w-0 space-y-4">
-          {isAdmin ? <IntelligencePanel detail={detail} /> : null}
+          {isAdmin ? <IntelligencePanel detail={detail} rowLinks={rowLinks} /> : null}
           <BusinessStatusPanel detail={detail} />
         </div>
       </div>
