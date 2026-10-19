@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -469,7 +469,182 @@ describe("InvoiceDetailPage — row numbers and check links (Invoice #501315 sha
     mount("MANAGER", redactForRole(invoice501315(), "MANAGER"));
     await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(38));
     expect(within(rowFor(34)).getByTestId("row-serial")).toHaveTextContent("35");
-    expect(within(rowFor(34)).getByRole("button", { name: "Edit product name for row 35" })).toBeInTheDocument();
+    expect(within(rowFor(34)).getByRole("button", { name: "Edit product name for row 35: BUDWEISER 18/12 CAN" })).toBeInTheDocument();
     expect(screen.queryByTestId("check-row-link")).toBeNull();
+  });
+});
+
+
+/**
+ * jsdom has no layout: give the pinning measurement the geometry it reads — the pinned columns'
+ * widths, the Line total header's right edge (table left = 0) and the scroll area's width.
+ */
+function stubTableGeometry(geometry: { areaWidth: number; moneyRight: number }) {
+  const rect = (r: Partial<DOMRect>) => ({ x: 0, y: 0, top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0, toJSON: () => ({}), ...r }) as DOMRect;
+  const rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const el = this as HTMLElement;
+    if (el.dataset?.pin === "checks") return rect({ width: 56 });
+    if (el.dataset?.pin === "void") return rect({ width: 40 });
+    if (el.hasAttribute?.("data-money-edge")) return rect({ right: geometry.moneyRight });
+    return rect({});
+  });
+  const widthSpy = vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+    return (this as HTMLElement).dataset?.testid === "line-items-scroll" ? geometry.areaWidth : 0;
+  });
+  return () => { rectSpy.mockRestore(); widthSpy.mockRestore(); };
+}
+
+function photo(page_number: number) {
+  return { page_number, filename: `p${page_number}.jpg`, mime_type: "image/jpeg", file_size_bytes: 1,
+           source_type: "ocr", mean_confidence: 0.97, text_chars: 100 };
+}
+
+describe("InvoiceDetailPage — line-items table layout", () => {
+  it("shows a multi-photo row's photo numbers in its Product cell instead of a separate Photo column", async () => {
+    const detail = rcmInvoice();
+    detail.photos = [photo(1), photo(2)];
+    detail.line_items = [
+      line({ sort_order: 0, description: "FIRST", source_pages: [1] }),
+      line({ sort_order: 1, description: "OVERLAP", source_pages: [1, 2] }),
+      line({ sort_order: 2, description: "ADDED BY HAND", source_pages: [], entry_source: "manual" }),
+    ];
+    mount("ADMIN", detail);
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(3));
+    expect(screen.queryByRole("columnheader", { name: "Photo" })).toBeNull();
+    const [first, overlap, manual] = screen.getAllByTestId("line-item-row");
+    // Screen readers hear "Photo P1" / "Photos P1 P2"; the prefix is visually hidden.
+    expect(within(first).getByTestId("photo-badge")).toHaveTextContent(/^Photo P1$/);
+    expect(within(overlap).getByTestId("photo-badge")).toHaveTextContent(/^Photos P1 P2$/);
+    expect(within(overlap).getByText("Photos")).toHaveClass("sr-only");
+    expect(within(overlap).getByTestId("photo-badge")).toHaveAttribute("title", "Read from photo 1 and 2");
+    expect(within(manual).queryByTestId("photo-badge")).toBeNull();
+    // The badge sits in the Product cell, next to the name.
+    expect(within(overlap).getByTestId("photo-badge").closest("td")).toHaveTextContent("OVERLAP");
+  });
+
+  it("shows no photo numbers on a single-photo invoice", async () => {
+    const detail = rcmInvoice();
+    detail.photos = [photo(1)];
+    detail.line_items = detail.line_items.map((item) => ({ ...item, source_pages: [1] }));
+    mount("ADMIN", detail);
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    expect(screen.queryByTestId("photo-badge")).toBeNull();
+  });
+
+  it("keeps the full product name inspectable: tooltip and the edit button's accessible name", async () => {
+    const detail = rcmInvoice();
+    const full = "ARIZONA HARD TEA C-12 220Z HARD GRAPE LEMONADE MIXED PACK";
+    detail.line_items = [line({ sort_order: 0, description: full })];
+    mount("MANAGER", redactForRole(detail, "MANAGER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(1));
+    const row = screen.getByTestId("line-item-row");
+    expect(within(row).getByTitle(full)).toHaveTextContent(full);
+    expect(within(row).getByRole("button", { name: `Edit product name for row 1: ${full}` })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["ADMIN", { mapping: null, checks: "40px", void: "0px" }],
+    ["MANAGER", { mapping: null, checks: null, void: "0px" }],
+    ["USER", { mapping: null, checks: null, void: null }],
+  ] as const)("pins only Checks and void for a %s when that hides no money, with exact offsets; Mapping scrolls", async (role, expected) => {
+    const restore = stubTableGeometry({ areaWidth: 1000, moneyRight: 700 });
+    try {
+      const detail = role === "ADMIN" ? rcmInvoice() : redactForRole(rcmInvoice(), role);
+      mount(role, detail);
+      await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+      const mappingHead = screen.getByRole("columnheader", { name: "Mapping" });
+      expect(mappingHead).not.toHaveClass("sticky");
+      expect(mappingHead.style.right).toBe("");
+      await waitFor(() => expect(document.querySelectorAll("thead [data-pinned]").length).toBe(Object.values(expected).filter(Boolean).length));
+      assertPinned(expected);
+    } finally {
+      restore();
+    }
+  });
+
+  it("falls back to ordinary scrolling when the pinned group would cover the money columns at rest", async () => {
+    // Line total ends at 650px; the area is 700px wide and the pinned group 96px: 650 > 604.
+    const restore = stubTableGeometry({ areaWidth: 700, moneyRight: 650 });
+    try {
+      mount("ADMIN", rcmInvoice());
+      await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+      expect(document.querySelectorAll("[data-pinned]")).toHaveLength(0);
+      document.querySelectorAll<HTMLElement>("[data-pin]").forEach((cell) => {
+        expect(cell).not.toHaveClass("sticky");
+        expect(cell.style.right).toBe("");
+      });
+      expect(screen.getByTestId("line-items-scroll").style.scrollPaddingRight).toBe("");
+    } finally {
+      restore();
+    }
+  });
+
+  it("re-decides pinning when the table area is resized or the money edge moves", async () => {
+    const observers: { cb: ResizeObserverCallback }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      cb: ResizeObserverCallback;
+      constructor(cb: ResizeObserverCallback) { this.cb = cb; observers.push(this); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const geometry = { areaWidth: 1000, moneyRight: 700 };
+    const restore = stubTableGeometry(geometry);
+    const fire = () => act(() => observers.forEach((o) => o.cb([], o as unknown as ResizeObserver)));
+    try {
+      mount("ADMIN", rcmInvoice());
+      await waitFor(() => expect(document.querySelectorAll("thead [data-pinned]")).toHaveLength(2));
+      geometry.areaWidth = 700;                    // narrower: Line total (700) would sit under the group
+      await fire();
+      expect(document.querySelectorAll("[data-pinned]")).toHaveLength(0);
+      geometry.areaWidth = 1000;                   // wide again
+      await fire();
+      expect(document.querySelectorAll("thead [data-pinned]")).toHaveLength(2);
+      geometry.moneyRight = 950;                   // content change widens the money columns
+      await fire();
+      expect(document.querySelectorAll("[data-pinned]")).toHaveLength(0);
+    } finally {
+      restore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("brings a keyboard-focused figure fully into view when it is only partly visible", async () => {
+    const user = userEvent.setup();
+    mount("ADMIN", rcmInvoice());
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    const area = screen.getByTestId("line-items-scroll");
+    const button = within(screen.getAllByTestId("line-item-row")[0]).getByRole("button", { name: "Correct line total for GM VAN MINI CRE" });
+    const rect = (left: number, right: number) => ({ left, right, top: 0, bottom: 0, x: left, y: 0, width: right - left, height: 0, toJSON: () => ({}) }) as DOMRect;
+    vi.spyOn(area, "getBoundingClientRect").mockReturnValue(rect(0, 700));
+    vi.spyOn(button, "getBoundingClientRect").mockReturnValue(rect(660, 720));   // 20px past the edge, not pinned
+    area.scrollLeft = 0;
+    await user.click(document.body);
+    act(() => button.focus());
+    expect(area.scrollLeft).toBe(28);                                            // 20px overhang + 8px margin
+  });
+
+  function assertPinned(expected: Readonly<Record<string, string | null>>) {
+    for (const [name, right] of Object.entries(expected)) {
+      const head = document.querySelector<HTMLElement>(`thead [data-pinned="${name}"]`);
+      const cells = document.querySelectorAll<HTMLElement>(`tbody [data-pinned="${name}"]`);
+      if (right === null) {
+        expect(head).toBeNull();
+        expect(cells).toHaveLength(0);
+        continue;
+      }
+      expect(head).toHaveClass("sticky");
+      expect(head!.style.right).toBe(right);
+      expect(cells).toHaveLength(4);
+      cells.forEach((cell) => { expect(cell).toHaveClass("sticky"); expect(cell.style.right).toBe(right); });
+    }
+  }
+
+  it("makes the scroll area a labelled, keyboard-focusable region", async () => {
+    mount("ADMIN", rcmInvoice());
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    const region = screen.getByRole("region", { name: "Line items — scroll sideways for more columns" });
+    expect(region).toHaveAttribute("tabindex", "0");
+    expect(region).toContainElement(screen.getAllByTestId("line-item-row")[0]);
   });
 });

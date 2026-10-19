@@ -2,11 +2,20 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+function Table({
+  className,
+  containerProps,
+  ...props
+}: React.ComponentProps<"table"> & {
+  /** Opt-in props for the scroll container (e.g. a focusable, labelled region). Omitted: the container is unchanged. */
+  containerProps?: React.ComponentProps<"div"> & { [attribute: `data-${string}`]: string | undefined }
+}) {
+  const { className: containerClassName, ...container } = containerProps ?? {}
   return (
     <div
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
+      className={cn("relative w-full overflow-x-auto", containerClassName)}
+      {...container}
     >
       <table
         data-slot="table"

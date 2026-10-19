@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowLeft, CheckCircle2, ListOrdered, Pencil, Trash2, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -262,12 +263,12 @@ function EditableDescription({ invoiceId, item, serial, by, readOnly, inactive }
     <span className="inline-flex min-w-0 items-center gap-1">
       <span className={cn("truncate text-[0.84rem] font-medium", inactive && "line-through",
                           edited && !hasMasterName(item) && "underline decoration-dotted underline-offset-2")}
-            title={edited ? "Name corrected by hand — the original is in the line's history" : undefined}>
+            title={edited ? `${shown ?? ""} — corrected by hand; the original is in the line's history` : shown ?? undefined}>
         {shown}
       </span>
       {!readOnly ? (
         <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground"
-                aria-label={`Edit product name for row ${serial}`} data-testid="edit-description"
+                aria-label={`Edit product name for row ${serial}: ${shown ?? ""}`} data-testid="edit-description"
                 onClick={() => { setDraft(item.description ?? ""); setEditing(true); }}>
           <Pencil />
         </Button>
@@ -436,6 +437,20 @@ function ValidationCell({ checks, ambiguous }: { checks: ValidationCheck[]; ambi
 /** How long a row stays highlighted after a check's "Row N" link brings it into view. */
 const ROW_HIGHLIGHT_MS = 2400;
 
+// Line-items table layout. Every cell gets compact horizontal padding (tailwind-merge resolves it
+// against the shared px-2.5); the row-number inset stays pl-5. Checks and the void control are
+// pinned to the right edge of the table's own scroll area, so they stay reachable when the table is
+// wider than its card; they have fixed widths so the pinned offsets are exact. Mapping scrolls with
+// the table: pinning it too put the pinned edge across the money columns at rest.
+const CELL = "px-2";
+const VOID_W = 40;
+const CHECKS_W = 56;
+const PIN = "sticky z-[1]";
+// Opaque: the row's tint (hover, possible duplicate, highlight) layered over the card colour, so
+// figures scrolling underneath never show through.
+const PIN_BODY = "[background:linear-gradient(var(--row-tint,transparent),var(--row-tint,transparent)),var(--color-card)]";
+const PIN_EDGE = "shadow-[-8px_0_8px_-8px_rgb(0_0_0/0.22)]";
+
 function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; setBy: (v: string) => void }) {
   const { hasRole } = useAuth();
   const isAdmin = hasRole("ADMIN");
@@ -479,6 +494,66 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
   }, [refs]);
   const rowLinks = useMemo<RowLinks>(() => ({ targetOf: (check) => checkTarget(check, refs), goToRow }), [refs, goToRow]);
 
+  // Pinned review group (Checks, void). Pinning is decided from rendered geometry: it is on only
+  // when, at the default scroll position, the pinned group would sit entirely to the right of the
+  // last money column (Line total, header included) — so no figure or money header is ever under
+  // it. Otherwise the columns scroll like any other. Pinning only toggles sticky positioning; the
+  // pinned columns keep their fixed widths either way, so no column moves and the decision cannot
+  // feed back into its own measurement. Measured before first paint, on every resize of the scroll
+  // area, the table or the money edge, and whenever the rows change; unpinned until measured.
+  const pinRight = { void: 0, checks: canEdit ? VOID_W : 0 };
+  // The edge shadow goes on the left-most pinned column for this role.
+  const edgeColumn = isAdmin ? "checks" : canEdit ? "void" : null;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollArea, setScrollArea] = useState({ overflowing: false, pinnedWidth: 0, pin: false });
+  const hasRows = detail.line_items.length > 0;
+  const measureScrollArea = useCallback(() => {
+    const area = scrollRef.current;
+    const table = area?.querySelector("table");
+    if (!area || !table) return;
+    const pinnedWidth = [...area.querySelectorAll<HTMLElement>("thead [data-pin]")]
+      .reduce((sum, th) => sum + th.getBoundingClientRect().width, 0);
+    const moneyEdge = area.querySelector<HTMLElement>("thead [data-money-edge]");
+    const moneyRight = moneyEdge ? moneyEdge.getBoundingClientRect().right - table.getBoundingClientRect().left : Infinity;
+    const pin = pinnedWidth > 0 && Math.ceil(moneyRight) <= Math.floor(area.clientWidth - pinnedWidth);
+    const overflowing = area.scrollWidth > area.clientWidth + 1;
+    setScrollArea((prev) => (prev.overflowing === overflowing && prev.pin === pin && Math.abs(prev.pinnedWidth - pinnedWidth) < 1
+      ? prev : { overflowing, pinnedWidth, pin }));
+  }, []);
+  useLayoutEffect(() => {
+    measureScrollArea();
+  }, [measureScrollArea, detail.line_items, isAdmin, canEdit]);
+  useEffect(() => {
+    const area = scrollRef.current;
+    if (!area || typeof ResizeObserver === "undefined") return;
+    // Resize callbacks run after layout and before paint, outside React's render and commit. Flushing
+    // the (rare) pin change synchronously here lands it in the same frame, so a resize across the
+    // threshold never paints the old pin state. Unchanged measurements bail out without rendering, and
+    // toggling sticky positioning changes no observed size, so this cannot loop.
+    const observer = new ResizeObserver(() => flushSync(measureScrollArea));
+    observer.observe(area);
+    const table = area.querySelector("table");
+    if (table) observer.observe(table);
+    const moneyEdge = area.querySelector("thead [data-money-edge]");
+    if (moneyEdge) observer.observe(moneyEdge);
+    return () => observer.disconnect();
+  }, [hasRows, measureScrollArea]);
+  const pinned = scrollArea.pin;
+  const pinEdge = pinned && scrollArea.overflowing && PIN_EDGE;
+  // Keyboard focus on a control in a scrolling cell brings it fully into view (and clear of the
+  // pinned group). Browsers leave a partly visible element where it is, which can hide the figure.
+  const keepFocusedControlVisible = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
+    const area = event.currentTarget;
+    const target = event.target as HTMLElement;
+    const cell = target.closest("td, th");
+    if (target === area || !cell || cell.hasAttribute("data-pinned")) return;
+    const view = area.getBoundingClientRect();
+    const box = target.getBoundingClientRect();
+    const right = view.right - (pinned ? scrollArea.pinnedWidth : 0);
+    if (box.right > right) area.scrollLeft += box.right - right + 8;
+    else if (box.left < view.left) area.scrollLeft -= view.left - box.left + 8;
+  }, [pinned, scrollArea.pinnedWidth]);
+
   return (
     <div className="space-y-4">
       <ReferenceLinkCard invoiceId={detail.invoice_id} link={detail.reference_link} />
@@ -514,21 +589,39 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
               <p className="border-t px-5 py-4 text-[0.8rem] text-warning">No line items were extracted — see the validation report.</p>
             ) : (
               <div className="border-t">
-                <Table>
+                <Table containerProps={{
+                  ref: scrollRef,
+                  tabIndex: 0,
+                  role: "region",
+                  "aria-label": "Line items — scroll sideways for more columns",
+                  className: "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
+                  style: pinned ? { scrollPaddingRight: scrollArea.pinnedWidth } : undefined,
+                  onFocus: keepFocusedControlVisible,
+                  "data-testid": "line-items-scroll",
+                }}>
                   <TableHeader>
                     <TableRow className="bg-surface-2 hover:bg-surface-2">
-                      <TableHead className="w-10 pl-5 text-right" title="Row number, in invoice order">#</TableHead>
-                      <TableHead className="w-12 text-right">Qty</TableHead>
-                      <TableHead>Product</TableHead>
-                      <TableHead>UPC</TableHead>
-                      {multiPhoto ? <TableHead>Photo</TableHead> : null}
-                      <TableHead className="text-right">Price</TableHead>
-                      <TableHead className="text-right">Discount</TableHead>
-                      <TableHead className="text-right">Deposit</TableHead>
-                      <TableHead className="text-right">Line total</TableHead>
-                      <TableHead>Mapping</TableHead>
-                      {isAdmin ? <TableHead className="text-center">Checks</TableHead> : null}
-                      {canEdit ? <TableHead className="w-8 pr-3" /> : null}
+                      <TableHead className={cn(CELL, "w-10 pl-5 text-right")} title="Row number, in invoice order">#</TableHead>
+                      <TableHead className={cn(CELL, "w-12 text-right")}>Qty</TableHead>
+                      <TableHead className={CELL}>Product</TableHead>
+                      <TableHead className={CELL}>UPC</TableHead>
+                      <TableHead className={cn(CELL, "text-right")}>Price</TableHead>
+                      <TableHead className={cn(CELL, "text-right")}>Discount</TableHead>
+                      <TableHead className={cn(CELL, "text-right")}>Deposit</TableHead>
+                      <TableHead data-money-edge className={cn(CELL, "text-right")}>Line total</TableHead>
+                      <TableHead className={CELL}>Mapping</TableHead>
+                      {isAdmin ? (
+                        <TableHead data-pin="checks" data-pinned={pinned ? "checks" : undefined}
+                                   className={cn(CELL, "text-center", pinned && PIN, pinned && "bg-surface-2", edgeColumn === "checks" && pinEdge)}
+                                   style={{ right: pinned ? pinRight.checks : undefined, width: CHECKS_W, minWidth: CHECKS_W }}>Checks</TableHead>
+                      ) : null}
+                      {canEdit ? (
+                        <TableHead data-pin="void" data-pinned={pinned ? "void" : undefined}
+                                   className={cn(CELL, "pr-3", pinned && PIN, pinned && "bg-surface-2", edgeColumn === "void" && pinEdge)}
+                                   style={{ right: pinned ? pinRight.void : undefined, width: VOID_W, minWidth: VOID_W }}>
+                          <span className="sr-only">Void row</span>
+                        </TableHead>
+                      ) : null}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -539,20 +632,23 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                       const unique = refs.isUnique(item.sort_order);
                       const duplicateOf = flagged ? refs.serialForSortOrder(item.duplicate_candidate!.of_sort_order) : null;
                       const isHighlighted = unique && highlighted === item.sort_order;
+                      const photos = multiPhoto && item.source_pages.length ? item.source_pages.map((p) => `P${p}`).join(" ") : null;
                       return (
                         <TableRow key={item.sort_order}
                                   id={unique ? rowDomId(item.sort_order) : undefined}
                                   tabIndex={unique ? -1 : undefined}
                                   data-sort-order={item.sort_order}
                                   data-highlighted={isHighlighted ? "true" : undefined}
-                                  className={cn("row-hover scroll-mt-20 outline-none", inactive && "text-muted-foreground", flagged && "bg-warning-soft/40",
-                                                isHighlighted && "bg-accent/50 ring-2 ring-inset ring-primary/60")}
+                                  className={cn("row-hover scroll-mt-20 outline-none hover:[--row-tint:var(--color-surface-2)]",
+                                                inactive && "text-muted-foreground",
+                                                flagged && "bg-warning-soft/40 [--row-tint:color-mix(in_oklab,var(--color-warning-soft)_40%,transparent)]",
+                                                isHighlighted && "bg-accent/50 ring-2 ring-inset ring-primary/60 [--row-tint:color-mix(in_oklab,var(--color-accent)_50%,transparent)]")}
                                   data-testid="line-item-row">
-                          <TableCell className="pl-5 text-right text-muted-foreground tabular-nums" data-testid="row-serial">{serial}</TableCell>
-                          <TableCell className="text-right tabular-nums">
+                          <TableCell className={cn(CELL, "pl-5 text-right text-muted-foreground tabular-nums")} data-testid="row-serial">{serial}</TableCell>
+                          <TableCell className={cn(CELL, "text-right tabular-nums")}>
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="quantity" render={(v) => v.toLocaleString()} by={by} readOnly={!canEdit} />
                           </TableCell>
-                          <TableCell className="max-w-64">
+                          <TableCell className={cn(CELL, "max-w-64")}>
                             <div className="flex items-center gap-1.5">
                               <EditableDescription invoiceId={detail.invoice_id} item={item} serial={serial} by={by}
                                                    readOnly={!canEdit} inactive={inactive} />
@@ -563,8 +659,15 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                                 <span className="font-semibold">Product Master name</span> · as printed: {item.description}
                               </div>
                             ) : null}
-                            {item.entry_source === "manual" || item.line_type !== "product" || item.quantity === 0 || flagged ? (
+                            {photos || item.entry_source === "manual" || item.line_type !== "product" || item.quantity === 0 || flagged ? (
                               <div className="t-meta flex flex-wrap items-center gap-1.5">
+                                {/* Photo numbers this row was read from (multi-photo invoices only). */}
+                                {photos ? (
+                                  <span className="t-mono" data-testid="photo-badge"
+                                        title={`Read from photo ${item.source_pages.join(" and ")}`}>
+                                    <span className="sr-only">{item.source_pages.length > 1 ? "Photos " : "Photo "}</span>{photos}
+                                  </span>
+                                ) : null}
                                 {item.entry_source === "manual" ? <span className="rounded-sm bg-accent px-1 text-[0.62rem] font-semibold text-accent-foreground">manual</span> : null}
                                 {item.line_type === "charge" ? <span>charge — not a product</span> : null}
                                 {item.line_type === "duplicate" ? <span>seen twice · counted once</span> : null}
@@ -578,32 +681,37 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                               </div>
                             ) : null}
                           </TableCell>
-                          <TableCell className="t-mono pr-1 text-muted-foreground">{item.product_code ?? "—"}</TableCell>
-                          {multiPhoto ? (
-                            <TableCell className="t-mono text-muted-foreground" data-testid="photo-badge">
-                              {item.source_pages.length ? item.source_pages.map((p) => `P${p}`).join(" ") : "—"}
-                            </TableCell>
-                          ) : null}
-                          <TableCell className="text-right tabular-nums">
+                          <TableCell className={cn(CELL, "t-mono pr-1 text-muted-foreground")}>{item.product_code ?? "—"}</TableCell>
+                          <TableCell className={cn(CELL, "text-right tabular-nums")}>
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_price" by={by} readOnly={!canEdit}
                                             render={(v) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })} />
                           </TableCell>
-                          <TableCell className="text-right text-muted-foreground tabular-nums">
+                          <TableCell className={cn(CELL, "text-right text-muted-foreground tabular-nums")}>
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_discount" render={(v) => formatMoney(v)} by={by} readOnly={!canEdit} />
                           </TableCell>
-                          <TableCell className="text-right text-muted-foreground tabular-nums">
+                          <TableCell className={cn(CELL, "text-right text-muted-foreground tabular-nums")}>
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_deposit" render={(v) => formatMoney(v)} by={by} readOnly={!canEdit} />
                           </TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">
+                          <TableCell className={cn(CELL, "text-right font-medium tabular-nums")}>
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="line_total" render={(v) => formatMoney(v)} by={by} readOnly={!canEdit} />
                           </TableCell>
-                          <TableCell><MappingCell item={item} rows={detail.case_mappings} storePending={storePending} /></TableCell>
+                          <TableCell className={CELL}>
+                            <MappingCell item={item} rows={detail.case_mappings} storePending={storePending} />
+                          </TableCell>
                           {isAdmin ? (
-                            <TableCell className="text-center">
+                            <TableCell data-pin="checks" data-pinned={pinned ? "checks" : undefined}
+                                       className={cn(CELL, "text-center", pinned && PIN, pinned && PIN_BODY, edgeColumn === "checks" && pinEdge)}
+                                       style={{ right: pinned ? pinRight.checks : undefined, width: CHECKS_W, minWidth: CHECKS_W }}>
                               <ValidationCell checks={checksByRow.get(item.sort_order) ?? []} ambiguous={!unique} />
                             </TableCell>
                           ) : null}
-                          {canEdit ? <TableCell className="pr-3"><VoidRowButton invoiceId={detail.invoice_id} item={item} by={by} /></TableCell> : null}
+                          {canEdit ? (
+                            <TableCell data-pin="void" data-pinned={pinned ? "void" : undefined}
+                                       className={cn(CELL, "pr-3", pinned && PIN, pinned && PIN_BODY, edgeColumn === "void" && pinEdge)}
+                                       style={{ right: pinned ? pinRight.void : undefined, width: VOID_W, minWidth: VOID_W }}>
+                              <VoidRowButton invoiceId={detail.invoice_id} item={item} by={by} />
+                            </TableCell>
+                          ) : null}
                         </TableRow>
                       );
                     })}
