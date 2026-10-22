@@ -12,6 +12,7 @@ Rule inventory:
     Math:      LINE_ITEM_MATH (per item), SUBTOTAL_MATCHES_ITEMS,
                GRAND_TOTAL_MATH, TAX_CONSISTENT
     Dates:     DATE_ORDER (due >= invoice)
+    Identity:  PRODUCT_CODE_COMPLETE (per product row, only when visibly cut off)
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from decimal import Decimal
 
 from app.schemas.extraction import LINE_TYPE_CHARGE
 from app.schemas.normalized import NormalizedInvoice
+from app.services.printed_code import printed_code_incompleteness
 from app.services.validation.report import CheckResult, CheckStatus
 
 
@@ -510,5 +512,48 @@ def check_cross_photo_duplicates(invoice: NormalizedInvoice) -> list[CheckResult
             ),
             expected="one decision for this pair of rows",
             actual="unresolved",
+        ))
+    return results
+
+
+def check_product_code_complete(invoice: NormalizedInvoice) -> list[CheckResult]:
+    """
+    A product row whose printed UPC is visibly cut off blocks the invoice.
+
+    Some layouts wrap a dashed UPC onto a second print line, and the read
+    keeps only the first part ("8-10030-51002-", "0-12000-1263"). That
+    fragment still normalises to a plausible item code, so nothing
+    downstream would notice. `printed_code_incompleteness()` claims only
+    unambiguous formatting evidence and never judges plain digits by
+    length.
+
+    Nothing is completed or rewritten here. The raw printed value is
+    reported as it is, and a person supplies the full UPC through the
+    audited line-item correction.
+
+    Only failures are emitted. A clean invoice gets no result at all, so
+    the report and the pass-ratio confidence of every invoice without a
+    cut-off code are exactly what they were before this check existed.
+    The row is named structurally (`field`), never by a number in the
+    prose.
+    """
+    results = []
+    for item in invoice.line_items:
+        if item.line_type != "product":
+            continue
+        reason = printed_code_incompleteness(item.product_code)
+        if reason is None:
+            continue
+        results.append(CheckResult(
+            name="PRODUCT_CODE_COMPLETE",
+            status=CheckStatus.FAILED,
+            field=f"line_items[{item.sort_order}].product_code",
+            message=(
+                f"The printed UPC \"{item.product_code}\" {reason}. "
+                "Enter the full UPC from the invoice before export; "
+                "it is never completed automatically."
+            ),
+            expected="the complete printed UPC",
+            actual=item.product_code,
         ))
     return results

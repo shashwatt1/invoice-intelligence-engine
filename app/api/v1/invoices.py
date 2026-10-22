@@ -88,6 +88,7 @@ from app.services.export_service import (
 )
 from app.services.invoice_workflow_service import completion_state, current_facts, status_for
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
+from app.services.printed_code import printed_code_incompleteness
 from app.services.product_master.commercial_resolution import line_product_names, resolution_fields
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
@@ -481,6 +482,10 @@ async def get_invoice(
                 line_type=item.line_type,
                 sort_order=item.sort_order,
                 product_code=item.product_sku,
+                product_code_cut_off=(
+                    printed_code_incompleteness(item.product_sku)
+                    if (item.line_type or "product") == "product" else None
+                ),
                 **names.get(item.sort_order, {}),
                 unit_discount=float(item.discount) if item.discount is not None else None,
                 entry_source=item.entry_source or "extracted",

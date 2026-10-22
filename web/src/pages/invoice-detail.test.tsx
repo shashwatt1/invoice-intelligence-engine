@@ -383,6 +383,77 @@ describe("InvoiceDetailPage — editing the product name on a line", () => {
   });
 });
 
+/**
+ * PepsiCo 2026-10-22: a dashed UPC wrapped onto the next print line was read only
+ * up to the break. The backend marks the row (product_code_cut_off) and blocks the
+ * export; this cell is the audited way through — the existing line correction.
+ */
+describe("InvoiceDetailPage — correcting a cut-off UPC", () => {
+  const CUT_OFF = "stops partway through a dashed UPC (1-5-5-1) layout";
+  function pepsiInvoice(): InvoiceDetail {
+    const detail = rcmInvoice();
+    return {
+      ...detail,
+      pdi_export_blocked_reason: "1 product has a printed UPC that is cut off (MT DEW 20OZ).",
+      line_items: [
+        line({ sort_order: 0, description: "PEPSI 20OZ", product_code: "0-12000-00113-0" }),
+        line({ sort_order: 1, description: "MT DEW 20OZ", product_code: "0-12000-1263", product_code_cut_off: CUT_OFF }),
+      ],
+    };
+  }
+
+  it("marks the raw printed value and lets a manager enter the full UPC through the line correction", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.correctLineItem).mockClear();
+    vi.mocked(api.correctLineItem).mockResolvedValue({
+      item: { sort_order: 1, description: "MT DEW 20OZ", product_code: "0-12000-12630-0", quantity: 12, unit_price: 1.19,
+              line_total: 14.28, unit_deposit: null, corrected_fields: ["product_code"] },
+      status: "REVIEW_REQUIRED", composite_confidence: 0.9, failed_checks: 1, review_reasons: [],
+      pdi_export_allowed: false, pdi_export_blocked_reason: null,
+    } as never);
+    mount("MANAGER", redactForRole(pepsiInvoice(), "MANAGER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(2));
+    const [complete, cutOff] = screen.getAllByTestId("line-item-row");
+
+    expect(within(complete).queryByTestId("edit-upc")).toBeNull();
+    expect(within(complete).queryByTestId("upc-cut-off")).toBeNull();
+    expect(complete).toHaveTextContent("0-12000-00113-0");
+
+    expect(within(cutOff).getByTestId("upc-cut-off")).toHaveTextContent("0-12000-1263");
+    await user.click(within(cutOff).getByRole("button", { name: "Enter the full UPC for row 2: 0-12000-1263" }));
+    const input = within(cutOff).getByRole("textbox", { name: "Full UPC printed on this line (row 2)" });
+    expect(input).toHaveValue("0-12000-1263");
+    // Saving the cut-off value unchanged is refused; nothing is completed for the reviewer.
+    expect(within(cutOff).getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(within(cutOff).getByTestId("upc-edit")).toHaveTextContent("stays in the line's history");
+    await user.clear(input);
+    expect(within(cutOff).getByRole("alert")).toHaveTextContent("Enter the full UPC.");
+    await user.type(input, " 0-12000-12630-0 {Enter}");
+    await waitFor(() => expect(api.correctLineItem).toHaveBeenCalledWith(
+      "623b4a1c-d91d-4023-b702-d4eb8fc2683e", 1, { product_code: "0-12000-12630-0", corrected_by: null }));
+    expect(api.correctLineItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a USER the cut-off value but no way to change it", async () => {
+    mount("USER", redactForRole(pepsiInvoice(), "USER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(2));
+    expect(screen.getByTestId("upc-cut-off")).toHaveTextContent("0-12000-1263");
+    expect(screen.queryByTestId("edit-upc")).toBeNull();
+  });
+
+  it("marks a UPC corrected by hand and offers no edit once it is no longer cut off", async () => {
+    const detail = pepsiInvoice();
+    detail.line_items[1] = { ...detail.line_items[1], product_code: "0-12000-12630-0", product_code_cut_off: null,
+                             corrected_fields: ["product_code"] };
+    mount("ADMIN", detail);
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(2));
+    const row = screen.getAllByTestId("line-item-row")[1];
+    expect(within(row).getByTitle("Corrected by hand; the printed value is in the line's history")).toHaveTextContent("0-12000-12630-0");
+    expect(screen.queryByTestId("edit-upc")).toBeNull();
+    expect(screen.queryByTestId("upc-cut-off")).toBeNull();
+  });
+});
+
 
 /**
  * Invoice #501315 (T.J. Sheehan → PB Wolf, 38 rows) as the shape for row

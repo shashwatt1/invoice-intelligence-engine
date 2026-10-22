@@ -277,6 +277,104 @@ function EditableDescription({ invoiceId, item, serial, by, readOnly, inactive }
   );
 }
 
+/** The backend's limit for a corrected product code (LineItemCorrection.product_code). */
+const MAX_PRODUCT_CODE = 64;
+
+/**
+ * The UPC a line shows. When the backend says the printed code is visibly
+ * cut off (`product_code_cut_off`, e.g. a dashed UPC wrapped onto the next
+ * print line), the raw value is marked and a manager or admin can enter the
+ * full code through the existing line-correction path. That path keeps the
+ * old value in the line's history with who changed it, revalidates the
+ * invoice, and recomputes export eligibility. Nothing is completed
+ * automatically, and the cut-off judgement stays on the backend; this cell
+ * only shows it. Rows the backend does not flag render as before.
+ */
+function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
+  invoiceId: string; item: LineItem; serial: number; by: string; readOnly: boolean;
+}) {
+  const cutOff = item.product_code_cut_off ?? null;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const correct = useCorrectLineItem(invoiceId);
+  const edited = item.corrected_fields.includes("product_code");
+  const value = draft.trim();
+  const problem = !value ? "Enter the full UPC."
+    : value.length > MAX_PRODUCT_CODE ? `The UPC is limited to ${MAX_PRODUCT_CODE} characters.`
+    : value === (item.product_code ?? "").trim() ? "unchanged" : null;
+
+  const save = () => {
+    if (problem || correct.isPending) return;
+    correct.mutate(
+      { sortOrder: item.sort_order, correction: { product_code: value, corrected_by: by.trim() || null } },
+      {
+        onSuccess: (result) => {
+          setEditing(false);
+          outcomeToast(result);
+        },
+        onError: (error) => toast.error(error instanceof Error ? error.message : "The UPC was not changed."),
+      },
+    );
+  };
+
+  if (editing) {
+    return (
+      <div className="space-y-1" data-testid="upc-edit">
+        <div className="flex items-center gap-1">
+          <Input
+            autoFocus
+            className="t-mono h-7 min-w-40 text-[0.8rem]"
+            aria-label={`Full UPC printed on this line (row ${serial})`}
+            value={draft}
+            maxLength={MAX_PRODUCT_CODE}
+            disabled={correct.isPending}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") save();
+              if (event.key === "Escape") setEditing(false);
+            }}
+          />
+          <Button size="sm" className="h-7 px-2" disabled={correct.isPending || problem !== null} onClick={save}>
+            {correct.isPending ? "…" : "Save"}
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 px-1" disabled={correct.isPending}
+                  onClick={() => setEditing(false)} aria-label="Cancel">
+            <X className="size-3" />
+          </Button>
+        </div>
+        <div className="t-meta max-w-64 whitespace-normal">
+          {problem && problem !== "unchanged" ? <span className="text-danger" role="alert">{problem} </span> : null}
+          Type the whole code as printed on the invoice, including any part on the next line. The printed value stays in the line's history.
+        </div>
+      </div>
+    );
+  }
+
+  if (!cutOff) {
+    return (
+      <span className={cn(edited && "underline decoration-dotted underline-offset-2")}
+            title={edited ? "Corrected by hand; the printed value is in the line's history" : undefined}>
+        {item.product_code ?? "—"}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 text-warning" data-testid="upc-cut-off">
+      <AlertTriangle className="size-3 shrink-0" aria-hidden />
+      <span title={`The printed UPC ${cutOff}. Enter the full code from the invoice; it is never completed automatically.`}>{item.product_code}</span>
+      <span className="sr-only">: the printed UPC {cutOff}</span>
+      {!readOnly ? (
+        <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground"
+                aria-label={`Enter the full UPC for row ${serial}: ${item.product_code ?? ""}`} data-testid="edit-upc"
+                onClick={() => { setDraft(item.product_code ?? ""); setEditing(true); }}>
+          <Pencil />
+        </Button>
+      ) : null}
+    </span>
+  );
+}
+
 function EditableAmount({
   invoiceId,
   item,
@@ -681,7 +779,9 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                               </div>
                             ) : null}
                           </TableCell>
-                          <TableCell className={cn(CELL, "t-mono pr-1 text-muted-foreground")}>{item.product_code ?? "—"}</TableCell>
+                          <TableCell className={cn(CELL, "t-mono pr-1 text-muted-foreground")}>
+                            <EditableUpc invoiceId={detail.invoice_id} item={item} serial={serial} by={by} readOnly={!canEdit} />
+                          </TableCell>
                           <TableCell className={cn(CELL, "text-right tabular-nums")}>
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_price" by={by} readOnly={!canEdit}
                                             render={(v) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })} />

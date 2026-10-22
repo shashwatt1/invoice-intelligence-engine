@@ -241,6 +241,49 @@ class TestTheExportGate:
         assert len(detail_line) == 70
 
 
+class TestACutOffPrintedUpc:
+    """
+    PepsiCo 2026-10-22: a dashed UPC wrapped onto the next print line, read
+    only up to the break. It still normalises to a plausible item code, so
+    only its printed formatting shows it is incomplete. The row is marked,
+    the export is blocked, and the existing audited correction is the way
+    through. Nothing is completed automatically.
+    """
+
+    async def test_flagged_then_corrected_with_history_and_the_gate_reopens_to_mapping(
+        self, api_client, app  # noqa: F811
+    ):
+        invoice_id = await process(
+            api_client, app, [line(description="MT DEW 20OZ", upc="0-12000-1263")],
+            "cutoff.pdf", "cut off upc", subtotal=22.70, grand_total=22.70,
+        )
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        row = detail["line_items"][0]
+        assert row["product_code"] == "0-12000-1263"          # raw printed value kept
+        assert row["product_code_cut_off"] == "stops partway through a dashed UPC (1-5-5-1) layout"
+        assert detail["pdi_export_allowed"] is False
+        assert "printed UPC that is cut off (MT DEW 20OZ)" in detail["pdi_export_blocked_reason"]
+        assert any(c["name"] == "PRODUCT_CODE_COMPLETE" and c["field"] == "line_items[0].product_code"
+                   for c in detail["validation_report"]["checks"])
+
+        response = await patch(api_client, invoice_id, 0, product_code="0-12000-12630-0",
+                               corrected_by="reviewer", note="UPC continues on the next print line")
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["item"]["product_code"] == "0-12000-12630-0"
+        assert data["item"]["corrected_fields"] == ["product_code"]
+        assert "cut off" not in (data["pdi_export_blocked_reason"] or "")
+        assert "units-per-case" in data["pdi_export_blocked_reason"]
+
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        row = detail["line_items"][0]
+        assert row["product_code_cut_off"] is None
+        entry = row["correction_history"][-1]
+        assert (entry["field"], entry["old"], entry["new"], entry["by"]) == (
+            "product_code", "0-12000-1263", "0-12000-12630-0", "testadmin")
+        assert not any(c["name"] == "PRODUCT_CODE_COMPLETE" for c in detail["validation_report"]["checks"])
+
+
 class TestRejection:
     async def test_an_empty_body_is_rejected(self, api_client, app):  # noqa: F811
         invoice_id = await process(

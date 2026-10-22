@@ -974,6 +974,15 @@ class LineItemData(BaseModel):
         description="'product' or 'charge' — a charge (delivery/fuel/service) is never a PDI product record.",
     )
     product_code: str | None = None
+    product_code_cut_off: str | None = Field(
+        default=None,
+        description=(
+            "Why this product row's printed UPC is visibly incomplete (it ends in a separator, "
+            "or stops partway through a dashed UPC layout), or null when there is no such "
+            "evidence. product_code keeps the raw printed value, which is never completed "
+            "automatically; export stays blocked until a person corrects it."
+        ),
+    )
     normalized_description: str | None = Field(
         default=None,
         description=("The product's normalized name: the Product Master canonical description when one exists, "

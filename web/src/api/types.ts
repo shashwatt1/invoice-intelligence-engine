@@ -283,6 +283,10 @@ export interface LineItem {
   /** "product", "charge", "duplicate" (resolved as seen twice) or "voided" (a person removed it). */
   line_type: string;
   product_code: string | null;
+  /** Why this product row's printed UPC is visibly cut off (ends in a separator, or stops partway
+   * through a dashed UPC layout); null/absent when there is no such evidence. `product_code` keeps
+   * the raw printed value — never completed automatically — and export stays blocked until corrected. */
+  product_code_cut_off?: string | null;
   /** The product's normalized name: the Product Master canonical description when one exists,
    * otherwise this line's own `description`. Never a PDI description — none is held. */
   normalized_description?: string | null;

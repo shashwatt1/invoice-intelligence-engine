@@ -32,6 +32,7 @@ from typing import Any
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
+from app.services.printed_code import printed_code_incompleteness
 
 EXPORT_SCHEMA_VERSION = "1.0"
 
@@ -862,6 +863,27 @@ def items_with_unresolved_quantity(invoice: Invoice) -> list[str]:
     ]
 
 
+
+def items_with_incomplete_printed_code(invoice: Invoice) -> list[str]:
+    """
+    Descriptions, in document order, of product rows that would become a
+    PDI B-record but whose printed UPC is visibly cut off.
+
+    A wrapped dashed UPC read only up to the line break ("8-10030-51002-",
+    "0-12000-1263") still normalises to a plausible item code, so
+    `items_with_unresolved_identity` does not see it. Exporting it would
+    send PDI a code that could match a different product. Like the other
+    gates, this one never guesses: the raw printed value stays as it is
+    and the export waits for a person to correct it. `normalize_item_code`
+    is deliberately untouched; the evidence is the printed formatting
+    (see app.services.printed_code), never the code's length.
+    """
+    return [
+        item.description or "(no description)"
+        for item in pdi_items(invoice)
+        if printed_code_incompleteness(item.product_sku) is not None
+    ]
+
 def items_with_unresolved_identity(invoice: Invoice) -> list[str]:
     """
     Descriptions, in document order, of product rows that would become a
@@ -904,7 +926,8 @@ def pdi_export_eligibility(
     data may contain extraction inaccuracies that haven't been reviewed.
 
     An invoice is additionally blocked while any product line has no
-    resolved UPC/item code (see items_with_unresolved_identity) or lacks
+    resolved UPC/item code (see items_with_unresolved_identity), has a
+    visibly cut-off printed UPC (see items_with_incomplete_printed_code), or lacks
     a confirmed units-per-case mapping, so the export cannot silently
     default an unknown product's identity or pack size.
     `units_by_item_code` is optional only so callers that genuinely have
@@ -964,6 +987,22 @@ def pdi_export_eligibility(
                 f"({', '.join(unresolved_identity[:3])}"
                 f"{', …' if count > 3 else ''}). Confirm the product identity "
                 "before exporting — an unresolved product cannot be sent to PDI."
+            ),
+        )
+
+    incomplete_code = items_with_incomplete_printed_code(invoice)
+    if incomplete_code:
+        count = len(incomplete_code)
+        return PdiExportEligibility(
+            allowed=False,
+            requires_confirmation=False,
+            blocked_reason=(
+                f"{count} product{'s' if count != 1 else ''} "
+                f"{'have' if count != 1 else 'has'} a printed UPC that is cut off "
+                f"({', '.join(incomplete_code[:3])}"
+                f"{', …' if count > 3 else ''}). Enter the full UPC from the "
+                "invoice before exporting — a partial code is never completed "
+                "automatically."
             ),
         )
 

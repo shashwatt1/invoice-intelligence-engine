@@ -56,6 +56,7 @@ from app.services.validation.checks import (
     check_grand_total_math,
     check_line_item_math,
     check_missing_invoice_date,
+    check_product_code_complete,
     check_required_fields,
     check_subtotal,
     check_tax_consistency,
@@ -148,6 +149,7 @@ def build_report(
     checks += check_tax_consistency(normalized, tolerance)
     checks += check_date_order(normalized)
     checks += check_cross_photo_duplicates(normalized)
+    checks += check_product_code_complete(normalized)
 
     confidence = compute_confidence(ocr_confidence, ai_confidence, checks)
     failed = [c for c in checks if c.status is CheckStatus.FAILED]
