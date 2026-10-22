@@ -483,24 +483,32 @@ def check_cross_photo_duplicates(invoice: NormalizedInvoice) -> list[CheckResult
     flagged pair is a decision for a person, and until it is made the
     invoice is REVIEW_REQUIRED. Deterministic code never guesses which
     of two rows is real.
+
+    Rows are referenced only structurally: `field` names the flagged row
+    by sort_order (line_items[N]) and the pair itself is the row's
+    possible_duplicate_of. The prose carries no row numbers, because
+    human row numbers belong to the reader (the frontend numbers rows
+    1..n in document order) and a stored report outlives later edits;
+    a raw 0-based sort_order in the text contradicted the numbered links
+    and the duplicate card beside it. Photo numbers stay: they are
+    already the 1-based page numbers shown everywhere.
     """
     flagged = [item for item in invoice.line_items if item.possible_duplicate_of is not None]
     if not flagged:
         return [CheckResult(name="CROSS_PHOTO_DUPLICATES", status=CheckStatus.PASSED)]
     results = []
     for item in flagged:
-        other = item.possible_duplicate_of
         results.append(CheckResult(
             name="CROSS_PHOTO_DUPLICATES",
             status=CheckStatus.FAILED,
             field=f"line_items[{item.sort_order}]",
             message=(
-                f"Row {item.sort_order} may be the same physical row as row {other} "
+                "This row may be the same physical row as an earlier row "
                 f"(overlapping photos {', '.join(map(str, item.source_pages)) or '?'}): "
                 f"{item.duplicate_reason or 'the model could not decide'}. "
                 "A reviewer must decide before export."
             ),
-            expected=f"one decision for rows {other} and {item.sort_order}",
+            expected="one decision for this pair of rows",
             actual="unresolved",
         ))
     return results

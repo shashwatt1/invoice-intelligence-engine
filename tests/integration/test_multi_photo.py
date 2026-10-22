@@ -252,7 +252,12 @@ class TestAmbiguousDuplicateIsFlaggedNotMerged:
         assert detail["line_items"][19]["description"] == "PRODUCT 20"   # the row it points at
         report = detail["validation_report"]
         assert any(c["name"] == "CROSS_PHOTO_DUPLICATES" and c["status"] == "FAILED" for c in report["checks"])
-        assert any("Row 30 may be the same physical row as row 19" in r for r in report["review_reasons"])
+        # The row is named structurally (field = line_items[30]); the prose carries no raw 0-based numbers.
+        dup = [c for c in report["checks"] if c["name"] == "CROSS_PHOTO_DUPLICATES" and c["status"] == "FAILED"]
+        assert [c["field"] for c in dup] == ["line_items[30]"]
+        assert dup[0]["message"].startswith("This row may be the same physical row as an earlier row")
+        assert dup[0]["expected"] == "one decision for this pair of rows"
+        assert not any("row 19" in r or "Row 30" in r for r in report["review_reasons"])
         assert detail["pdi_export_allowed"] is False
 
     async def test_same_row_decision_keeps_the_row_but_drops_it_from_totals_and_edi(self, api_client, app, db_session):  # noqa: F811

@@ -295,6 +295,24 @@ class TestRevalidationKeepsLineTypes:
         assert report.decision.value == "REVIEW_REQUIRED"
         assert any(c.name == "CROSS_PHOTO_DUPLICATES" and c.status.value == "FAILED" for c in report.checks)
 
+    def test_the_duplicate_message_names_rows_only_structurally(self):
+        """Readers number rows 1..n; the text must not show raw 0-based sort_orders beside those numbers."""
+        import re
+
+        from app.services.revalidation_service import build_report
+
+        inv = sheehan_like()
+        inv.items[4].duplicate_candidate = {"of_sort_order": 1, "reason": "unsure", "resolution": None}
+        inv.items[4].source_pages = [2]
+        report = build_report(inv, ocr_confidence=0.95, ai_confidence=0.95)
+        dup = [c for c in report.checks if c.name == "CROSS_PHOTO_DUPLICATES"]
+        assert [(c.status.value, c.field) for c in dup] == [("FAILED", "line_items[4]")]
+        assert dup[0].message == ("This row may be the same physical row as an earlier row "
+                                  "(overlapping photos 2): unsure. A reviewer must decide before export.")
+        assert dup[0].expected == "one decision for this pair of rows"
+        assert not re.search(r"\b[Rr]ows? \d", dup[0].message + dup[0].expected)
+        assert any(r.startswith("CROSS_PHOTO_DUPLICATES: This row may be the same physical row") for r in report.review_reasons)
+
 
 class TestChargeRowsInsideThePrintedSubtotal:
     """
