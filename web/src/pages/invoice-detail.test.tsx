@@ -170,6 +170,58 @@ describe("InvoiceDetailPage — ADMIN", () => {
   });
 });
 
+describe("InvoiceDetailPage — financial summary deposits", () => {
+  it("labels the line-derived deposit sums as line deposits", async () => {
+    mount("ADMIN", rcmInvoice());
+    await waitFor(() => expect(screen.getByTestId("financial-summary")).toBeInTheDocument());
+    const summary = screen.getByTestId("financial-summary");
+    expect(within(summary).getByText("Σ line deposits (deposit × qty)")).toBeInTheDocument();
+    expect(within(summary).getByText("merchandise + line deposits + delivery")).toBeInTheDocument();
+    expect(within(summary).queryByText("Σ deposit × qty")).toBeNull();
+  });
+
+  it("shows a deposit printed only at invoice level on its own row, without changing the line-derived sums", async () => {
+    const detail = rcmInvoice();
+    detail.deposit_total = 23.3;                                    // printed per package group, not per line
+    mount("ADMIN", detail);
+    await waitFor(() => expect(screen.getByTestId("financial-summary")).toBeInTheDocument());
+    const row = screen.getByTestId("invoice-level-deposit");
+    expect(row).toHaveTextContent("Deposit printed at invoice level");
+    expect(row).toHaveTextContent("(not attributed to lines)");
+    expect(row).not.toHaveTextContent("differs from Σ line deposits");
+    expect(row).toHaveTextContent("23.30");
+    const sum = within(screen.getByTestId("financial-summary")).getByText("merchandise + line deposits + delivery").closest("div")!;
+    expect(sum).toHaveTextContent("64.36");                         // Σ price × qty of the four lines, no deposit folded in
+  });
+
+  it("says only that the printed deposit total differs when the lines carry deposits of their own", async () => {
+    const detail = rcmInvoice();
+    detail.line_items = detail.line_items.map((i) => ({ ...i, unit_deposit: 0.05 }));   // Σ line deposits 1.85
+    detail.deposit_total = 2.25;                                                         // printed total disagrees
+    mount("ADMIN", detail);
+    await waitFor(() => expect(screen.getByTestId("financial-summary")).toBeInTheDocument());
+    const row = screen.getByTestId("invoice-level-deposit");
+    expect(row).toHaveTextContent("Deposit total printed on the invoice");
+    expect(row).toHaveTextContent("(differs from Σ line deposits)");
+    expect(row).not.toHaveTextContent("not attributed to lines");
+    expect(row).toHaveTextContent("2.25");
+    const summary = screen.getByTestId("financial-summary");
+    const lineDeposits = within(summary).getByText("Σ line deposits (deposit × qty)").closest("div")!;
+    expect(lineDeposits).toHaveTextContent("1.85");                                      // the line-derived figures are unchanged
+    const sum = within(summary).getByText("merchandise + line deposits + delivery").closest("div")!;
+    expect(sum).toHaveTextContent("66.21");                                              // 64.36 + 1.85, not the printed 2.25
+  });
+
+  it("adds no invoice-level row when the printed deposit equals the line deposits, or none is printed", async () => {
+    const detail = rcmInvoice();
+    detail.line_items = detail.line_items.map((i) => ({ ...i, unit_deposit: 0.05 }));
+    detail.deposit_total = 0.05 * (12 + 12 + 8 + 5);                // 1.85: fully attributed to lines
+    mount("ADMIN", detail);
+    await waitFor(() => expect(screen.getByTestId("financial-summary")).toBeInTheDocument());
+    expect(screen.queryByTestId("invoice-level-deposit")).toBeNull();
+  });
+});
+
 describe("InvoiceDetailPage — MANAGER", () => {
   it("renders a functional business detail page — no blank screen — with no developer/technical sections", async () => {
     mount("MANAGER", redactForRole(rcmInvoice(), "MANAGER"));

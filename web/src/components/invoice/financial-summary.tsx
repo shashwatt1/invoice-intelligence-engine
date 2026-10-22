@@ -16,6 +16,13 @@ export function FinancialSummary({
   const deposits = products.reduce((sum, i) => sum + (i.unit_deposit ?? 0) * i.quantity, 0);
   const discounts = products.reduce((sum, i) => sum + (i.unit_discount ?? 0) * i.quantity, 0);
   const ext = products.reduce((sum, i) => sum + (i.line_total ?? 0), 0);
+  // When the printed deposit total differs from the line deposits it is shown on its own row, never
+  // folded into the line-derived sums above it. With no line deposits at all, the layout printed the
+  // deposit only for the whole invoice (or per package group). With some line deposits, the printed
+  // total merely disagrees with them; the label says only that, not why.
+  const invoiceDeposit = detail.deposit_total;
+  const depositDiffers = invoiceDeposit != null && Math.abs(invoiceDeposit - deposits) >= 0.005;
+  const noLineDeposits = Math.abs(deposits) < 0.005;
 
   return (
     <div className="surface overflow-hidden" data-testid="financial-summary">
@@ -36,11 +43,21 @@ export function FinancialSummary({
           <div className="t-eyebrow mb-2">From the {products.length} product lines</div>
           <dl className="space-y-1.5 text-[0.82rem]">
             <div className="flex justify-between"><dt className="text-muted-foreground">Σ price × qty</dt><dd className="t-money">{formatMoney(merchandise)}</dd></div>
-            <div className="flex justify-between"><dt className="text-muted-foreground">Σ deposit × qty</dt><dd className="t-money">{formatMoney(deposits)}</dd></div>
+            <div className="flex justify-between"><dt className="text-muted-foreground">Σ line deposits (deposit × qty)</dt><dd className="t-money">{formatMoney(deposits)}</dd></div>
             <div className="flex justify-between"><dt className="text-muted-foreground">Σ discount × qty</dt><dd className="t-money">{formatMoney(discounts)}</dd></div>
             <div className="flex justify-between border-t pt-1.5"><dt className="text-muted-foreground">Σ printed line totals</dt><dd className="t-money">{formatMoney(ext)}</dd></div>
-            <div className="flex justify-between"><dt className="text-muted-foreground">merchandise + deposits + delivery</dt>
+            <div className="flex justify-between"><dt className="text-muted-foreground">merchandise + line deposits + delivery</dt>
               <dd className="t-money font-semibold">{formatMoney(merchandise + deposits + (detail.fuel_surcharge ?? 0))}</dd></div>
+            {depositDiffers ? (
+              <div className="flex justify-between border-t pt-1.5" data-testid="invoice-level-deposit">
+                <dt className="text-muted-foreground">
+                  {noLineDeposits
+                    ? <>Deposit printed at invoice level <span className="t-meta">(not attributed to lines)</span></>
+                    : <>Deposit total printed on the invoice <span className="t-meta">(differs from Σ line deposits)</span></>}
+                </dt>
+                <dd className="t-money">{formatMoney(invoiceDeposit)}</dd>
+              </div>
+            ) : null}
           </dl>
           <p className="t-meta mt-3 leading-snug">Merchandise is what the EDI carries as case cost; deposits and delivery stay outside PDI merchandise.</p>
         </div>
