@@ -84,6 +84,7 @@ from app.services.export_service import (
     persisted_pdi_export_eligibility,
     unmapped_item_codes,
 )
+from app.services.inventory_service import ensure_invoice_changeable
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.product_master.commercial_resolution import line_product_names, resolution_fields
 from app.services.proposal_service import pending_by_item_code, propose_case_mapping
@@ -562,6 +563,7 @@ async def delete_invoice(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_admin),
 ) -> APIResponse[InvoiceDeleteResult]:
+    await ensure_invoice_changeable(db, invoice_id, "delete_invoice")   # a POSTED receipt locks the invoice
     invoice = await InvoiceRepository(db).get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(
@@ -761,6 +763,7 @@ async def correct_line_item(
                     "fields": negative},
         )
 
+    await ensure_invoice_changeable(db, invoice_id, "correct_line_item")   # a POSTED receipt locks the invoice
     repository = InvoiceRepository(db)
     if await repository.get(invoice_id) is None:
         raise RecordNotFoundError(
@@ -821,6 +824,7 @@ async def decide_duplicate(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[DuplicateDecisionResult]:
+    await ensure_invoice_changeable(db, invoice_id, "duplicate_decision")   # a POSTED receipt locks the invoice
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
@@ -900,6 +904,7 @@ async def assign_store(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[InvoiceDetailData]:
+    await ensure_invoice_changeable(db, invoice_id, "assign_store")   # a POSTED receipt locks the invoice
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
@@ -985,6 +990,7 @@ async def add_line_item(
     if negative:
         raise ValidationError(message=f"{', '.join(negative)} must not be negative.",
                               detail={"invoice_id": str(invoice_id), "fields": negative})
+    await ensure_invoice_changeable(db, invoice_id, "add_line_item")   # a POSTED receipt locks the invoice
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
@@ -1037,6 +1043,7 @@ async def void_line_item(
     invoice_id: uuid.UUID, sort_order: int, payload: LineItemVoid, db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[LineItemCorrectionResult]:
+    await ensure_invoice_changeable(db, invoice_id, "void_line_item")   # a POSTED receipt locks the invoice
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:

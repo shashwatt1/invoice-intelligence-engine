@@ -11,76 +11,88 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/api/client";
 
 import {
-  approveCommercialCandidate,
-  bulkApproveCommercialCandidates,
-  getCommercialCandidate,
-  getCommercialSummary,
-  listCommercialCandidates,
-  listIdentityUnresolved,
-  proposeCommercialCandidate,
-  rejectCommercialCandidate,
-  reopenCommercialCandidate,
   addLineItem,
+  approveCommercialCandidate,
   approveProposal,
   assignInvoiceStore,
+  bulkApproveCommercialCandidates,
   bulkApproveProposals,
   bulkRejectProposals,
   changeUserRole,
+  confirmCaseMappings,
+  confirmDocumentStore,
+  confirmVendor,
+  correctInvoiceDate,
+  correctLineItem,
+  correctTotals,
+  createStore,
   createUser,
   decideDuplicate,
   deferDocumentStore,
-  confirmCaseMappings,
-  confirmDocumentStore,
-  createStore,
-  listUsers,
-  setUserActive,
-  resetUserPassword,
-  correctLineItem,
-  correctInvoiceDate,
-  correctTotals,
   deleteInvoice,
+  getCommercialCandidate,
+  getCommercialSummary,
   getDashboardSummary,
   getDocumentStatus,
+  getInventoryOverview,
+  getInventoryStatus,
   getInvoice,
   getInvoiceExport,
   getMappingQueueSummary,
   getProductHistory,
   getProposal,
+  getReceiptPreview,
+  getVendor,
+  listCommercialCandidates,
+  listIdentityUnresolved,
+  listInventoryItems,
+  listInventoryMovements,
   listInvoices,
   listMappingQueue,
   listProposalSourceInvoices,
   listProposals,
+  listStoreInvoices,
   listStores,
-  moveDocumentToBin,
-  processInvoice,
-  rejectProposal,
-  reviseProposal,
-  stopDocument,
-  voidLineItem,
-  updateStoreIdentity,
-  confirmVendor,
-  getVendor,
+  listUsers,
   listVendors,
+  moveDocumentToBin,
+  postReceipt,
+  processInvoice,
+  proposeCommercialCandidate,
+  recordOpeningCounts,
+  reverseReceipt,
+  rejectCommercialCandidate,
+  rejectProposal,
+  reopenCommercialCandidate,
   reopenVendor,
+  resetUserPassword,
+  reviseProposal,
+  setUserActive,
+  stopDocument,
+  updateStoreIdentity,
+  voidLineItem,
 } from "@/api/endpoints";
 import type {
+  BulkProposalDecision,
+  CaseMappingConfirmation,
+  CommercialBulkApprovalRequest,
   CommercialCandidateParams,
   CommercialProposalRequest,
-  CommercialBulkApprovalRequest,
   CommercialReopenRequest,
   CommercialReviewRequest,
-  CaseMappingConfirmation,
-  InvoiceListParams,
-  LineItemCorrection,
-  BulkProposalDecision,
   DuplicateDecision,
+  InventoryItemParams,
   InvoiceDateCorrection,
+  InvoiceListParams,
   InvoiceTotalsCorrection,
+  LineItemCorrection,
   LineItemCreate,
   MappingQueueListParams,
+  OpeningCountRequest,
   ProposalDecision,
   ProposalListParams,
   ProposalRevision,
+  ReceiptPostRequest,
   StoreCreate,
   StoreIdentityUpdate,
   UserRole,
@@ -684,3 +696,80 @@ export function useReopenVendor() {
   });
 }
 
+
+// ---- Store inventory ---------------------------------------------------------------------
+
+/** Whether inventory is switched on (INVENTORY_ENABLED). Asked only by a MANAGER or ADMIN. */
+export function useInventoryStatus({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ["inventory", "status"], queryFn: getInventoryStatus, enabled, staleTime: 5 * 60_000 });
+}
+
+export function useInventoryOverview(storeId: string | null) {
+  return useQuery({
+    queryKey: ["inventory", storeId, "overview"],
+    queryFn: () => getInventoryOverview(storeId!),
+    enabled: Boolean(storeId),
+  });
+}
+
+export function useInventoryItems(storeId: string | null, params: InventoryItemParams) {
+  return useQuery({
+    queryKey: ["inventory", storeId, "items", params],
+    queryFn: () => listInventoryItems(storeId!, params),
+    enabled: Boolean(storeId),
+  });
+}
+
+export function useInventoryMovements(storeId: string | null, itemCode: string | null) {
+  return useQuery({
+    queryKey: ["inventory", storeId, "movements", itemCode],
+    queryFn: () => listInventoryMovements(storeId!, itemCode!),
+    enabled: Boolean(storeId && itemCode),
+  });
+}
+
+export function useStoreInvoices(storeId: string | null, params: { page: number; page_size: number }) {
+  return useQuery({
+    queryKey: ["inventory", storeId, "invoices", params],
+    queryFn: () => listStoreInvoices(storeId!, params),
+    enabled: Boolean(storeId),
+  });
+}
+
+export function useReceiptPreview(invoiceId: string | null) {
+  return useQuery({
+    queryKey: ["inventory", "receipt", invoiceId],
+    queryFn: () => getReceiptPreview(invoiceId!),
+    enabled: Boolean(invoiceId),
+  });
+}
+
+/** Posting changes the store's balances, its invoice list and the preview: re-read them all. */
+export function usePostReceipt() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invoiceId, body }: { invoiceId: string; body: ReceiptPostRequest }) => postReceipt(invoiceId, body),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["inventory"] }),
+  });
+}
+
+export function useRecordOpeningCounts() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ storeId, body }: { storeId: string; body: OpeningCountRequest }) => recordOpeningCounts(storeId, body),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["inventory"] }),
+  });
+}
+
+/** Reversing frees the invoice for correction; balances, lists and the preview all change. */
+export function useReverseReceipt() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invoiceId, receiptId, reason }: { invoiceId: string; receiptId: string; reason: string }) =>
+      reverseReceipt(invoiceId, { receipt_id: receiptId, reason }),
+    onSettled: (_data, _error, { invoiceId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+    },
+  });
+}

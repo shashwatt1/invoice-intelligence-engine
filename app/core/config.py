@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     # Record every delivered PDI file in edi_exports (migration 0030). Off by
     # default so this code can be deployed before the migration is applied.
     edi_export_ledger: bool = False
+    # Store inventory (receipts and the movement ledger, migration 0031). Off
+    # by default: the inventory API answers 404 until this is on, so the code
+    # can be deployed before the migration is applied.
+    inventory_enabled: bool = False
     ocr_provider: Literal["google_vision", "paddleocr", "easyocr"] = "google_vision"
     google_vision_api_key: str = ""
 

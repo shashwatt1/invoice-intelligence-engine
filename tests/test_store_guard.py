@@ -232,6 +232,8 @@ class TestAssignStore:
 
         monkeypatch.setattr(invoices_module.InvoiceRepository, "get_detail", get_detail)
         monkeypatch.setattr(invoices_module.ProcessingLogRepository, "add", _async(_sentinel))
+        # The fake session runs no SQL; the receipt lock is covered by tests/integration/test_inventory_db.py.
+        monkeypatch.setattr(invoices_module, "ensure_invoice_changeable", _async(lambda *_a, **_k: None))
         return invoice
 
     async def _post(self, client, invoice, store: Store):

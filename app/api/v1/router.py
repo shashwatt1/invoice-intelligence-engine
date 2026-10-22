@@ -20,6 +20,7 @@ from app.api.v1 import (
     documents,
     exports,
     health,
+    inventory,
     invoices,
     mapping_queue,
     product_master,
@@ -52,3 +53,5 @@ api_router.include_router(mapping_queue.router, prefix="")
 api_router.include_router(stores.router, prefix="")
 api_router.include_router(product_master.router, prefix="")
 api_router.include_router(vendors.router, prefix="")
+api_router.include_router(inventory.router, prefix="")
+api_router.include_router(inventory.status_router, prefix="")
