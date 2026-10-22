@@ -84,22 +84,17 @@ class TestBulkApprove:
             assert mapping.source == "APPROVED"
             assert mapping.approved_proposal_id == p.id
 
-    async def test_note_is_optional_and_reviewer_is_not(self, api_client, db_session):  # noqa: F811
-        [p, *_] = await _three_pending(db_session)
-        assert (await api_client.post("/api/v1/proposals/bulk-approve", json={
-            "proposal_ids": [str(p.id)]})).status_code == 422
-        assert (await api_client.post("/api/v1/proposals/bulk-approve", json={
-            "proposal_ids": [str(p.id)], "reviewed_by": ""})).status_code == 422
+    async def test_note_is_optional_and_the_reviewer_is_the_signed_in_account(self, api_client, db_session):  # noqa: F811
+        # An empty selection is still refused (proposal_ids has min_length=1).
         assert (await api_client.post("/api/v1/proposals/bulk-approve", json={
             "proposal_ids": [], "reviewed_by": REVIEWER})).status_code == 422
-        await db_session.refresh(p)
-        assert p.status == STATUS_PENDING
-
-        ok = await api_client.post("/api/v1/proposals/bulk-approve", json={
-            "proposal_ids": [str(p.id)], "reviewed_by": REVIEWER})
-        assert ok.status_code == 200
-        await db_session.refresh(p)
-        assert p.status == STATUS_APPROVED and p.review_note is None
+        # reviewed_by is optional and ignored (46657b4): absent, empty or typed, the signed-in account is recorded.
+        first, second, third = await _three_pending(db_session)
+        for p, body in ((first, {}), (second, {"reviewed_by": ""}), (third, {"reviewed_by": REVIEWER})):
+            ok = await api_client.post("/api/v1/proposals/bulk-approve", json={"proposal_ids": [str(p.id)], **body})
+            assert ok.status_code == 200, ok.text
+            await db_session.refresh(p)
+            assert (p.status, p.reviewed_by, p.review_note) == (STATUS_APPROVED, SIGNED_IN, None)
 
     async def test_one_already_approved_row_refuses_the_whole_batch(self, api_client, db_session):  # noqa: F811
         pending = await _three_pending(db_session)
@@ -286,16 +281,18 @@ class TestRevise:
         assert p.status == STATUS_PENDING
         assert (await api_client.get("/api/v1/proposals")).json()["total"] == 1
 
-    async def test_value_bounds_and_author_are_enforced(self, api_client, db_session):  # noqa: F811
+    async def test_value_bounds_are_enforced_and_the_author_is_the_signed_in_account(self, api_client, db_session):  # noqa: F811
         p = await _pending(db_session, 12)
-        for body in ({"proposed_value": 0, "proposed_by": REVIEWER},
-                     {"proposed_value": 15, "proposed_by": ""},
-                     {"proposed_value": 15}):
+        for body in ({"proposed_value": 0, "proposed_by": REVIEWER}, {"proposed_value": 10000}):
             assert (await api_client.post(f"/api/v1/proposals/{p.id}/revise", json=body)).status_code == 422
         assert (await api_client.post(f"/api/v1/proposals/{uuid.uuid4()}/revise", json={
             "proposed_value": 15, "proposed_by": REVIEWER})).status_code == 404
         await db_session.refresh(p)
         assert p.status == STATUS_PENDING
+        # proposed_by is optional and ignored (46657b4): a typed name is not recorded, the signed-in account is.
+        r = await api_client.post(f"/api/v1/proposals/{p.id}/revise", json={"proposed_value": 15, "proposed_by": REVIEWER})
+        assert r.status_code == 200, r.text
+        assert r.json()["data"]["proposal"]["proposed_by"] == SIGNED_IN
 
     async def test_revising_records_the_current_master_value(self, api_client, db_session):  # noqa: F811
         first = await _pending(db_session, 12)

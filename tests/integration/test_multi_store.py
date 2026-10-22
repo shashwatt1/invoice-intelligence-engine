@@ -25,7 +25,13 @@ from app.repositories.product_data_proposal_repository import ProductDataProposa
 from app.services import proposal_service
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.store_reference_service import match_invoice_against_reference
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import (
+    PHYSICAL_STORE,
+    RCM_STORE,
+    SOURCE_ONLY_STORE,
+    requires_db,
+    store_id,
+)
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.integration.test_proposal_governance import line
@@ -33,7 +39,7 @@ from tests.pdf_builder import build_pdf
 
 pytestmark = requires_db
 
-A, B = "47708760", "86357232"
+A, B = PHYSICAL_STORE, RCM_STORE   # two physical stores
 UPC_RAW, UPC = "062067051468", "06206705146"          # LABATT BLUE 30 — in both stores' data
 
 
@@ -229,7 +235,7 @@ class TestHistoryAndDeletion:
             store_id=store_id(A), item_code=UPC, units_per_case=1, source="MANUAL")
         await seed_reference(db_session)
         stores = (await api_client.get("/api/v1/stores")).json()["data"]
-        assert sorted(s["source_codes"][0] for s in stores) == [A, B]
-        stores.sort(key=lambda s: s["source_codes"][0])
-        assert stores[0]["case_mappings"] == 1 and stores[1]["case_mappings"] == 0
-        assert stores[0]["pricing_rows"] == 1 and stores[1]["pricing_rows"] == 1
+        by_code = {s["source_codes"][0]: s for s in stores}
+        assert sorted(by_code) == sorted([A, B, SOURCE_ONLY_STORE])   # every fixture store is listed
+        assert by_code[A]["case_mappings"] == 1 and by_code[B]["case_mappings"] == 0
+        assert by_code[A]["pricing_rows"] == 1 and by_code[B]["pricing_rows"] == 1

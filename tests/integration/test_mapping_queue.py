@@ -36,6 +36,7 @@ from tests.integration.conftest import (
     ADMIN_USERNAME,
     MANAGER_PASSWORD,
     MANAGER_USERNAME,
+    PHYSICAL_STORE,
     USER_PASSWORD,
     USER_USERNAME,
     requires_db,
@@ -120,7 +121,7 @@ class TestQueueSurfacesUnresolvedMappings:
         code = "70000000011"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await user_client.aclose()
 
@@ -147,7 +148,7 @@ class TestQueueAccessControl:
     async def test_manager_can_query_the_global_queue(self, app, api_client, db_session):  # noqa: F811
         client, _, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=["70000000021"],
+            store_code=PHYSICAL_STORE, item_codes=["70000000021"],
         )
         await client.aclose()
         manager_client = await _client_as(app, MANAGER_USERNAME, MANAGER_PASSWORD)
@@ -160,7 +161,7 @@ class TestQueueAccessControl:
     async def test_admin_can_query_the_global_queue(self, app, api_client, db_session):  # noqa: F811
         client, _, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=["70000000022"],
+            store_code=PHYSICAL_STORE, item_codes=["70000000022"],
         )
         await client.aclose()
         admin_client = await _client_as(app, ADMIN_USERNAME, ADMIN_PASSWORD)
@@ -198,7 +199,7 @@ class TestProposeFromQueue:
         code = "70000000031"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await user_client.aclose()
 
@@ -222,7 +223,7 @@ class TestProposeFromQueue:
         code = "70000000032"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await user_client.aclose()
 
@@ -260,7 +261,7 @@ class TestWorkbenchSubmissionGovernance:
         code = "70000000091"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await user_client.aclose()
 
@@ -278,7 +279,7 @@ class TestWorkbenchSubmissionGovernance:
             select(ProductDataProposal).where(ProductDataProposal.entity_key == code)
         )).scalars().one()
         assert proposal.status == "PENDING"                                          # 9: pending, not authoritative
-        mapping = await ProductCaseMappingRepository(db_session).get(store_id("47708760"), code)
+        mapping = await ProductCaseMappingRepository(db_session).get(store_id(PHYSICAL_STORE), code)
         assert mapping is None                                                        # 9: no direct write
 
     async def test_pending_proposal_from_the_workbench_is_visible_on_master_data_review(
@@ -287,7 +288,7 @@ class TestWorkbenchSubmissionGovernance:
         code = "70000000092"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await user_client.aclose()
 
@@ -314,7 +315,7 @@ class TestWorkbenchSubmissionGovernance:
         code = "70000000093"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await user_client.aclose()
 
@@ -359,7 +360,7 @@ class TestApprovalPropagatesEverywhere:
         code = "70000000041"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         try:
             before = await user_client.get(f"/api/v1/invoices/{invoice_id}")
@@ -404,12 +405,12 @@ class TestSharedMappingAndStoreScope:
         code = "70000000051"
         client_a, invoice_a, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await client_a.aclose()
         client_b, invoice_b, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await client_b.aclose()
 
@@ -434,7 +435,7 @@ class TestSharedMappingAndStoreScope:
         # never asked about it again.
         client_c, invoice_c, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         try:
             detail_c = await client_c.get(f"/api/v1/invoices/{invoice_c}")
@@ -449,7 +450,7 @@ class TestSharedMappingAndStoreScope:
         code = "70000000052"
         client_a, invoice_a, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await client_a.aclose()
         client_b, invoice_b, _ = await _process(
@@ -485,7 +486,7 @@ class TestMappingSurvivesInvoiceDeletion:
         code = "70000000061"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await user_client.aclose()
 
@@ -502,7 +503,7 @@ class TestMappingSurvivesInvoiceDeletion:
         finally:
             await admin_client.aclose()
 
-        mapping = await ProductCaseMappingRepository(db_session).get(store_id("47708760"), code)
+        mapping = await ProductCaseMappingRepository(db_session).get(store_id(PHYSICAL_STORE), code)
         assert mapping is not None
         assert mapping.units_per_case == 3
 
@@ -519,7 +520,7 @@ class TestEdiReadinessRespectsAllGates:
         code = "70000000071"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code], invoice_number="",  # -> INVOICE_NUMBER_PRESENT fails
+            store_code=PHYSICAL_STORE, item_codes=[code], invoice_number="",  # -> INVOICE_NUMBER_PRESENT fails
         )
         try:
             before = await user_client.get(f"/api/v1/invoices/{invoice_id}")
@@ -547,7 +548,7 @@ class TestEdiReadinessRespectsAllGates:
         code = "70000000072"
         user_client, invoice_id, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],   # clean invoice -> VALIDATED
+            store_code=PHYSICAL_STORE, item_codes=[code],   # clean invoice -> VALIDATED
         )
         try:
             before = await user_client.get(f"/api/v1/invoices/{invoice_id}")
@@ -577,12 +578,12 @@ class TestSummaryCountsArePrecise:
         code = "70000000081"
         client_a, _, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await client_a.aclose()
         client_b, _, _ = await _process(
             app, api_client, username=USER_USERNAME, password=USER_PASSWORD,
-            store_code="47708760", item_codes=[code],
+            store_code=PHYSICAL_STORE, item_codes=[code],
         )
         await client_b.aclose()
 

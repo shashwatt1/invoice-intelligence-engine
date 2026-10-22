@@ -22,7 +22,12 @@ from sqlalchemy import UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.models.store import SOURCE_ITEM_SALES, TYPE_STORE_CODE
+from app.models.store import (
+    IDENTITY_CONFIRMED,
+    IDENTITY_UNRESOLVED,
+    SOURCE_ITEM_SALES,
+    TYPE_STORE_CODE,
+)
 from app.repositories.store_repository import StoreRepository
 
 RUN_DB_TESTS = os.getenv("RUN_DB_TESTS") == "1"
@@ -167,13 +172,22 @@ async def db_session(db_engine) -> AsyncSession:
             )
         )
         await session.commit()
-        # Every integration test runs with the two reference stores present,
-        # known by their Item Sales store codes, identity unresolved — as
-        # the migration left production. Tests refer to them through
-        # KNOWN_STORES / store_id() so no test carries a raw UUID.
+        # Every integration test runs with three stores, each also known by an
+        # Item Sales store code, as production is after the Store Master work:
+        #   * 47708760 — a SOURCE IDENTITY only (Item Sales code, no location),
+        #     exactly as production keeps it. Never an upload target: the store
+        #     guard refuses it, and tests that need that refusal use it.
+        #   * 86357232 — the physical store "LG - RCM", carrying its Item Sales
+        #     code as provenance (production adopted RCM in place).
+        #   * 90000001 — a second physical fixture store ("AF Fixture Store"),
+        #     the ordinary upload target and the other side of multi-store tests.
+        # Tests refer to them through KNOWN_STORES / store_id().
         KNOWN_STORES.clear()
-        for code in ("47708760", "86357232"):
+        for code, display_name in ((SOURCE_ONLY_STORE, None), (RCM_STORE, "LG - RCM"),
+                                   (PHYSICAL_STORE, "AF Fixture Store")):
             store = await StoreRepository(session).create(
+                display_name=display_name,
+                identity_status=IDENTITY_CONFIRMED if display_name else IDENTITY_UNRESOLVED,
                 notes=f"test fixture: Item Sales store code {code}")
             await StoreRepository(session).add_identifier(
                 store, SOURCE_ITEM_SALES, TYPE_STORE_CODE, code,
@@ -193,6 +207,11 @@ async def db_session(db_engine) -> AsyncSession:
         await session.commit()
         yield session
 
+
+# The fixture stores, by Item Sales store code (see db_session).
+SOURCE_ONLY_STORE = "47708760"   # source identity only — refused as an upload target
+RCM_STORE = "86357232"           # physical: "LG - RCM"
+PHYSICAL_STORE = "90000001"      # physical: "AF Fixture Store"
 
 # Item Sales store code -> Store.id for the current test. Filled by db_session.
 KNOWN_STORES: dict[str, uuid.UUID] = {}

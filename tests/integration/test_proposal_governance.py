@@ -28,7 +28,7 @@ from app.repositories.product_data_proposal_repository import (
 from app.schemas.extraction import ExtractedLineItem
 from app.services import proposal_service
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import ADMIN_USERNAME, requires_db, store_id
+from tests.integration.conftest import ADMIN_USERNAME, PHYSICAL_STORE, requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -37,7 +37,7 @@ pytestmark = requires_db
 
 UPC = "018200000638"          # BUSCH 4/6/16OZ as printed
 NORMALIZED = "01820000063"
-STORE = "47708760"
+STORE = PHYSICAL_STORE   # uploads to a source identity are refused; this is a physical fixture store
 
 
 async def process(api_client, app, items, filename, pad, **totals):  # noqa: F811

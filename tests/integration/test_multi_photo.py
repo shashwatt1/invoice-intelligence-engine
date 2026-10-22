@@ -33,13 +33,13 @@ from app.services.export_service import pdi_items
 from app.services.ocr.base import OCRResult
 from app.services.photo_context import PhotoOCR, combine_photos, photo_header
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import ADMIN_USERNAME, PHYSICAL_STORE, requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client  # noqa: F401 — fixture reuse
 
 pytestmark = requires_db
 
-STORE = "47708760"
+STORE = PHYSICAL_STORE   # uploads to a source identity are refused; this is a physical fixture store
 PRICE = 10.0
 
 
@@ -349,8 +349,8 @@ class TestInvoiceReviewVisibility:
         assert sorted(p["entity_key"] for p in review["proposals"]) == sorted(codes)
         assert all(p["field"] == "units_per_case" and p["proposed_value"] == 12 and p["status"] == STATUS_PENDING
                    for p in review["proposals"])
-        # the store's identity is a different question and stays what it was
-        assert detail["store"]["identity_status"] == "unresolved"
+        # the store's identity is a different question and stays what it was (the fixture store is confirmed)
+        assert detail["store"]["identity_status"] == "confirmed"
         # the history list carries the same summary
         rows = (await api_client.get("/api/v1/invoices")).json()["items"]
         mine = next(row for row in rows if row["invoice_id"] == invoice_id)
@@ -368,7 +368,8 @@ class TestInvoiceReviewVisibility:
         by_id = {p["id"]: p for p in review["proposals"]}
         assert by_id[second["id"]]["status"] == STATUS_REJECTED           # superseded original
         assert by_id[revised["id"]]["revised_from"] == second["id"]
-        assert by_id[revised["id"]]["reviewed_by"] == "rev" and by_id[revised["id"]]["review_note"] == "ok"
+        # "rev" was typed but is ignored: the reviewer is the signed-in account
+        assert by_id[revised["id"]]["reviewed_by"] == ADMIN_USERNAME and by_id[revised["id"]]["review_note"] == "ok"
 
 
 class TestInvoiceDeletionLeavesHistoryAndMasterData:

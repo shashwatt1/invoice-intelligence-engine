@@ -28,14 +28,14 @@ from app.repositories.product_data_proposal_repository import (
 from app.schemas.extraction import ExtractedLineItem
 from app.services import proposal_service
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import PHYSICAL_STORE, requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
 
 pytestmark = requires_db
 
-STORE = "47708760"
+STORE = PHYSICAL_STORE   # uploads to a source identity are refused; this is a physical fixture store
 ULTRA_38 = "01820023986"       # ULTRA 3/8/16 — explicit on Sheet1 row 56
 ULTRA_212 = "01820006991"      # ULTRA 2/12 CAN — Zink package "24/12OZ 2/12 CANS"
 

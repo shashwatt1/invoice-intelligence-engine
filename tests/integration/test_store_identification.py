@@ -33,7 +33,13 @@ from app.models.store import (
 from app.repositories.store_repository import StoreRepository
 from app.services.pipeline_service import InvoiceProcessingPipeline
 from app.services.store_identification_service import match_stores
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import (
+    PHYSICAL_STORE,
+    RCM_STORE,
+    SOURCE_ONLY_STORE,
+    requires_db,
+    store_id,
+)
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import (  # noqa: F401 — fixture reuse
     INVOICE_PDF,
@@ -44,7 +50,7 @@ from tests.pdf_builder import build_pdf
 
 pytestmark = requires_db
 
-A, B = "47708760", "86357232"
+A, B = PHYSICAL_STORE, RCM_STORE   # two physical stores; source identity 47708760 is never an upload target
 
 
 async def _count(db_session, model) -> int:
@@ -275,10 +281,11 @@ class TestStoreDirectory:
     async def test_unresolved_stores_show_their_source_code_not_a_name(self, api_client):  # noqa: F811
         stores = (await api_client.get("/api/v1/stores")).json()["data"]
         by_code = {s["source_codes"][0]: s for s in stores}
-        assert by_code[A]["identity_status"] == "unresolved"
-        assert by_code[A]["display_name"] is None
-        assert by_code[A]["label"] == f"Store {A} (location not yet confirmed)"
-        assert [i["identifier_value"] for i in by_code[A]["identifiers"]] == [A]
+        unresolved = SOURCE_ONLY_STORE   # the fixture store known only by its source code
+        assert by_code[unresolved]["identity_status"] == "unresolved"
+        assert by_code[unresolved]["display_name"] is None
+        assert by_code[unresolved]["label"] == f"Store {unresolved} (location not yet confirmed)"
+        assert [i["identifier_value"] for i in by_code[unresolved]["identifiers"]] == [unresolved]
 
     async def test_confirming_an_identity_is_explicit_and_attributed(self, api_client, db_session):  # noqa: F811
         sid = store_id(A)

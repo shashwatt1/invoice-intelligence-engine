@@ -22,7 +22,7 @@ from app.models.document import DocumentStatus
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.product_data_proposal_repository import ProductDataProposalRepository
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import PHYSICAL_STORE, requires_db, store_id
 from tests.integration.fakes import FakeExtraction, FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client  # noqa: F401 — fixture reuse
 from tests.integration.test_proposal_governance import line
@@ -30,7 +30,7 @@ from tests.pdf_builder import build_pdf
 
 pytestmark = requires_db
 
-STORE = "47708760"
+STORE = PHYSICAL_STORE   # uploads to a source identity are refused; this is a physical fixture store
 REVIEWER = "data-team:shashwat"
 
 

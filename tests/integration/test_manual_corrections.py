@@ -20,15 +20,18 @@ from app.repositories.product_case_mapping_repository import ProductCaseMappingR
 from app.repositories.product_data_proposal_repository import ProductDataProposalRepository
 from app.schemas.extraction import ExtractedLineItem
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import requires_db, store_id
+from tests.integration.conftest import ADMIN_USERNAME, PHYSICAL_STORE, requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
 
 pytestmark = requires_db
 
-STORE = "47708760"
+STORE = PHYSICAL_STORE   # uploads to a source identity are refused; this is a physical fixture store
+# A typed author name. Since 46657b4 the API ignores it ("accepted for compatibility")
+# and records the signed-in account instead — every test below sends it and expects SIGNED_IN.
 WHO = "data-team:shashwat"
+SIGNED_IN = ADMIN_USERNAME   # api_client is signed in as the seeded ADMIN
 
 
 def row(desc, upc, qty, price, deposit=0.0):
@@ -89,7 +92,7 @@ class TestAMissedPhotoIsRepairedOnTheSameInvoice:
         assert d["grand_total"] == 100.65 and d["corrected_fields"] == ["grand_total"]
         [entry] = d["correction_history"]
         assert (entry["field"], entry["old"], entry["new"], entry["by"], entry["note"]) == (
-            "grand_total", 100.0, 100.65, WHO, "printed grand total")
+            "grand_total", 100.0, 100.65, SIGNED_IN, "printed grand total")
         assert entry["at"]
 
         after = await detail(api_client, invoice_id)
@@ -99,7 +102,7 @@ class TestAMissedPhotoIsRepairedOnTheSameInvoice:
         assert after["correction_history"][0]["old"] == 100.0
         added = [i for i in after["line_items"] if i["entry_source"] == "manual"]
         assert [i["description"] for i in added] == ["KEYSTONE LIGHT", "HIGH LIFE"]
-        assert added[0]["correction_history"][0]["by"] == WHO
+        assert added[0]["correction_history"][0]["by"] == SIGNED_IN
         assert added[0]["correction_history"][0]["note"] == "on photo 2, missed by extraction"
         assert set(added[0]["corrected_fields"]) >= {"description", "quantity", "unit_price"}
         # the processing log tells the whole story in order
@@ -130,11 +133,11 @@ class TestCorrectingAndVoidingLines:
         invoice_id = await process(api_client, app,
                                    [row("COORS LIGHT", "071990300173", 2, 16.25), row("BLUE MOON", "071990095116", 1, 35.70)],
                                    "fields.pdf", subtotal=68.20, grand_total=68.20)
-        # the pre-attribution body (single value, no name) still works exactly as before
+        # the pre-attribution body (single value, no name) still works; the signed-in account is recorded
         r = await api_client.patch(f"/api/v1/invoices/{invoice_id}/items/0", json={"quantity": 2})
         assert r.status_code == 200, r.text
         assert r.json()["data"]["item"]["corrected_fields"] == ["quantity"]
-        assert r.json()["data"]["item"]["correction_history"][0]["by"] is None
+        assert r.json()["data"]["item"]["correction_history"][0]["by"] == SIGNED_IN
         # the new fields, attributed
         r = await api_client.patch(f"/api/v1/invoices/{invoice_id}/items/1", json={
             "description": "BLUE MOON BELGIAN WHITE", "product_code": "071990095116", "unit_deposit": 1.20,
@@ -145,7 +148,7 @@ class TestCorrectingAndVoidingLines:
         assert item["unit_deposit"] == 1.2 and item["unit_discount"] == 0.5
         assert sorted(item["corrected_fields"]) == ["description", "product_code", "unit_deposit", "unit_discount"]
         by_field = {h["field"]: h for h in item["correction_history"]}
-        assert by_field["description"]["old"] == "BLUE MOON" and by_field["description"]["by"] == WHO
+        assert by_field["description"]["old"] == "BLUE MOON" and by_field["description"]["by"] == SIGNED_IN
         assert by_field["unit_deposit"]["old"] == 0.0 and by_field["unit_deposit"]["new"] == 1.2
         assert all(h["note"] == "read off the photo" for h in item["correction_history"])
         # bad input is refused as before
@@ -321,7 +324,7 @@ class TestInvoiceDateCorrection:
         assert d["corrected_fields"] == ["invoice_date"]
         [entry] = d["correction_history"]
         assert (entry["field"], entry["old"], entry["new"], entry["by"], entry["note"]) == (
-            "invoice_date", None, "2026-01-15", WHO, "printed top right")
+            "invoice_date", None, "2026-01-15", SIGNED_IN, "printed top right")
         assert entry["at"]
 
         after = await detail(api_client, invoice_id)

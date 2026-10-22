@@ -23,7 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.exceptions import AIStructuringError
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import ADMIN_PASSWORD, ADMIN_USERNAME, requires_db, store_id
+from tests.integration.conftest import (
+    ADMIN_PASSWORD,
+    ADMIN_USERNAME,
+    PHYSICAL_STORE,
+    requires_db,
+    store_id,
+)
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.pdf_builder import build_pdf
 
@@ -78,7 +84,7 @@ async def api_client(app, db_engine, db_session, monkeypatch):
     app.dependency_overrides.clear()
 
 
-STORE = "47708760"
+STORE = PHYSICAL_STORE   # a physical fixture store: uploads to a source identity are refused
 
 
 async def process_file(
