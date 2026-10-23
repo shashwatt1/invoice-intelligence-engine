@@ -79,8 +79,67 @@ Nothing below has been run. Each step is a separate, deliberate action.
 3. **Verify the commit in a clean checkout:** `alembic heads` → `0035` only; render the SQL with
    `alembic upgrade 0032:0035 --sql` and review it. 0035 alters `inventory_receipts` only and
    changes no row.
+   **3a. Confirm the target database and the application's role** (read-only, before step 4).
+   Write down each answer. Stop if any answer is unclear.
+   - **Database identity.** Open Render, service `invoice-intelligence-pilot`, Environment. Read
+     only the host part of `DATABASE_URL`; never copy or display the password. In Supabase, open
+     the project whose connection settings show that same host. Run step 4 only in that
+     project's SQL editor. Stop if the hosts differ, or if more than one project could match.
+   - **Application role.** From the same `DATABASE_URL`, read only the username (between `//`
+     and `:`). The pilot guide documents `postgres`. If the username carries a suffix (for
+     example a project reference after a dot), confirm in Supabase's connection settings which
+     PostgreSQL role it maps to. Do not assume it is the role the SQL editor runs as.
+   - **Ownership, privileges and role attributes.** Check these three separately: they are
+     different things.
+     - *Ownership:* which role owns a table.
+     - *Privileges:* what a role has been granted on it.
+     - *Role attributes:* superuser, `BYPASSRLS`.
+
+     In that project's SQL editor (read-only), substitute the application role:
+     ```sql
+     SELECT current_user;                                   -- the role the SQL editor runs as
+     SELECT tablename, tableowner FROM pg_tables
+      WHERE schemaname = 'public' AND tablename IN ('invoices', 'edi_exports');
+     SELECT rolname, rolsuper, rolbypassrls FROM pg_roles
+      WHERE rolname IN (current_user, '<application role>');
+     -- One privilege per call: a comma-separated list is true if ANY one of them is held.
+     SELECT has_table_privilege('<application role>', 'public.invoices', 'SELECT') AS can_select,
+            has_table_privilege('<application role>', 'public.invoices', 'INSERT') AS can_insert,
+            has_table_privilege('<application role>', 'public.invoices', 'UPDATE') AS can_update,
+            has_table_privilege('<application role>', 'public.invoices', 'DELETE') AS can_delete;
+     ```
+   - **Expected arrangement** (the only one this procedure covers):
+     - the SQL editor's role (`current_user`) and the application role are the same role;
+     - that role owns `invoices` and `edi_exports`;
+     - all four privilege checks are true.
+   - **Why ownership is what matters.**
+     - Step 4 then creates the inventory tables owned by the role the application connects as.
+     - Those tables enable row level security without `FORCE` and with no policies. PostgreSQL
+       then denies every row to any role that does not bypass row security; a table's owner
+       normally does.
+     - So ownership, not the privilege check, is what lets the application read and write
+       them. The privilege check only shows that the role already works with existing data.
+       It does not prove that row level security will be bypassed.
+     - `edi_exports` relies on the same arrangement, but it has not been exercised on the pilot
+       yet because the ledger has been off.
+     - Once this release is deployed, every invoice edit reads `inventory_receipts`, with the
+       flags on or off, so this must hold before the deploy.
+   - **If anything differs, stop for review.** That includes:
+     - the two roles are different;
+     - the application role is only a member of the owning role, not the owner;
+     - another role owns the tables;
+     - a privilege check is false.
+
+     Do not run step 4 as another role, and do not change ownership, grants, role attributes or
+     policies ad hoc. That is a separate, reviewed decision.
+
 4. **Apply 0033, 0034 and 0035 before deploying the code**, as one transaction that refuses to run
-   unless the database is at 0032:
+   unless the database is at 0032.
+   - **Schedule a quiet period.** Creating the new foreign keys briefly locks `invoices`,
+     `invoice_items`, `stores`, `users` and `edi_exports` against writes until the transaction
+     commits. Pause invoice work for those few moments.
+   - **Re-check first.** Immediately before running, repeat step 1's checks in the same SQL
+     editor: still exactly `0032`, and no inventory tables.
    ```sql
    BEGIN;
    DO $$ BEGIN
@@ -93,7 +152,27 @@ Nothing below has been run. Each step is a separate, deliberate action.
    COMMIT;
    ```
    The running code (`e81ebad`) never touches the inventory tables, so this is safe before the deploy.
-   Then verify:
+
+   **If the transaction fails** (any error, including the 0032 guard): stop.
+   - Do not retry it, in part or in full. A new attempt needs the error investigated and fresh
+     approval. Keep the error text.
+   - **Close the session's transaction if it is still open.** If the SQL editor session is still
+     inside the failed transaction, further statements are refused with "current transaction is
+     aborted". Run `ROLLBACK;` to end it. This only closes the session's transaction; it says
+     nothing about the database's state.
+   - **Check the actual state, in a new query:**
+     ```sql
+     SELECT version_num FROM alembic_version;                  -- expect exactly one row: 0032
+     SELECT to_regclass('public.inventory_receipts')  AS inventory_receipts,
+            to_regclass('public.inventory_movements') AS inventory_movements,
+            to_regclass('public.user_store_access')   AS user_store_access;  -- expect all NULL
+     ```
+     PostgreSQL rolls a failed transaction back as a whole, so this clean 0032 state is what to
+     expect.
+   - **If the state is anything else** (another revision, more than one row, or any of the
+     three tables present): stop for manual review. Do not apply, drop or repair anything.
+
+   On success, verify:
    ```sql
    SELECT version_num FROM alembic_version;                                   -- 0035
    SELECT relname, relrowsecurity FROM pg_class
@@ -101,6 +180,10 @@ Nothing below has been run. Each step is a separate, deliberate action.
    SELECT count(*) FROM user_store_access;                                    -- 0: nothing granted
    SELECT count(*) FROM information_schema.columns
     WHERE table_name = 'inventory_receipts' AND column_name = 'submitted_at';  -- 1: 0035 present
+   SELECT tablename, tableowner FROM pg_tables
+    WHERE schemaname = 'public'
+      AND tablename IN ('inventory_receipts', 'inventory_movements', 'user_store_access');
+   -- all three owned by the application role confirmed in 3a; if not, stop: do not deploy
    ```
 5. **Deploy the code with `INVENTORY_ENABLED` unset.**
    - Inventory routes answer 404, the sidebar hides Inventory, and
