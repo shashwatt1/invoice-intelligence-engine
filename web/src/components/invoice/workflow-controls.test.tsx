@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Completion, HistoryRow } from "@/api/types";
+import type { Completion, HistoryRow, ReceiptPreview } from "@/api/types";
 
 /**
  * The original-invoice link (manager edits, everyone can open it in a new tab,
@@ -20,13 +20,17 @@ vi.mock("@/hooks/use-auth", () => ({
     hasRole: (minimum: string) => (role.current === "MANAGER" ? true : minimum === "USER"),
   }),
 }));
-const api = { saveReferenceLink: vi.fn(), markRetailed: vi.fn(), reopenRetailed: vi.fn() };
+const api = { saveReferenceLink: vi.fn(), markRetailed: vi.fn(), reopenRetailed: vi.fn(),
+              getInventoryStatus: vi.fn(), getReceiptPreview: vi.fn() };
 vi.mock("@/api/endpoints", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/endpoints")>()),
   saveReferenceLink: (...a: unknown[]) => api.saveReferenceLink(...a),
   markRetailed: (...a: unknown[]) => api.markRetailed(...a),
   reopenRetailed: (...a: unknown[]) => api.reopenRetailed(...a),
+  getInventoryStatus: (...a: unknown[]) => api.getInventoryStatus(...a),
+  getReceiptPreview: (...a: unknown[]) => api.getReceiptPreview(...a),
 }));
+const { ApiError } = await import("@/api/client");
 
 const { ReferenceLinkCard } = await import("./reference-link-card");
 const { RetailedControl } = await import("./retailed-control");
@@ -49,7 +53,22 @@ beforeEach(() => {
     url ? { url, set_by: "barj", set_at: "2026-10-13T10:00:00Z" } : null);
   api.markRetailed.mockResolvedValue(completion({ status: "retailed" }));
   api.reopenRetailed.mockResolvedValue(completion());
+  api.getInventoryStatus.mockResolvedValue({ enabled: false });
+  api.getReceiptPreview.mockRejectedValue(new Error("not expected"));
 });
+
+function receiptPreview(extra: Partial<ReceiptPreview> = {}): ReceiptPreview {
+  const submitted = { id: "r1", invoice_id: "inv-1", invoice_number: "50185", status: "SUBMITTED" as const, line_count: 2,
+                      created_at: "2026-10-13T10:00:00Z", submitted_by: "barj", submitted_at: "2026-10-13T10:00:00Z",
+                      received_on: null, confirmed_by: null, confirmed_role: null, discrepancy_count: null };
+  return {
+    invoice_id: "inv-1", invoice_number: "50185", store: { id: "store-b", label: "AF NV Midler" } as ReceiptPreview["store"],
+    eligibility_reasons: [], lines: [], blockers: [], receipt: null, history: [submitted], can_approve: true,
+    submission: { receipt: submitted, proposed_lines: [], proposed_blockers: [], export_number: 1, stale_reasons: [],
+                  line_changes: [] },
+    ...extra,
+  };
+}
 
 describe("original invoice link", () => {
   it("opens in a new tab with safe attributes and says who saved it", () => {
@@ -136,6 +155,51 @@ describe("Retailed control", () => {
     wrap(<tr><td><RetailedControl invoiceId="i" completion={completion({ status: "retailed" })} /></td></tr>);
     expect(screen.getByTestId("retailed-control")).toHaveTextContent("Retailed");
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+describe("inventory receipt beside Retailed", () => {
+  it("asks nothing about the receipt while inventory is off", async () => {
+    wrap(<tr><td><RetailedControl invoiceId="inv-1" completion={completion({ status: "retailed" })} /></td></tr>);
+    await waitFor(() => expect(api.getInventoryStatus).toHaveBeenCalled());
+    expect(api.getReceiptPreview).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("inventory-receipt-status")).not.toBeInTheDocument();
+  });
+
+  it("shows a pending submission with a link to the store's approval queue", async () => {
+    api.getInventoryStatus.mockResolvedValue({ enabled: true });
+    api.getReceiptPreview.mockResolvedValue(receiptPreview());
+    wrap(<tr><td><RetailedControl invoiceId="inv-1" completion={completion({ status: "retailed" })} /></td></tr>);
+    const chip = await screen.findByTestId("inventory-receipt-status");
+    expect(chip).toHaveTextContent("Inventory · awaiting approval");
+    expect(within(chip).getByRole("link", { name: "Review" })).toHaveAttribute("href", "/inventory?store=store-b&tab=approvals");
+  });
+
+  it("says when the submission is out of date", async () => {
+    api.getInventoryStatus.mockResolvedValue({ enabled: true });
+    const stale = receiptPreview();
+    stale.submission = { ...stale.submission!, stale_reasons: ["invoice_changed_since_retailed"] };
+    api.getReceiptPreview.mockResolvedValue(stale);
+    wrap(<tr><td><RetailedControl invoiceId="inv-1" completion={completion({ status: "retailed_stale" })} /></td></tr>);
+    expect(await screen.findByTestId("inventory-receipt-status")).toHaveTextContent("submission out of date");
+  });
+
+  it("shows nothing at all for a store the account cannot use (the server's 404)", async () => {
+    api.getInventoryStatus.mockResolvedValue({ enabled: true });
+    api.getReceiptPreview.mockRejectedValue(new ApiError(404, { error_code: "ERR_NOT_FOUND", message: "Invoice not found.", detail: null }));
+    wrap(<tr><td><RetailedControl invoiceId="inv-1" completion={completion({ status: "retailed" })} /></td></tr>);
+    await waitFor(() => expect(api.getReceiptPreview).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId("inventory-receipt-status")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Inventory ·/)).not.toBeInTheDocument();
+  });
+
+  it("is never asked for by USER", async () => {
+    role.current = "USER";
+    api.getInventoryStatus.mockResolvedValue({ enabled: true });
+    wrap(<tr><td><RetailedControl invoiceId="inv-1" completion={completion({ status: "retailed" })} /></td></tr>);
+    await screen.findByTestId("retailed-control");
+    expect(api.getInventoryStatus).not.toHaveBeenCalled();
+    expect(api.getReceiptPreview).not.toHaveBeenCalled();
   });
 });
 

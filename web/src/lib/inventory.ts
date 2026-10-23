@@ -1,4 +1,4 @@
-import type { InventoryItemStatus, ReceiptLine } from "@/api/types";
+import type { InventoryItemStatus, InventoryReceiptStatus, ReceiptLine } from "@/api/types";
 import type { Tone } from "@/lib/status";
 
 /**
@@ -27,6 +27,32 @@ const RECEIVABLE_REASONS: Record<string, string> = {
 
 export function receivableReason(code: string): string {
   return RECEIVABLE_REASONS[code] ?? code.replaceAll("_", " ");
+}
+
+export const RECEIPT_STATUS: Record<InventoryReceiptStatus, { label: string; tone: Tone; meaning: string }> = {
+  SUBMITTED: { label: "Awaiting approval", tone: "info",
+               meaning: "Submitted by marking the invoice Retailed. No stock has moved yet." },
+  POSTED: { label: "Received", tone: "success", meaning: "Approved and posted to the store's stock." },
+  REJECTED: { label: "Rejected", tone: "danger", meaning: "Refused by an approver. No stock moved." },
+  WITHDRAWN: { label: "Withdrawn", tone: "neutral",
+               meaning: "The Retailed mark was removed or the invoice deleted before approval. No stock moved." },
+  SUPERSEDED: { label: "Replaced", tone: "neutral",
+                meaning: "The invoice was marked Retailed again; a newer submission replaced this one. No stock moved." },
+  REVERSED: { label: "Receipt reversed", tone: "warning", meaning: "Posted, then compensated movement by movement." },
+};
+
+const STALE_REASONS: Record<string, string> = {
+  invoice_deleted: "The invoice was deleted",
+  retailed_mark_removed: "The Retailed mark was removed",
+  retailed_marked_again: "The invoice was marked Retailed again",
+  invoice_changed_since_retailed: "The invoice, its totals or its mappings changed after it was marked Retailed",
+  invoice_not_validated: "The invoice is no longer validated",
+  store_changed: "The invoice's store changed",
+  lines_changed_since_submission: "The lines to receive differ from those submitted",
+};
+
+export function staleReason(code: string): string {
+  return STALE_REASONS[code] ?? code.replaceAll("_", " ");
 }
 
 export const MOVEMENT_LABEL: Record<string, string> = {

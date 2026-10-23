@@ -363,10 +363,11 @@ class TestReceivingEligibility:
         assert not rx.receiving_eligibility(invoice, store, document).eligible
 
     def test_only_inventory_receiving_calls_it(self):
-        # The contract's one consumer: store inventory receipts (feature-flagged).
+        # The contract's one consumer: store inventory receipts (feature-flagged) and their approval.
         callers = sorted(str(p.relative_to(ROOT)) for p in (ROOT / "app").rglob("*.py")
                          if p.name != "receiving_eligibility.py" and "receiving_eligibility" in p.read_text())
-        assert callers == ["app/api/v1/inventory.py", "app/services/inventory_service.py"]
+        assert callers == ["app/api/v1/inventory.py", "app/services/inventory_approval.py",
+                           "app/services/inventory_service.py"]
 
 
 # ---- A6: every store write path is known and guarded -------------------------

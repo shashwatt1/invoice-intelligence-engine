@@ -76,6 +76,7 @@ from app.schemas.processing import (
     StoreRef,
     VendorData,
 )
+from app.services import inventory_approval
 from app.services.case_mapping_service import (
     build_case_mapping_status,
     invoice_commercial_resolution,
@@ -590,16 +591,25 @@ def _redact_invoice_detail(data: InvoiceDetailData, role: str) -> InvoiceDetailD
         "review history — Data Review shows them with `invoice_deleted`) and any "
         "master-data mapping an approval wrote. Operational data goes; audit "
         "history and master data do not."
+        "\n\nInventory: a pending receipt submission is withdrawn. A posted receipt "
+        "is reversed first (compensating movements) in the same transaction as the "
+        "delete; that needs inventory switched on and the administrator's own grant "
+        "for the invoice's store, otherwise 409 and nothing changes. Receipts and "
+        "movements are never deleted; they keep the invoice number and lose only "
+        "their link to the deleted invoice."
     ),
-    responses={404: {"description": "Invoice not found"}},
+    responses={404: {"description": "Invoice not found"},
+               409: {"description": "Received into inventory, and the receipt cannot be reversed by this account now"}},
 )
 async def delete_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_admin),
 ) -> APIResponse[InvoiceDeleteResult]:
-    await ensure_invoice_changeable(db, invoice_id, "delete_invoice")   # a POSTED receipt locks the invoice
-    invoice = await InvoiceRepository(db).get_detail(invoice_id)
+    # Locks the invoice, withdraws a pending submission and reverses a posted receipt, all inside
+    # this transaction: if the delete below fails, the reversal rolls back with it.
+    release = await inventory_approval.release_invoice_for_deletion(db, invoice_id, user)
+    invoice = await InvoiceRepository(db).get_detail(invoice_id, fresh=True)
     if invoice is None:
         raise RecordNotFoundError(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
@@ -618,6 +628,7 @@ async def delete_invoice(
     # (separate, best-effort) physical file removal below.
     await DocumentRepository(db).delete(document)
     await db.commit()
+    inventory_approval.log_deletion(release, invoice_id, user)
 
     for file_path in file_paths:
         try:

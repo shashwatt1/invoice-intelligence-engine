@@ -1,10 +1,12 @@
 """
 Receiving eligibility — app/services/receiving_eligibility.py
 
-A FUTURE CONTRACT, deliberately unused: the single rule the receiving /
-purchase-transaction layer (Phase E) will apply to decide whether an invoice
-may count as goods received. Nothing calls it yet and no receiving record
-exists; it is here, pure and tested, so that layer cannot drift from the rule.
+The single rule that decides whether an invoice may count as goods received.
+Store inventory applies it (behind INVENTORY_ENABLED): it is recorded in a
+receipt submission's snapshot when the invoice is marked Retailed
+(app/services/inventory_approval.py), shown on the review, and re-checked when
+an approver posts the receipt — an invoice that fails it cannot be posted.
+Inventory lists also show why an invoice does not qualify.
 
 An invoice counts for receiving only when ALL hold:
   1. invoices.status is VALIDATED;

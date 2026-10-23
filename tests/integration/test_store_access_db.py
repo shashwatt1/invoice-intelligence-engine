@@ -41,9 +41,10 @@ from tests.integration.test_api_db import api_client, process_file  # noqa: F401
 from tests.integration.test_inventory_db import (  # noqa: F401 — fixture reuse
     LAGER_CODE,
     _clean_inventory,
-    acceptance,
+    approve_submission,
     grant,
     ledger_counts,
+    preview_of,
     received,
     received_and_mapped,
 )
@@ -70,7 +71,7 @@ def store_routes(sid):
     count = {"count_date": "2026-10-05", "reason": "full count", "entries": [{"item_code": LAGER_CODE, "quantity": 5}]}
     return [("GET", f"{base}/overview", None), ("GET", f"{base}/items", None),
             ("GET", f"{base}/items/{LAGER_CODE}/movements", None), ("GET", f"{base}/invoices", None),
-            ("POST", f"{base}/opening-counts", count)]
+            ("GET", f"{base}/approvals", None), ("POST", f"{base}/opening-counts", count)]
 
 
 def assert_store_not_found(response, sid):
@@ -120,7 +121,7 @@ class TestEveryStoreRoute:
 
 
 class TestInvoiceLinkedOperations:
-    async def test_preview_post_and_reverse_cannot_reach_an_ungranted_store_and_write_nothing(
+    async def test_preview_approve_reject_and_reverse_cannot_reach_an_ungranted_store_and_write_nothing(
         self, received, manager, api_client, db_session,  # noqa: F811
     ):
         await grant(db_session, "MANAGER", store_id(PHYSICAL_STORE))     # granted A, the invoice is at B
@@ -130,20 +131,32 @@ class TestInvoiceLinkedOperations:
         assert_invoice_not_found(await manager.get(url), received.invoice_id)
         assert_invoice_not_found(await manager.get(f"/api/v1/inventory/invoices/{unknown}/receipt"), unknown)
 
-        # Posting with the real line ids (read as the ADMIN who may see them) is refused the same way.
+        # Approving with the real ids (read as the ADMIN who may see them) is refused the same way.
         receipt = await received_and_mapped(api_client, db_session, received)          # ADMIN receives it
         assert (await api_client.get(url)).json()["data"]["receipt"] is not None
         assert await ledger_counts(db_session) == (1, 2)
-        # ADMIN reverses it so it can be received again, giving the manager a real post to attempt.
+        # ADMIN reverses it and submits it again (reopen + re-mark Retailed), giving the manager a real
+        # pending submission to attempt.
         reversal = await api_client.post(f"{url}/reverse", json={"receipt_id": receipt["id"], "reason": "probe"})
         assert reversal.status_code == 200
-        preview = (await api_client.get(url)).json()["data"]
-        body = {"received_on": "2026-10-10", "lines": acceptance(preview["lines"])}
+        base = f"/api/v1/invoices/{received.invoice_id}"
+        assert (await api_client.post(f"{base}/retailed/reopen", json={})).status_code == 200
+        assert (await api_client.post(f"{base}/retailed")).status_code == 200
+        preview = await preview_of(api_client, received.invoice_id)
+        pending_id = preview["submission"]["receipt"]["id"]
         before = await ledger_counts(db_session)
-        assert_invoice_not_found(await manager.post(url, json=body), received.invoice_id)
-        assert await ledger_counts(db_session) == before                                # the refusal wrote nothing
+        for r in (await approve_submission(manager, received.invoice_id, preview, received_on="2026-10-10"),
+                  await manager.post(f"{url}/reject", json={"receipt_id": pending_id, "reason": "not mine"})):
+            assert r.status_code == 404 and r.json()["error"]["message"] == "Receipt not found for this invoice."
+        assert_store_not_found(await manager.get(f"/api/v1/inventory/stores/{received.store_id}/approvals"),
+                               received.store_id)
+        assert await ledger_counts(db_session) == before                                # the refusals wrote nothing
+        status = (await db_session.execute(select(InventoryReceipt.status).where(
+            InventoryReceipt.id == uuid.UUID(pending_id)))).scalar()
+        assert status == "SUBMITTED"
 
-        posted = (await api_client.post(url, json=body)).json()["data"]["receipt"]          # ADMIN posts again
+        approved = await approve_submission(api_client, received.invoice_id, preview, received_on="2026-10-10")
+        posted = approved.json()["data"]["receipt"]                                     # ADMIN approves it
         refused = await manager.post(f"{url}/reverse", json={"receipt_id": posted["id"], "reason": "not mine"})
         missing = await manager.post(f"{url}/reverse", json={"receipt_id": str(uuid.uuid4()), "reason": "x"})
         for r in (refused, missing):
@@ -154,7 +167,7 @@ class TestInvoiceLinkedOperations:
         status = (await db_session.execute(select(InventoryReceipt.status).where(
             InventoryReceipt.id == uuid.UUID(posted["id"])))).scalar()
         assert status == "POSTED"
-        assert await ledger_counts(db_session) == (before[0] + 1, before[1] + 2)          # only the ADMIN's post
+        assert await ledger_counts(db_session) == (before[0], before[1] + 2)              # only the ADMIN's approval
 
 
 class TestChangesTakeEffectOnTheNextRequest:

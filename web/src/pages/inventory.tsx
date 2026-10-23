@@ -1,4 +1,4 @@
-import { Boxes, ClipboardList, PackageCheck } from "lucide-react";
+import { Boxes, ClipboardCheck, ClipboardList, PackageCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -21,16 +21,24 @@ import {
   useInventoryItems,
   useInventoryOverview,
   useInventoryStatus,
+  usePendingApprovals,
   useStoreInvoices,
   useInventoryStores,
 } from "@/hooks/use-api";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { formatUnits, ITEM_STATUS, receivableReason } from "@/lib/inventory";
+import { formatUnits, ITEM_STATUS, RECEIPT_STATUS, receivableReason, staleReason } from "@/lib/inventory";
 
 const ITEM_PAGE_SIZE = 50;
 
-const posted = (row: StoreInvoiceRow) => row.receipt?.status === "POSTED";
 const INVOICE_PAGE_SIZE = 25;
+const TABS = ["products", "approvals", "invoices"] as const;
+type Tab = (typeof TABS)[number];
+
+function receiptAction(row: StoreInvoiceRow): { label: string; emphasis: boolean } {
+  if (row.receipt?.status === "SUBMITTED") return { label: "Review", emphasis: true };
+  if (row.receipt?.status === "POSTED") return { label: "View", emphasis: false };
+  return { label: "Details", emphasis: false };
+}
 
 /**
  * Store inventory: per physical store, what was counted and what has been
@@ -38,7 +46,9 @@ const INVOICE_PAGE_SIZE = 25;
  *
  * On hand exists only after an audited opening count; sales are not imported
  * yet, so every on-hand figure is provisional (count + receipts), and says so.
- * A receipt is a person's explicit confirmation per invoice, never inferred.
+ * A receipt is never inferred and never entered directly: marking an invoice
+ * Retailed submits it, and it moves stock only once an approver posts it from
+ * the Approvals queue (or the invoice's row).
  * MANAGER/ADMIN, and only for stores the account has been granted: the store
  * list comes from the server (GET /inventory/stores) and every route checks the
  * grant again, so hiding stores here is convenience, not the control.
@@ -83,7 +93,8 @@ export function InventoryPage() {
       ) : !store ? (
         <EmptyState icon={Boxes} title="Choose a store" description="Inventory is kept per physical store." />
       ) : (
-        <StoreInventory key={store.id} storeId={store.id} storeLabel={store.label} />
+        <StoreInventory key={store.id} storeId={store.id} storeLabel={store.label}
+                        initialTab={TABS.find((t) => t === params.get("tab")) ?? "products"} />
       )}
     </>
   );
@@ -93,21 +104,21 @@ function Header() {
   return (
     <PageHeader
       title="Inventory"
-      description="Per physical store, in sellable units: audited opening counts and confirmed receipts. Sales are not imported yet."
+      description="Per physical store, in sellable units: audited opening counts and approved receipts. Sales are not imported yet."
     />
   );
 }
 
-function StoreInventory({ storeId, storeLabel }: { storeId: string; storeLabel: string }) {
+function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; storeLabel: string; initialTab: Tab }) {
   const overview = useInventoryOverview(storeId);
-  const [tab, setTab] = useState("products");
+  const [tab, setTab] = useState<string>(initialTab);
   const [counting, setCounting] = useState(false);
   const o = overview.data;
 
   return (
     <div className="space-y-5">
       {overview.isLoading ? (
-        <MetricStripSkeleton count={5} />
+        <MetricStripSkeleton count={6} />
       ) : overview.isError ? (
         <ErrorState error={overview.error} onRetry={() => void overview.refetch()} />
       ) : o ? (
@@ -118,6 +129,8 @@ function StoreInventory({ storeId, storeLabel }: { storeId: string; storeLabel: 
               hint: "no audited count yet" },
             { key: "out", label: "Out of stock", value: o.out_of_stock, tone: o.out_of_stock ? "danger" : "neutral" },
             { key: "in", label: "In stock", value: o.in_stock, tone: "success" },
+            { key: "pending", label: "Awaiting approval", value: o.pending_approvals, tone: o.pending_approvals ? "warning" : "neutral",
+              hint: "receipts submitted by Retailed" },
             { key: "fresh", label: "Last recorded", value: o.last_recorded_at ? formatDateTime(o.last_recorded_at) : "Never",
               hint: o.recent_receipts[0] ? `last receipt ${formatDate(o.recent_receipts[0].received_on)}` : "no receipts yet" },
           ]} />
@@ -132,6 +145,9 @@ function StoreInventory({ storeId, storeLabel }: { storeId: string; storeLabel: 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <TabsList>
             <TabsTrigger value="products">Products</TabsTrigger>
+            <TabsTrigger value="approvals">
+              Approvals{o?.pending_approvals ? ` (${o.pending_approvals})` : ""}
+            </TabsTrigger>
             <TabsTrigger value="invoices">Invoices &amp; receipts</TabsTrigger>
           </TabsList>
           <Button variant="outline" size="sm" onClick={() => setCounting(true)}>
@@ -139,6 +155,7 @@ function StoreInventory({ storeId, storeLabel }: { storeId: string; storeLabel: 
           </Button>
         </div>
         <TabsContent value="products" className="mt-3"><ProductsTab storeId={storeId} /></TabsContent>
+        <TabsContent value="approvals" className="mt-3"><ApprovalsTab storeId={storeId} /></TabsContent>
         <TabsContent value="invoices" className="mt-3"><InvoicesTab storeId={storeId} /></TabsContent>
       </Tabs>
 
@@ -179,7 +196,7 @@ function ProductsTab({ storeId }: { storeId: string }) {
       ) : !query.data?.items.length ? (
         <EmptyState icon={Boxes} title="No products"
                     description={search || status !== "ALL" ? "No product matches these filters."
-                      : "Nothing recorded at this store yet. Record opening counts, or receive a validated invoice."} />
+                      : "Nothing recorded at this store yet. Record opening counts, or approve a submitted receipt."} />
       ) : (
         <>
           <Table>
@@ -273,19 +290,22 @@ function InvoicesTab({ storeId }: { storeId: string }) {
                 {row.receipt?.status === "REVERSED" ? (
                   <StatusPill tone="warning" label="Receipt reversed"
                               meaning={`by ${row.receipt.reversed_by ?? "—"}: ${row.receipt.reversal_reason ?? ""}`} />
-                ) : row.receipt ? (
+                ) : row.receipt?.status === "POSTED" ? (
                   <StatusPill tone="success" label={`Received ${formatDate(row.receipt.received_on)}`}
-                              meaning={`by ${row.receipt.confirmed_by}${row.receipt.discrepancy_count ? `, ${row.receipt.discrepancy_count} line(s) differed` : ""}`} />
+                              meaning={`approved by ${row.receipt.confirmed_by ?? "—"}${row.receipt.discrepancy_count ? `, ${row.receipt.discrepancy_count} line(s) differed` : ""}`} />
+                ) : row.receipt ? (
+                  <StatusPill tone={RECEIPT_STATUS[row.receipt.status].tone} label={RECEIPT_STATUS[row.receipt.status].label}
+                              meaning={RECEIPT_STATUS[row.receipt.status].meaning} />
                 ) : row.receivable_reasons.length ? (
                   <span className="text-xs text-muted-foreground">{row.receivable_reasons.map(receivableReason).join("; ")}</span>
                 ) : (
-                  <StatusPill tone="neutral" label="Not received" />
+                  <StatusPill tone="neutral" label="Not submitted" meaning="Marking the invoice Retailed submits its receipt for approval." />
                 )}
               </TableCell>
               <TableCell className="text-right">
-                <Button variant={posted(row) || row.receivable_reasons.length ? "ghost" : "outline"} size="sm"
+                <Button variant={receiptAction(row).emphasis ? "outline" : "ghost"} size="sm"
                         onClick={() => setReceiving(row.invoice_id)}>
-                  {posted(row) ? "View" : "Receive"}
+                  {receiptAction(row).label}
                 </Button>
               </TableCell>
             </TableRow>
@@ -294,6 +314,74 @@ function InvoicesTab({ storeId }: { storeId: string }) {
       </Table>
       <Pagination page={page} pageSize={INVOICE_PAGE_SIZE} total={query.data.total} onPageChange={setPage} />
       {receiving && <ReceiptDialog invoiceId={receiving} onClose={() => setReceiving(null)} />}
+    </>
+  );
+}
+
+/**
+ * The store's pending receipt submissions, oldest first. The server lists only a store
+ * this account holds a grant for; each row opens the review dialog, which re-reads the
+ * invoice and shows whether the submission still matches it.
+ */
+function ApprovalsTab({ storeId }: { storeId: string }) {
+  const query = usePendingApprovals(storeId);
+  const [reviewing, setReviewing] = useState<string | null>(null);
+
+  if (query.isLoading) return <TableSkeleton rows={4} />;
+  if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
+  if (!query.data?.length) {
+    return <EmptyState icon={ClipboardCheck} title="Nothing awaits approval"
+                       description="Marking an invoice Retailed submits its receipt here. No stock moves until it is approved." />;
+  }
+  return (
+    <>
+      <Table data-testid="approval-queue">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Invoice</TableHead>
+            <TableHead>Vendor</TableHead>
+            <TableHead>Submitted</TableHead>
+            <TableHead className="text-right">Lines</TableHead>
+            <TableHead>State</TableHead>
+            <TableHead />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {query.data.map((row) => (
+            <TableRow key={row.receipt.id} data-testid="approval-row">
+              <TableCell>
+                {row.invoice_id ? (
+                  <Link className="font-medium underline-offset-2 hover:underline" to={`/invoices/${row.invoice_id}`}>
+                    #{row.invoice_number ?? "—"}
+                  </Link>
+                ) : <span className="font-medium">#{row.invoice_number ?? "—"}</span>}
+                <div className="text-xs text-muted-foreground">{formatDate(row.invoice_date)}</div>
+              </TableCell>
+              <TableCell className="text-sm">{row.vendor ?? "—"}</TableCell>
+              <TableCell className="text-sm">
+                {row.receipt.submitted_by ?? "—"}
+                <div className="text-xs text-muted-foreground">{row.receipt.submitted_at ? formatDateTime(row.receipt.submitted_at) : ""}</div>
+              </TableCell>
+              <TableCell className="text-right tabular-nums">{row.receipt.line_count}</TableCell>
+              <TableCell className="text-sm">
+                {row.stale_reasons.length ? (
+                  <StatusPill tone="warning" label="Out of date" meaning={row.stale_reasons.map(staleReason).join("; ")} />
+                ) : row.blockers ? (
+                  <StatusPill tone="danger" label={`${row.blockers} line(s) blocked`} meaning="No approved units-per-case conversion" />
+                ) : (
+                  <StatusPill tone="info" label="Ready to review" />
+                )}
+              </TableCell>
+              <TableCell className="text-right">
+                {row.invoice_id ? (
+                  <Button variant="outline" size="sm" onClick={() => setReviewing(row.invoice_id)}>Review</Button>
+                ) : null}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      {reviewing && <ReceiptDialog invoiceId={reviewing} onClose={() => setReviewing(null)} />}
     </>
   );
 }

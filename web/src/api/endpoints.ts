@@ -54,7 +54,8 @@ import type {
   ProposalRevisionResult,
   ProposalRow,
   ProposalSourceInvoice,
-  ReceiptPostRequest,
+  PendingApprovalRow,
+  ReceiptApproveRequest,
   ReceiptPreview,
   ReceiptReversalResult,
   ReferenceLink,
@@ -637,8 +638,20 @@ export async function getReceiptPreview(invoiceId: string): Promise<ReceiptPrevi
   return data.data!;
 }
 
-export async function postReceipt(invoiceId: string, body: ReceiptPostRequest): Promise<ReceiptPreview> {
-  const { data } = await apiClient.post<ApiEnvelope<ReceiptPreview>>(`/inventory/invoices/${invoiceId}/receipt`, body);
+/** Receipt submissions awaiting approval at a store the account holds a grant for (404 otherwise). */
+export async function listPendingApprovals(storeId: string): Promise<PendingApprovalRow[]> {
+  const { data } = await apiClient.get<ApiEnvelope<PendingApprovalRow[]>>(`/inventory/stores/${storeId}/approvals`);
+  return data.data!;
+}
+
+/** Approve a pending submission and post it. There is no way to post a receipt directly. */
+export async function approveReceipt(invoiceId: string, body: ReceiptApproveRequest): Promise<ReceiptPreview> {
+  const { data } = await apiClient.post<ApiEnvelope<ReceiptPreview>>(`/inventory/invoices/${invoiceId}/receipt/approve`, body);
+  return data.data!;
+}
+
+export async function rejectReceipt(invoiceId: string, body: { receipt_id: string; reason: string }): Promise<ReceiptPreview> {
+  const { data } = await apiClient.post<ApiEnvelope<ReceiptPreview>>(`/inventory/invoices/${invoiceId}/receipt/reject`, body);
   return data.data!;
 }
 

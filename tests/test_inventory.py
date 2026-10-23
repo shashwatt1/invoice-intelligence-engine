@@ -11,8 +11,10 @@ tests/test_inventory.py — store inventory: receipts, opening counts, balances.
     the closing stock of its date, so movements on or before it are in it.
   * The API answers 404 while INVENTORY_ENABLED is off, refuses USER, refuses
     a source identity (47708760) as a store, and records the signed-in account.
-  * Migration 0033 is additive, chains from 0032, matches the models, and
-    enables row level security on both tables.
+    There is no route that posts a receipt directly (approval is
+    tests/test_inventory_approval.py).
+  * Migration 0033 is additive, chains from 0032, and enables row level
+    security on both tables; with 0035 it matches the models.
   * A POSTED receipt locks its invoice: every path that changes lines, store
     or document standing calls the guard; before 0033 is applied the guard
     only locks. Reversal needs a reason and is flag-gated like the rest.
@@ -34,12 +36,14 @@ from app.core.exceptions import ValidationError
 from app.models.inventory import InventoryMovement, InventoryReceipt
 from app.models.store import Store
 from app.models.user import User, UserRole
+from app.services import inventory_approval as approval
 from app.services import inventory_service as inv
 from app.services import store_access
 from app.services.product_master import commercial_resolution as cr
 
 ROOT = Path(__file__).resolve().parent.parent
 MIGRATION = ROOT / "alembic/versions/20261023_0033_store_inventory_ledger.py"
+APPROVAL_MIGRATION = ROOT / "alembic/versions/20261023_0035_inventory_receipt_approval.py"
 
 BUD = "01820053030"            # 11-digit PDI code (UPC-A 018200530304 without its check digit)
 TEA = "08769283102"
@@ -210,7 +214,8 @@ def endpoint(app, monkeypatch):
     from app.database.session import get_db
 
     session = _Session()
-    state = SimpleNamespace(session=session, role=UserRole.MANAGER.value, calls=[], flag=True, access_checks=[])
+    state = SimpleNamespace(session=session, role=UserRole.MANAGER.value, calls=[], flag=True, access_checks=[],
+                            schema_ready=True)
 
     async def fake_db():
         yield session
@@ -234,13 +239,24 @@ def endpoint(app, monkeypatch):
                                   mv(TEA, "OPENING_COUNT", 8, date(2026, 10, 5), "TWISTED TEA"),
                                   mv(MINI, "RECEIPT", 12, date(2026, 10, 6), "FIREBALL")])
 
-    async def post_receipt(_db, invoice_id, **kwargs):
-        state.calls.append(("receipt", invoice_id, kwargs))
+    async def approve(_db, invoice_id, **kwargs):
+        state.calls.append(("approve", invoice_id, kwargs))
+
+    async def reject(_db, invoice_id, **kwargs):
+        state.calls.append(("reject", invoice_id, kwargs))
+
+    async def pending(_db, sid, user):
+        await ensure_store_access(_db, user, sid)
+        state.calls.append(("approvals", sid, user.username))
+        return []
+
+    async def no_pending(*_a, **_k):
+        return 0
 
     async def preview(_db, invoice_id, user):
         state.calls.append(("preview", invoice_id, user.username))
         return SimpleNamespace(invoice=SimpleNamespace(id=invoice_id, invoice_number="508655"), store=STORE,
-                               eligibility_reasons=[], lines=[], receipt=None, history=[], can_post=False,
+                               eligibility_reasons=[], lines=[], receipt=None, history=[], submission=None,
                                blockers=[inv.ReceiptBlocker(2, "FIREBALL 50ML", MINI, "no approved units-per-case mapping")])
 
     async def opening(_db, sid, **kwargs):
@@ -257,7 +273,16 @@ def endpoint(app, monkeypatch):
     monkeypatch.setattr(store_access, "ensure_store_access", ensure_store_access)
     monkeypatch.setattr(store_access, "accessible_stores", accessible_stores)
     monkeypatch.setattr(inv, "store_balances", balances)
-    monkeypatch.setattr(inv, "post_receipt", post_receipt)
+    monkeypatch.setattr(approval, "approve_receipt", approve)
+    monkeypatch.setattr(approval, "reject_receipt", reject)
+    monkeypatch.setattr(approval, "pending_approvals", pending)
+    monkeypatch.setattr(approval, "pending_count", no_pending)
+
+    async def schema_ready(_db):
+        state.calls.append(("schema",)) if not state.schema_ready else None
+        return state.schema_ready
+
+    monkeypatch.setattr(inv, "approval_schema_ready", schema_ready)
     monkeypatch.setattr(inv, "receipt_preview", preview)
     monkeypatch.setattr(inv, "record_opening_counts", opening)
     monkeypatch.setattr(inv, "last_recorded", nothing)
@@ -285,10 +310,26 @@ class TestTheInventoryApi:
         for method, path in (("get", f"/api/v1/inventory/stores/{STORE.id}/overview"),
                              ("get", f"/api/v1/inventory/stores/{STORE.id}/items"),
                              ("get", f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt"),
-                             ("post", f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt")):
+                             ("get", f"/api/v1/inventory/stores/{STORE.id}/approvals"),
+                             ("post", f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt/approve"),
+                             ("post", f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt/reject")):
             r = await client.request(method.upper(), path, json={})
             assert r.status_code == 404, (path, r.text)
         assert endpoint.calls == []
+
+    async def test_switched_on_before_0035_is_applied_every_route_is_a_plain_404_and_status_is_off(
+        self, client, endpoint,
+    ):
+        endpoint.schema_ready = False
+        for method, path in (("get", f"/api/v1/inventory/stores/{STORE.id}/overview"),
+                             ("get", f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt"),
+                             ("post", f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt/reverse")):
+            r = await client.request(method.upper(), path, json={"receipt_id": str(uuid.uuid4()), "reason": "x"})
+            assert r.status_code == 404, (path, r.text)
+            assert r.json()["error"]["detail"]["reason"] == "inventory_schema_not_migrated"
+        assert (await client.get("/api/v1/inventory/status")).json()["data"] == {"enabled": False}
+        assert [c for c in endpoint.calls if c[0] != "schema"] == []
+        assert endpoint.access_checks == []
 
     async def test_the_status_route_says_whether_inventory_is_on_and_only_to_managers(self, client, endpoint):
         endpoint.flag = False
@@ -313,7 +354,8 @@ class TestTheInventoryApi:
 
     async def test_every_store_route_checks_the_signed_in_accounts_access(self, client, endpoint):
         base = f"/api/v1/inventory/stores/{STORE.id}"
-        for path in (f"{base}/overview", f"{base}/items", f"{base}/items/{BUD}/movements", f"{base}/invoices"):
+        for path in (f"{base}/overview", f"{base}/items", f"{base}/items/{BUD}/movements", f"{base}/invoices",
+                     f"{base}/approvals"):
             endpoint.access_checks.clear()
             await client.get(path)
             assert endpoint.access_checks == [("barj", STORE.id)], path
@@ -344,25 +386,63 @@ class TestTheInventoryApi:
         out = (await client.get(base, params={"status": "OUT_OF_STOCK"})).json()["items"]
         assert [i["item_code"] for i in out] == [BUD]
 
-    async def test_a_receipt_records_the_signed_in_account_and_each_line(self, client, endpoint):
-        invoice_id, line_a, line_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-        r = await client.post(f"/api/v1/inventory/invoices/{invoice_id}/receipt", json={
-            "received_on": "2026-10-09", "note": "driver Mike",
+    async def test_a_receipt_cannot_be_posted_directly(self, client, endpoint):
+        r = await client.post(f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt", json={
+            "received_on": "2026-10-09", "lines": [{"invoice_item_id": str(uuid.uuid4()), "accepted_units": 1}]})
+        assert r.status_code == 405, r.text
+        assert endpoint.calls == [] and endpoint.session.committed == 0
+
+    async def test_approval_hands_the_signed_in_account_the_submission_and_each_line(self, client, endpoint):
+        invoice_id, receipt_id, line_a, line_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        r = await client.post(f"/api/v1/inventory/invoices/{invoice_id}/receipt/approve", json={
+            "receipt_id": str(receipt_id), "received_on": "2026-10-09", "note": "driver Mike",
             "lines": [{"invoice_item_id": str(line_a), "accepted_units": 46, "reason": "2 crushed"},
                       {"invoice_item_id": str(line_b), "accepted_units": 12}]})
-        assert r.status_code == 201, r.text
-        [(kind, iid, kwargs)] = [c for c in endpoint.calls if c[0] == "receipt"]
+        assert r.status_code == 200, r.text
+        [(kind, iid, kwargs)] = [c for c in endpoint.calls if c[0] == "approve"]
         assert ("preview", invoice_id, "barj") in endpoint.calls      # the answer is re-read as the same account
-        assert (kind, iid, kwargs["user"].username, kwargs["received_on"]) == ("receipt", invoice_id, "barj",
-                                                                                 date(2026, 10, 9))
+        assert (kind, iid, kwargs["user"].username, kwargs["received_on"], kwargs["receipt_id"]) == (
+            "approve", invoice_id, "barj", date(2026, 10, 9), receipt_id)
         assert kwargs["accepted"] == {line_a: Decimal("46"), line_b: Decimal("12")}
         assert kwargs["reasons"] == {line_a: "2 crushed"}
         assert endpoint.session.committed == 1
 
+    async def test_approval_needs_a_business_date_and_the_submission(self, client, endpoint):
+        url = f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt/approve"
+        line = [{"invoice_item_id": str(uuid.uuid4()), "accepted_units": 1}]
+        assert (await client.post(url, json={"receipt_id": str(uuid.uuid4()), "lines": line})).status_code == 422
+        assert (await client.post(url, json={"received_on": "2026-10-09", "lines": line})).status_code == 422
+        assert endpoint.calls == []
+
+    async def test_rejection_needs_a_reason_and_records_the_account(self, client, endpoint):
+        invoice_id, receipt_id = uuid.uuid4(), uuid.uuid4()
+        url = f"/api/v1/inventory/invoices/{invoice_id}/receipt/reject"
+        assert (await client.post(url, json={"receipt_id": str(receipt_id), "reason": ""})).status_code == 422
+        r = await client.post(url, json={"receipt_id": str(receipt_id), "reason": "wrong delivery"})
+        assert r.status_code == 200, r.text
+        [(_, iid, kwargs)] = [c for c in endpoint.calls if c[0] == "reject"]
+        assert (iid, kwargs["receipt_id"], kwargs["reason"], kwargs["user"].username) == (
+            invoice_id, receipt_id, "wrong delivery", "barj")
+
+    async def test_the_approval_queue_is_per_granted_store_and_refuses_user(self, client, endpoint):
+        r = await client.get(f"/api/v1/inventory/stores/{STORE.id}/approvals")
+        assert r.status_code == 200 and r.json()["data"] == []
+        other = uuid.uuid4()
+        assert (await client.get(f"/api/v1/inventory/stores/{other}/approvals")).status_code == 404
+        endpoint.role = UserRole.USER.value
+        for method, path in (("get", f"/api/v1/inventory/stores/{STORE.id}/approvals"),
+                             ("post", f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt/approve"),
+                             ("post", f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt/reject")):
+            r = await client.request(method.upper(), path, json={
+                "receipt_id": str(uuid.uuid4()), "received_on": "2026-10-09", "reason": "x",
+                "lines": [{"invoice_item_id": str(uuid.uuid4()), "accepted_units": 1}]})
+            assert r.status_code == 403, (path, r.text)
+        assert [c[0] for c in endpoint.calls] == ["approvals"]
+
     async def test_the_preview_names_the_blocking_products(self, client, endpoint):
         r = await client.get(f"/api/v1/inventory/invoices/{uuid.uuid4()}/receipt")
         data = r.json()["data"]
-        assert data["can_post"] is False
+        assert data["can_approve"] is False and data["submission"] is None
         assert data["blockers"] == [{"sort_order": 2, "description": "FIREBALL 50ML", "item_code": MINI,
                                      "reason": "no approved units-per-case mapping"}]
 
@@ -376,55 +456,6 @@ class TestTheInventoryApi:
         assert r.status_code == 422
         r = await client.post(f"/api/v1/inventory/stores/{uuid.uuid4()}/opening-counts", json=body)
         assert r.status_code == 404 and len(endpoint.calls) == 1
-
-
-# ---- service refusals (no database) ----------------------------------------------------------
-
-class TestPostingRefusals:
-    @pytest.fixture
-    def preview(self, monkeypatch):
-        state = SimpleNamespace(value=None)
-
-        async def fake(_session, _invoice_id, _user):
-            return state.value
-
-        async def no_lock(_session, _invoice_id):
-            return None
-        monkeypatch.setattr(inv, "receipt_preview", fake)
-        monkeypatch.setattr(inv, "lock_invoice", no_lock)       # no database here; locking is tested against Postgres
-        return state
-
-    def _preview(self, **overrides):
-        invoice = SimpleNamespace(id=uuid.uuid4(), invoice_number="508655", items=[item(1, BUD, 2)])
-        lines, blockers = inv.build_receipt_lines(invoice, resolution(**APPROVED))
-        values = {"invoice": invoice, "store": STORE, "eligibility_reasons": [], "lines": lines, "blockers": blockers,
-                      "receipt": None, "resolution": resolution(**APPROVED)}
-        values.update(overrides)
-        return inv.ReceiptPreview(**values)
-
-    async def _post(self, accepted=None):
-        return await inv.post_receipt(object(), uuid.uuid4(), accepted=accepted or {}, reasons={},
-                                      received_on=date(2026, 10, 9), note=None,
-                                      user=SimpleNamespace(id=uuid.uuid4(), username="barj", role="MANAGER"))
-
-    async def test_an_invoice_is_received_once(self, preview):
-        preview.value = self._preview(receipt=SimpleNamespace(id=uuid.uuid4()))
-        with pytest.raises(ValidationError) as exc:
-            await self._post()
-        assert exc.value.detail["reason"] == "already_received"
-
-    async def test_validation_alone_is_not_receipt_and_an_ineligible_invoice_is_refused(self, preview):
-        preview.value = self._preview(eligibility_reasons=["not_validated"])
-        with pytest.raises(ValidationError) as exc:
-            await self._post()
-        assert exc.value.detail["reasons"] == ["not_validated"]
-
-    async def test_one_unresolved_conversion_blocks_the_whole_receipt(self, preview):
-        preview.value = self._preview(blockers=[inv.ReceiptBlocker(2, "FIREBALL", MINI, "no approved units-per-case mapping")])
-        with pytest.raises(ValidationError) as exc:
-            await self._post()
-        assert exc.value.detail["reason"] == "unresolved_conversions"
-        assert exc.value.detail["blockers"][0]["item_code"] == MINI
 
 
 # ---- migration -----------------------------------------------------------------------------------
@@ -441,13 +472,19 @@ class TestTheMigration:
         assert executed == ['op.execute("ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY")',
                             'op.execute("ALTER TABLE inventory_receipts ENABLE ROW LEVEL SECURITY")']
 
-    def test_the_migration_matches_the_models_column_for_column(self):
+    def test_the_migrations_match_the_models_column_for_column(self):
         tree = ast.parse(MIGRATION.read_text())
         tables: dict[str, set[str]] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "create_table":
                 tables[node.args[0].value] = {a.args[0].value for a in node.args[1:]
                                               if isinstance(a, ast.Call) and getattr(a.func, "attr", None) == "Column"}
+        # 0035 adds the approval columns to inventory_receipts.
+        from importlib import util
+        spec = util.spec_from_file_location("m0035", APPROVAL_MIGRATION)
+        m0035 = util.module_from_spec(spec)
+        spec.loader.exec_module(m0035)
+        tables["inventory_receipts"] |= {name for name, _type in m0035.NEW_COLUMNS}
         assert tables == {"inventory_receipts": set(InventoryReceipt.__table__.columns.keys()),
                           "inventory_movements": set(InventoryMovement.__table__.columns.keys())}
 
@@ -461,37 +498,78 @@ class TestTheMigration:
 # ---- the correction guard -------------------------------------------------------------------
 
 class _GuardSession:
-    def __init__(self, ledger: bool, receipt=None):
-        self.ledger, self.receipt, self.statements = ledger, receipt, []
+    """
+    Answers the guard's two queries as a database at a given schema would:
+    (tables present, 0035 columns present), then the POSTED receipt row.
+    """
+
+    def __init__(self, tables: bool, approval: bool = False, receipt=None):
+        self.tables, self.approval, self.receipt, self.statements = tables, approval, receipt, []
 
     async def execute(self, statement):
         sql = str(statement)
         self.statements.append(sql)
-        value = self.ledger if "to_regclass" in sql else self.receipt
-        return SimpleNamespace(scalar=lambda: value, scalars=lambda: SimpleNamespace(first=lambda: value))
+        if "to_regclass" in sql:
+            return SimpleNamespace(one=lambda: (self.tables, self.tables and self.approval))
+        return SimpleNamespace(first=lambda: self.receipt)
+
+
+POSTED = SimpleNamespace(id=uuid.uuid4(), received_on=date(2026, 10, 9), confirmed_by="barj")
+APPROVAL_ONLY_COLUMNS = ("submitted_at", "submission_snapshot", "approved_at", "rejected_at", "withdrawn_at",
+                         "superseded_at", "previous_receipt_id", "attestation_sha256", "edi_export_id")
 
 
 class TestTheCorrectionGuard:
-    async def test_before_0033_is_applied_it_only_locks(self, monkeypatch):
-        monkeypatch.setattr(inv, "_ledger_present", False)
-        session = _GuardSession(ledger=False)
+    @pytest.fixture(autouse=True)
+    def _fresh_schema_cache(self, monkeypatch):
+        monkeypatch.setattr(inv, "_approval_schema_seen", False)
+
+    async def test_before_0033_is_applied_it_only_locks(self):
+        session = _GuardSession(tables=False)
         await inv.ensure_invoice_changeable(session, uuid.uuid4(), "correct_line_item")
         assert "FOR UPDATE" in session.statements[0] and len(session.statements) == 2
 
-    async def test_a_posted_receipt_refuses_the_change_and_names_it(self, monkeypatch):
+    @pytest.mark.parametrize("approval", [False, True], ids=["0033-0034 (before 0035)", "0035"])
+    async def test_a_posted_receipt_refuses_the_change_and_names_it_at_either_schema(self, approval):
         from app.core.exceptions import InvoiceReceivedError
 
-        monkeypatch.setattr(inv, "_ledger_present", False)
-        receipt = SimpleNamespace(id=uuid.uuid4(), received_on=date(2026, 10, 9), confirmed_by="barj")
+        session = _GuardSession(tables=True, approval=approval, receipt=POSTED)
         with pytest.raises(InvoiceReceivedError) as exc:
-            await inv.ensure_invoice_changeable(_GuardSession(ledger=True, receipt=receipt), uuid.uuid4(), "void_line_item")
+            await inv.ensure_invoice_changeable(session, uuid.uuid4(), "void_line_item")
         assert exc.value.http_status == 409
-        assert exc.value.detail["action"] == "void_line_item" and exc.value.detail["receipt_id"] == str(receipt.id)
-        assert "Reverse the receipt" in exc.value.message
+        assert exc.value.detail["action"] == "void_line_item" and exc.value.detail["receipt_id"] == str(POSTED.id)
+        assert "Reverse the receipt" in exc.value.message and "2026-10-09" in exc.value.message
+
+    @pytest.mark.parametrize("approval", [False, True], ids=["0033-0034 (before 0035)", "0035"])
+    async def test_without_a_posted_receipt_the_change_goes_ahead_at_either_schema(self, approval):
+        session = _GuardSession(tables=True, approval=approval, receipt=None)
+        await inv.ensure_invoice_changeable(session, uuid.uuid4(), "correct_line_item")
+        assert len(session.statements) == 3                     # lock, schema, posted receipt
+
+    async def test_the_posted_receipt_check_reads_no_column_added_by_0035(self):
+        session = _GuardSession(tables=True, approval=False, receipt=None)
+        await inv.ensure_invoice_changeable(session, uuid.uuid4(), "correct_line_item")
+        posted_sql = session.statements[-1]
+        assert "inventory_receipts" in posted_sql and "status" in posted_sql
+        assert not [c for c in APPROVAL_ONLY_COLUMNS if c in posted_sql], posted_sql
+        # Every column it reads exists since 0033.
+        source = MIGRATION.read_text()
+        for column in ("id", "received_on", "confirmed_by", "invoice_id", "status"):
+            assert f'sa.Column("{column}"' in source
+
+    async def test_only_the_0035_state_is_cached_so_applying_it_needs_no_restart(self):
+        before = _GuardSession(tables=True, approval=False)
+        assert await inv.inventory_schema(before) == inv.SCHEMA_LEDGER
+        assert await inv.inventory_schema(before) == inv.SCHEMA_LEDGER and len(before.statements) == 2   # re-read
+        after = _GuardSession(tables=True, approval=True)
+        assert await inv.inventory_schema(after) == inv.SCHEMA_APPROVAL
+        assert await inv.inventory_schema(after) == inv.SCHEMA_APPROVAL and len(after.statements) == 1   # cached
+        assert await inv.inventory_schema(_GuardSession(tables=False)) == inv.SCHEMA_APPROVAL  # forward only
 
     def test_every_path_that_changes_received_lines_calls_it(self):
         guarded = {
-            "app/api/v1/invoices.py": {"delete_invoice", "correct_line_item", "duplicate_decision", "assign_store",
+            # delete_invoice takes the same lock through inventory_approval.release_invoice_for_deletion.
+            "app/api/v1/invoices.py": {"correct_line_item", "duplicate_decision", "assign_store",
                                        "add_line_item", "void_line_item"},
             "app/services/document_lifecycle.py": {"move_to_bin"},
             "app/services/reprocess_service.py": {"reprocess"},

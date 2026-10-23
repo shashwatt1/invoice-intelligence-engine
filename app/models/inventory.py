@@ -10,9 +10,13 @@ code denotes. A receipt converts invoiced cases with the approved units per
 case (commercial resolution) and records the conversion it used.
 
 A correction is never an edit: a reversing movement points at the original.
-A receipt is reversed, not deleted: its movements are compensated, it keeps
-its history, and the invoice may then be corrected and received again. At
-most one receipt per invoice is POSTED at a time.
+A receipt is never posted directly. Marking an invoice Retailed (with
+inventory on) creates it SUBMITTED, with no movements; an approver with a
+grant for the store approves it (POSTED: movements written once), adjusts
+accepted quantities with reasons, or rejects it. A receipt is reversed, not
+deleted: its movements are compensated, it keeps its history, and the invoice
+may then be corrected and submitted again. At most one receipt per invoice is
+SUBMITTED or POSTED at a time.
 """
 
 from __future__ import annotations
@@ -33,6 +37,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
+    inspect,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -54,16 +61,68 @@ INBOUND = frozenset({MOVEMENT_OPENING_COUNT, MOVEMENT_RECEIPT, MOVEMENT_SALE_RET
 OUTBOUND = frozenset({MOVEMENT_SALE, MOVEMENT_RETURN_TO_VENDOR, MOVEMENT_TRANSFER_OUT})
 MOVEMENT_TYPES = INBOUND | OUTBOUND | {MOVEMENT_ADJUSTMENT}
 
-RECEIPT_POSTED = "POSTED"
-RECEIPT_REVERSED = "REVERSED"
+RECEIPT_SUBMITTED = "SUBMITTED"      # proposed by marking the invoice Retailed; no stock effect yet
+RECEIPT_POSTED = "POSTED"            # approved: its movements are in the ledger
+RECEIPT_REJECTED = "REJECTED"        # refused by an approver, with a reason; terminal
+RECEIPT_WITHDRAWN = "WITHDRAWN"      # the Retailed mark was removed, or the invoice deleted; terminal
+RECEIPT_SUPERSEDED = "SUPERSEDED"    # replaced by a newer submission (Retailed marked again); terminal
+RECEIPT_REVERSED = "REVERSED"        # a POSTED receipt compensated movement by movement; terminal
+RECEIPT_STATUSES = frozenset({RECEIPT_SUBMITTED, RECEIPT_POSTED, RECEIPT_REJECTED, RECEIPT_WITHDRAWN,
+                              RECEIPT_SUPERSEDED, RECEIPT_REVERSED})
+RECEIPT_ACTIVE = frozenset({RECEIPT_SUBMITTED, RECEIPT_POSTED})        # at most one per invoice
+SUBMISSION_ONLY = frozenset({RECEIPT_SUBMITTED, RECEIPT_REJECTED, RECEIPT_WITHDRAWN, RECEIPT_SUPERSEDED})
+POSTING_STATES = frozenset({RECEIPT_POSTED, RECEIPT_REVERSED})
 
 
 def _in(values) -> str:
     return ", ".join(f"'{v}'" for v in sorted(values))
 
 
+# Per-state rules, enforced by the database (migration 0035 creates exactly these).
+_SUBMITTER = ("submitted_at IS NOT NULL AND submitted_by IS NOT NULL AND submitted_role IS NOT NULL "
+              "AND attestation_sha256 IS NOT NULL AND submission_snapshot IS NOT NULL")
+RECEIPT_CHECKS = {
+    "ck_inventory_receipts_status": f"status IN ({_in(RECEIPT_STATUSES)})",
+    "ck_inventory_receipts_reversal": (
+        f"status <> '{RECEIPT_REVERSED}' OR "
+        "(reversed_at IS NOT NULL AND reversed_by IS NOT NULL AND reversal_reason IS NOT NULL)"),
+    "ck_inventory_receipts_posting": (
+        f"(status NOT IN ({_in(POSTING_STATES)}) OR (received_on IS NOT NULL AND confirmed_by IS NOT NULL "
+        "AND confirmed_role IS NOT NULL AND discrepancy_count IS NOT NULL "
+        "AND (submitted_at IS NULL OR approved_at IS NOT NULL))) "
+        f"AND (status <> '{RECEIPT_POSTED}' OR reversed_at IS NULL)"),
+    "ck_inventory_receipts_submission": (
+        f"(submitted_at IS NULL OR ({_SUBMITTER})) AND "
+        f"(status NOT IN ({_in(SUBMISSION_ONLY)}) OR (submitted_at IS NOT NULL AND received_on IS NULL "
+        "AND confirmed_by IS NULL AND confirmed_role IS NULL AND discrepancy_count IS NULL "
+        "AND approved_at IS NULL AND reversed_at IS NULL))"),
+    "ck_inventory_receipts_rejection": (
+        f"(status = '{RECEIPT_REJECTED}' AND rejected_at IS NOT NULL AND rejected_by IS NOT NULL "
+        "AND rejected_role IS NOT NULL AND rejection_reason IS NOT NULL AND length(trim(rejection_reason)) > 0) OR "
+        f"(status <> '{RECEIPT_REJECTED}' AND rejected_at IS NULL AND rejected_by IS NULL AND rejected_role IS NULL "
+        "AND rejection_reason IS NULL AND rejected_by_user_id IS NULL)"),
+    "ck_inventory_receipts_withdrawal": (
+        f"(status = '{RECEIPT_WITHDRAWN}' AND withdrawn_at IS NOT NULL AND withdrawn_by IS NOT NULL "
+        "AND withdrawn_role IS NOT NULL AND withdrawal_reason IS NOT NULL AND length(trim(withdrawal_reason)) > 0) OR "
+        f"(status <> '{RECEIPT_WITHDRAWN}' AND withdrawn_at IS NULL AND withdrawn_by IS NULL AND withdrawn_role IS NULL "
+        "AND withdrawal_reason IS NULL AND withdrawn_by_user_id IS NULL)"),
+    "ck_inventory_receipts_supersession": (
+        f"(status = '{RECEIPT_SUPERSEDED}' AND superseded_at IS NOT NULL) OR "
+        f"(status <> '{RECEIPT_SUPERSEDED}' AND superseded_at IS NULL)"),
+}
+ACTIVE_INDEX_WHERE = f"status IN ({_in(RECEIPT_ACTIVE)})"
+PENDING_INDEX_WHERE = f"status = '{RECEIPT_SUBMITTED}'"
+
+
 class InventoryReceipt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """A person's confirmation that an invoice's goods were received — at most one POSTED per invoice."""
+    """
+    One invoice's goods receipt, from proposal to ledger. Marking the invoice
+    Retailed (with inventory on) creates it SUBMITTED, with a snapshot of the
+    proposed lines and no movements. A MANAGER/ADMIN with a grant for the
+    store approves it (POSTED, movements written once) or rejects it. A row is
+    never deleted and changes only along the allowed transitions (guarded
+    below and by the per-state CHECKs). At most one SUBMITTED or POSTED per invoice.
+    """
 
     __tablename__ = "inventory_receipts"
 
@@ -74,17 +133,55 @@ class InventoryReceipt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     invoice_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     store_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=RECEIPT_POSTED)
-    received_on: Mapped[date] = mapped_column(Date, nullable=False, doc="The business date the goods arrived.")
+    # The submission: who proposed it (by marking Retailed), what they attested, and what was proposed.
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    submitted_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    submitted_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    attestation_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, doc="The Retailed attestation fingerprint the submission was made under.",
+    )
+    edi_export_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("edi_exports.id", ondelete="SET NULL"), nullable=True,
+        doc="The ledger-recorded PDI export the Retailed mark rested on (number and SHA-256 also in the snapshot).",
+    )
+    submission_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True, doc="Proposed lines, blockers, eligibility and conversions at submission.",
+    )
+    previous_receipt_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("inventory_receipts.id", ondelete="RESTRICT"), nullable=True,
+        doc="The receipt this submission follows (rejected, withdrawn, superseded or reversed).",
+    )
+    # The posting: the approver (confirmed_*), the business date and what was accepted.
+    received_on: Mapped[date | None] = mapped_column(Date, nullable=True, doc="The business date the goods arrived.")
     confirmed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
     )
-    confirmed_by: Mapped[str] = mapped_column(String(64), nullable=False, doc="The signed-in account's username.")
-    confirmed_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    confirmed_by: Mapped[str | None] = mapped_column(String(64), nullable=True, doc="The approving account's username.")
+    confirmed_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     line_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    discrepancy_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    discrepancy_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     resolution_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    # Set once, when the receipt is reversed; the receipt row itself is kept.
+    # Terminal outcomes, each set once.
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    rejected_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rejected_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    withdrawn_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    withdrawn_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    withdrawn_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    withdrawal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reversed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
@@ -93,19 +190,58 @@ class InventoryReceipt(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     reversal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        CheckConstraint(f"status IN ({_in({RECEIPT_POSTED, RECEIPT_REVERSED})})",
-                        name="ck_inventory_receipts_status"),
-        CheckConstraint(
-            f"status <> '{RECEIPT_REVERSED}' OR "
-            "(reversed_at IS NOT NULL AND reversed_by IS NOT NULL AND reversal_reason IS NOT NULL)",
-            name="ck_inventory_receipts_reversal",
-        ),
-        # One POSTED receipt per invoice; reversed ones stay as history.
-        Index("uq_inventory_receipts_invoice_posted", "invoice_id", unique=True,
-              postgresql_where=text(f"status = '{RECEIPT_POSTED}'")),
+        *(CheckConstraint(sql, name=name) for name, sql in RECEIPT_CHECKS.items()),
+        # One SUBMITTED or POSTED receipt per invoice; every other state stays as history.
+        Index("uq_inventory_receipts_invoice_active", "invoice_id", unique=True,
+              postgresql_where=text(ACTIVE_INDEX_WHERE)),
         Index("idx_inventory_receipts_invoice", "invoice_id"),
         Index("idx_inventory_receipts_store", "store_id", "received_on"),
+        Index("idx_inventory_receipts_pending", "store_id", "submitted_at",
+              postgresql_where=text(PENDING_INDEX_WHERE)),
     )
+
+
+# The only changes a receipt row may ever take: one status transition, with its own fields.
+RECEIPT_TRANSITIONS: dict[tuple[str, str], frozenset[str]] = {
+    (RECEIPT_SUBMITTED, RECEIPT_POSTED): frozenset({
+        "received_on", "confirmed_by_user_id", "confirmed_by", "confirmed_role", "approved_at", "note",
+        "line_count", "discrepancy_count", "resolution_snapshot"}),
+    (RECEIPT_SUBMITTED, RECEIPT_REJECTED): frozenset({
+        "rejected_at", "rejected_by_user_id", "rejected_by", "rejected_role", "rejection_reason"}),
+    (RECEIPT_SUBMITTED, RECEIPT_WITHDRAWN): frozenset({
+        "withdrawn_at", "withdrawn_by_user_id", "withdrawn_by", "withdrawn_role", "withdrawal_reason"}),
+    (RECEIPT_SUBMITTED, RECEIPT_SUPERSEDED): frozenset({"superseded_at"}),
+    (RECEIPT_POSTED, RECEIPT_REVERSED): frozenset({
+        "reversed_at", "reversed_by_user_id", "reversed_by", "reversal_reason"}),
+}
+
+
+class ImmutableReceiptError(RuntimeError):
+    """A write that would edit receipt history outside an allowed transition, or delete a receipt."""
+
+
+@event.listens_for(InventoryReceipt, "before_update")
+def _receipts_change_only_by_transition(_mapper, connection, target: InventoryReceipt) -> None:
+    """
+    Refuse any update that is not exactly one allowed status transition with
+    its own fields. The stored status is read from the database row in the
+    flush's own transaction, never from the ORM's loaded copy.
+    """
+    table = InventoryReceipt.__table__
+    stored = connection.execute(select(table.c.status).where(table.c.id == target.id)).scalar()
+    state = inspect(target)
+    changed = {attr.key for attr in state.attrs if attr.history.has_changes()} - {"updated_at"}
+    allowed = RECEIPT_TRANSITIONS.get((stored, target.status))
+    if allowed is None:
+        raise ImmutableReceiptError(f"A {stored} receipt cannot become {target.status}.")
+    if changed - allowed - {"status"}:
+        raise ImmutableReceiptError(
+            f"{stored} -> {target.status} may not change {sorted(changed - allowed - {'status'})}.")
+
+
+@event.listens_for(InventoryReceipt, "before_delete")
+def _receipts_are_never_deleted(_mapper, _connection, _target: InventoryReceipt) -> None:
+    raise ImmutableReceiptError("Inventory receipts are history and are never deleted.")
 
 
 class InventoryMovement(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -1184,17 +1184,41 @@ export type InventoryItemStatus = "OPENING_STOCK_REQUIRED" | "OUT_OF_STOCK" | "I
 /** Decimals arrive as strings (Pydantic Decimal); quantities are sellable units. */
 export type DecimalString = string;
 
+/**
+ * A receipt's lifecycle. Marking an invoice Retailed (inventory on) SUBMITs it — no
+ * stock moves; an approver POSTs it (stock moves once) or REJECTs it. WITHDRAWN: the
+ * Retailed mark was removed or the invoice deleted. SUPERSEDED: Retailed was marked
+ * again and a newer submission replaced it. REVERSED: a posted receipt compensated.
+ */
+export type InventoryReceiptStatus = "SUBMITTED" | "POSTED" | "REJECTED" | "WITHDRAWN" | "SUPERSEDED" | "REVERSED";
+
 export interface InventoryReceiptSummary {
   id: string;
   invoice_id: string | null;
   invoice_number: string | null;
-  status: "POSTED" | "REVERSED";
-  received_on: string;
-  confirmed_by: string;
-  confirmed_role: string;
+  status: InventoryReceiptStatus;
   line_count: number;
-  discrepancy_count: number;
   created_at: string;
+  /** The submission (by marking Retailed); absent on receipts posted before approval existed. */
+  submitted_at?: string | null;
+  submitted_by?: string | null;
+  submitted_role?: string | null;
+  previous_receipt_id?: string | null;
+  /** The posting: set once approved. */
+  received_on: string | null;
+  confirmed_by: string | null;
+  confirmed_role: string | null;
+  approved_at?: string | null;
+  discrepancy_count: number | null;
+  note?: string | null;
+  self_approved?: boolean;
+  rejected_at?: string | null;
+  rejected_by?: string | null;
+  rejection_reason?: string | null;
+  withdrawn_at?: string | null;
+  withdrawn_by?: string | null;
+  withdrawal_reason?: string | null;
+  superseded_at?: string | null;
   reversed_at?: string | null;
   reversed_by?: string | null;
   reversal_reason?: string | null;
@@ -1208,6 +1232,8 @@ export interface InventoryOverview {
   in_stock: number;
   last_recorded_at: string | null;
   recent_receipts: InventoryReceiptSummary[];
+  /** Receipt submissions awaiting approval at this store. */
+  pending_approvals: number;
 }
 
 export interface InventoryItemRow {
@@ -1282,18 +1308,53 @@ export interface ReceiptBlocker {
   reason: string;
 }
 
+export interface ReceiptLineChange {
+  invoice_item_id: string;
+  item_code: string | null;
+  description: string | null;
+  change: "added" | "removed" | "changed";
+  proposed_units: DecimalString | null;
+  current_units: DecimalString | null;
+  proposed_units_per_case: number | null;
+  current_units_per_case: number | null;
+}
+
+/** A pending receipt submission: what was proposed at Retailed, and whether it still matches the invoice. */
+export interface ReceiptSubmission {
+  receipt: InventoryReceiptSummary;
+  proposed_lines: ReceiptLine[];
+  proposed_blockers: ReceiptBlocker[];
+  export_number: number | null;
+  /** Why it can no longer be approved as it stands; empty when current. */
+  stale_reasons: string[];
+  line_changes: ReceiptLineChange[];
+}
+
 export interface ReceiptPreview {
   invoice_id: string;
   invoice_number: string | null;
   store: StoreRef | null;
   eligibility_reasons: string[];
+  /** The lines a receipt would cover now. */
   lines: ReceiptLine[];
   blockers: ReceiptBlocker[];
   /** The POSTED receipt, if any. */
   receipt: InventoryReceiptSummary | null;
-  /** Every receipt for this invoice, oldest first — reversed ones included. */
+  /** The pending submission, if any. */
+  submission: ReceiptSubmission | null;
+  /** Every receipt for this invoice, oldest first. */
   history: InventoryReceiptSummary[];
-  can_post: boolean;
+  can_approve: boolean;
+}
+
+export interface PendingApprovalRow {
+  receipt: InventoryReceiptSummary;
+  invoice_id: string | null;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  vendor: string | null;
+  stale_reasons: string[];
+  blockers: number;
 }
 
 export interface ReceiptReversalResult {
@@ -1302,7 +1363,8 @@ export interface ReceiptReversalResult {
   already_reversed: boolean;
 }
 
-export interface ReceiptPostRequest {
+export interface ReceiptApproveRequest {
+  receipt_id: string;
   received_on: string;
   note?: string | null;
   lines: { invoice_item_id: string; accepted_units: number; reason?: string | null }[];

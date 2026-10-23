@@ -223,6 +223,7 @@ class TestEveryInventoryPathIsAuthorized:
 
     API = (ROOT / "app/api/v1/inventory.py").read_text()
     SERVICE = (ROOT / "app/services/inventory_service.py").read_text()
+    APPROVAL = (ROOT / "app/services/inventory_approval.py").read_text()
 
     def _routes(self):
         return re.findall(r'@router\.(get|post)\("([^"]+)"[\s\S]*?\nasync def (\w+)\(([\s\S]*?)\n(?=@|\Z)',
@@ -233,9 +234,11 @@ class TestEveryInventoryPathIsAuthorized:
 
     def test_every_store_route_checks_access_and_every_invoice_route_passes_the_account(self):
         routes = self._routes()
-        assert len(routes) == 9, [r[1] for r in routes]
+        assert len(routes) == 11, [r[1] for r in routes]
         for _verb, path, name, body in routes:
-            if "{store_id}" in path and not path.endswith("/opening-counts"):
+            if path.endswith("/approvals"):
+                assert "approval.pending_approvals(db, store_id, user)" in body, name   # authorized in the service
+            elif "{store_id}" in path and not path.endswith("/opening-counts"):
                 assert "store_access.ensure_store_access(db, user, store_id)" in body, name
             elif path.endswith("/opening-counts"):
                 assert "user=user" in body, name          # authorized in record_opening_counts
@@ -244,6 +247,11 @@ class TestEveryInventoryPathIsAuthorized:
                 assert "_preview_out(db, invoice_id, user)" in body or "user=user" in body, name
             else:
                 assert path == "/inventory/stores" and "store_access.accessible_stores(db, user)" in body
+
+    def test_there_is_no_route_that_posts_a_receipt_directly(self):
+        posts = {path for verb, path, _name, _body in self._routes() if verb == "post"}
+        assert "/inventory/invoices/{invoice_id}/receipt" not in posts
+        assert "async def post_receipt(" not in self.SERVICE
 
     @pytest.mark.parametrize(("function", "check"), [
         ("receipt_preview", "store_access.has_store_access(session, user, invoice.store_id)"),
@@ -254,10 +262,20 @@ class TestEveryInventoryPathIsAuthorized:
         body = self.SERVICE.split(f"async def {function}(")[1].split("\nasync def ")[0]
         assert check in body, function
 
-    def test_posting_authorizes_after_taking_the_invoice_lock(self):
-        body = self.SERVICE.split("async def post_receipt(")[1].split("\nasync def ")[0]
-        assert body.index("await lock_invoice(session, invoice_id)") < body.index(
-            "await receipt_preview(session, invoice_id, user)")
+    @pytest.mark.parametrize(("function", "check"), [
+        ("_locked_receipt", "store_access.has_store_access(session, user, receipt.store_id)"),
+        ("pending_approvals", "store_access.ensure_store_access(session, user, store_id)"),
+        ("release_invoice_for_deletion", "store_access.has_store_access(session, user, posted.store_id)"),
+    ])
+    def test_the_approval_service_authorizes_the_receipts_own_store(self, function, check):
+        body = self.APPROVAL.split(f"async def {function}(")[1].split("\nasync def ")[0]
+        assert check in body, function
+
+    @pytest.mark.parametrize("function", ["approve_receipt", "reject_receipt"])
+    def test_approval_and_rejection_authorize_after_taking_the_invoice_lock(self, function):
+        body = self.APPROVAL.split(f"async def {function}(")[1].split("\nasync def ")[0]
+        assert body.index("await inventory.lock_invoice(session, invoice_id)") < body.index(
+            "await _locked_receipt(session, invoice_id, receipt_id, user)")
 
     def test_reversal_authorizes_after_taking_the_invoice_lock(self):
         body = self.SERVICE.split("async def reverse_receipt(")[1].split("\nasync def ")[0]

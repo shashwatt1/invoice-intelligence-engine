@@ -2,22 +2,25 @@
 tests/integration/test_inventory_db.py — store inventory against real Postgres.
 
 An invoice processed through the real pipeline (fake LLM) to a physical
-store, its units per case proposed and approved as the review UI does, then
-received through the inventory API:
+store, its units per case proposed and approved as the review UI does, its
+PDI file exported (recorded in the EDI export ledger) and marked Retailed —
+which submits the receipt — then approved through the inventory API:
 
   * one product without an approved conversion blocks the whole receipt —
-    nothing is written; the charge and the shorted line never block;
+    the invoice cannot even be exported, so nothing is submitted or written;
+    the charge and the shorted line never block;
   * a discrepancy needs a reason; the accepted quantity and the conversion
     snapshot are what the ledger records; the invoice itself is untouched;
-  * an invoice is received once — the API refuses a second receipt and the
+  * an invoice is received once — a second approval is refused and the
     database refuses a duplicate idempotency key or a wrong-signed movement;
   * balances are per store: a source identity is refused, another physical
     store sees nothing, and on-hand exists only after an opening count;
   * a POSTED receipt locks its invoice: every line, store and document change
     is refused (409) until the receipt is reversed; reversing compensates every
-    movement, keeps the history, is idempotent, and frees the invoice to be
-    corrected and received again; a failure part-way leaves nothing behind;
-    a correction waits on the same row lock a receipt holds.
+    movement, keeps the history, is idempotent, leaves the Retailed mark as it
+    is, and frees the invoice to be corrected, re-marked and received again; a
+    failure part-way leaves nothing behind; a correction waits on the same row
+    lock a receipt holds.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from app.core.config import get_settings
 from app.models.inventory import InventoryMovement, InventoryReceipt
 from app.models.invoice_item import InvoiceItem
 from app.repositories.store_repository import StoreRepository
@@ -54,13 +58,39 @@ LAGER, ALE, SHORTED = "999000000015", "999000000022", "999000000039"
 LAGER_CODE, ALE_CODE = "99900000001", "99900000002"
 
 
+async def switch_on(db_session, monkeypatch):
+    """Inventory and the EDI export ledger on, for this test only (both are off by default)."""
+    monkeypatch.setenv("INVENTORY_ENABLED", "true")
+    monkeypatch.setenv("EDI_EXPORT_LEDGER", "true")
+    get_settings.cache_clear()
+    # A migrated database has alembic_version and the ledger reads it; the test database is built
+    # by create_all, so it is created here for the test and dropped afterwards (test database only),
+    # exactly as tests/integration/test_invoice_workflow_db.py does.
+    await db_session.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num varchar(32) PRIMARY KEY)"))
+    await db_session.execute(text("INSERT INTO alembic_version VALUES ('0035') ON CONFLICT DO NOTHING"))
+    await db_session.commit()
+
+
+async def switch_off(db_session, monkeypatch):
+    await db_session.rollback()
+    await db_session.execute(text("DROP TABLE IF EXISTS alembic_version"))   # the test database only
+    await db_session.commit()
+    monkeypatch.delenv("INVENTORY_ENABLED", raising=False)
+    monkeypatch.delenv("EDI_EXPORT_LEDGER", raising=False)
+    get_settings.cache_clear()
+
+
+def set_inventory(monkeypatch, on: bool):
+    monkeypatch.setenv("INVENTORY_ENABLED", "true" if on else "false")
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 async def received(api_client, app, db_session, monkeypatch):  # noqa: F811
-    """A VALIDATED invoice at a physical store, inventory switched on."""
-    from app.api.v1 import inventory as inventory_api
+    """A VALIDATED invoice at a physical store, inventory and the export ledger switched on."""
     from app.api.v1.invoices import get_pipeline
 
-    monkeypatch.setattr(inventory_api, "get_settings", lambda: SimpleNamespace(inventory_enabled=True))
+    await switch_on(db_session, monkeypatch)
     store = await StoreRepository(db_session).get(store_id(STORE))
     store.display_name = "AF NV Midler"                      # a named location: physical
     await db_session.commit()
@@ -87,7 +117,9 @@ async def received(api_client, app, db_session, monkeypatch):  # noqa: F811
     status = (await api_client.get(accepted["status_url"])).json()["data"]
     detail = (await api_client.get(f"/api/v1/invoices/{status['invoice_id']}")).json()["data"]
     assert detail["status"] == "VALIDATED", detail["status"]
-    return SimpleNamespace(invoice_id=status["invoice_id"], store_id=store_id(STORE))
+    yield SimpleNamespace(invoice_id=status["invoice_id"], store_id=store_id(STORE),
+                          document_id=detail["document_id"])
+    await switch_off(db_session, monkeypatch)
 
 
 async def grant(db_session, role, store, reason="test fixture: inventory DB tests"):
@@ -122,40 +154,68 @@ def acceptance(lines, overrides=None, reasons=None):
              "reason": reasons.get(line["item_code"])} for line in lines]
 
 
+async def preview_of(client, invoice_id):
+    r = await client.get(f"/api/v1/inventory/invoices/{invoice_id}/receipt")
+    assert r.status_code == 200, r.text
+    return r.json()["data"]
+
+
+async def submit(api_client, invoice_id):  # noqa: F811
+    """Export the PDI file (recorded in the ledger) and mark the invoice Retailed: that submits the receipt."""
+    export = await api_client.get(f"/api/v1/invoices/{invoice_id}/export", params={"format": "pdi"})
+    assert export.status_code == 200, export.text
+    marked = await api_client.post(f"/api/v1/invoices/{invoice_id}/retailed")
+    assert marked.status_code == 200, marked.text
+    preview = await preview_of(api_client, invoice_id)
+    assert preview["submission"] is not None, preview
+    return preview
+
+
+async def approve_submission(client, invoice_id, preview, overrides=None, reasons=None, received_on="2026-10-09",
+                             note=None):
+    return await client.post(f"/api/v1/inventory/invoices/{invoice_id}/receipt/approve", json={
+        "receipt_id": preview["submission"]["receipt"]["id"], "received_on": received_on, "note": note,
+        "lines": acceptance(preview["lines"], overrides, reasons)})
+
+
 class TestReceivingAnInvoice:
     async def test_an_unresolved_conversion_blocks_the_whole_receipt(self, api_client, db_session, received):  # noqa: F811
         await approve(api_client, db_session, received.invoice_id, LAGER, 12)
         url = f"/api/v1/inventory/invoices/{received.invoice_id}/receipt"
         preview = (await api_client.get(url)).json()["data"]
-        assert preview["can_post"] is False and preview["eligibility_reasons"] == []
+        assert preview["can_approve"] is False and preview["eligibility_reasons"] == []
         assert [(b["item_code"], b["description"]) for b in preview["blockers"]] == [(ALE_CODE, "EASTGATE ALE 6PK")]
         assert [line["item_code"] for line in preview["lines"]] == [LAGER_CODE]      # charge and shorted: not lines
 
-        r = await api_client.post(url, json={"received_on": "2026-10-09", "lines": acceptance(preview["lines"])})
-        assert r.status_code == 422 and r.json()["error"]["detail"]["reason"] == "unresolved_conversions"
+        # The PDI file cannot be built without every units-per-case mapping, so Retailed cannot be marked
+        # and no receipt is submitted.
+        export = await api_client.get(f"/api/v1/invoices/{received.invoice_id}/export", params={"format": "pdi"})
+        assert export.status_code != 200
+        assert (await api_client.post(f"/api/v1/invoices/{received.invoice_id}/retailed")).status_code == 422
+        assert (await api_client.get(url)).json()["data"]["submission"] is None
         assert await ledger_counts(db_session) == (0, 0)
 
     async def test_accepted_quantities_and_the_conversion_are_recorded_once(self, api_client, db_session, received):  # noqa: F811
         await approve(api_client, db_session, received.invoice_id, LAGER, 12)
         await approve(api_client, db_session, received.invoice_id, ALE, 6)
-        url = f"/api/v1/inventory/invoices/{received.invoice_id}/receipt"
-        preview = (await api_client.get(url)).json()["data"]
-        assert preview["can_post"] is True
+        preview = await submit(api_client, received.invoice_id)
+        assert preview["can_approve"] is True
         assert [(x["item_code"], Decimal(x["cases"]), x["units_per_case"], Decimal(x["expected_units"]))
                 for x in preview["lines"]] == [(LAGER_CODE, 3, 12, 36), (ALE_CODE, 2, 6, 12)]
+        assert preview["submission"]["proposed_lines"] == preview["lines"]
+        assert await ledger_counts(db_session) == (1, 0)                    # submitted: no movement yet
 
-        no_reason = {"received_on": "2026-10-09", "lines": acceptance(preview["lines"], {LAGER_CODE: 34})}
-        r = await api_client.post(url, json=no_reason)
+        r = await approve_submission(api_client, received.invoice_id, preview, {LAGER_CODE: 34})
         assert r.status_code == 422 and "a reason is required" in str(r.json()["error"]["detail"])
-        assert await ledger_counts(db_session) == (0, 0)
+        assert await ledger_counts(db_session) == (1, 0)
 
-        body = {"received_on": "2026-10-09", "note": "checked in by the night manager",
-                "lines": acceptance(preview["lines"], {LAGER_CODE: 34}, {LAGER_CODE: "2 cans crushed"})}
-        r = await api_client.post(url, json=body)
-        assert r.status_code == 201, r.text
+        r = await approve_submission(api_client, received.invoice_id, preview, {LAGER_CODE: 34},
+                                     {LAGER_CODE: "2 cans crushed"}, note="checked in by the night manager")
+        assert r.status_code == 200, r.text
         receipt = r.json()["data"]["receipt"]
-        assert (receipt["confirmed_by"], receipt["confirmed_role"], receipt["line_count"],
-                receipt["discrepancy_count"]) == ("testadmin", "ADMIN", 2, 1)
+        assert (receipt["status"], receipt["confirmed_by"], receipt["confirmed_role"], receipt["line_count"],
+                receipt["discrepancy_count"], receipt["submitted_by"], receipt["self_approved"]) == (
+            "POSTED", "testadmin", "ADMIN", 2, 1, "testadmin", True)
 
         movements = (await db_session.execute(
             select(InventoryMovement).order_by(InventoryMovement.item_code))).scalars().all()
@@ -175,8 +235,9 @@ class TestReceivingAnInvoice:
             .where(InvoiceItem.invoice_id == uuid.UUID(received.invoice_id)))).all()
         assert {sku: q for sku, q in quantities if sku}[LAGER] == 3
 
-        again = await api_client.post(url, json=body)
-        assert again.status_code == 422 and again.json()["error"]["detail"]["reason"] == "already_received"
+        again = await approve_submission(api_client, received.invoice_id, preview, {LAGER_CODE: 34},
+                                         {LAGER_CODE: "2 cans crushed"})
+        assert again.status_code == 422 and again.json()["error"]["detail"]["reason"] == "not_pending"
         assert await ledger_counts(db_session) == (1, 2)
 
         listed = (await api_client.get(f"/api/v1/inventory/stores/{received.store_id}/invoices")).json()
@@ -208,10 +269,7 @@ class TestStoreBalances:
     ):
         await approve(api_client, db_session, received.invoice_id, LAGER, 12)
         await approve(api_client, db_session, received.invoice_id, ALE, 6)
-        url = f"/api/v1/inventory/invoices/{received.invoice_id}/receipt"
-        preview = (await api_client.get(url)).json()["data"]
-        r = await api_client.post(url, json={"received_on": "2026-10-09", "lines": acceptance(preview["lines"])})
-        assert r.status_code == 201, r.text
+        await receive(api_client, received.invoice_id)
 
         items_url = f"/api/v1/inventory/stores/{received.store_id}/items"
         rows = {i["item_code"]: i for i in (await api_client.get(items_url)).json()["items"]}
@@ -251,11 +309,10 @@ class TestStoreBalances:
 
 
 async def receive(api_client, invoice_id, overrides=None, reasons=None):  # noqa: F811
-    url = f"/api/v1/inventory/invoices/{invoice_id}/receipt"
-    preview = (await api_client.get(url)).json()["data"]
-    r = await api_client.post(url, json={"received_on": "2026-10-09",
-                                         "lines": acceptance(preview["lines"], overrides, reasons)})
-    assert r.status_code == 201, r.text
+    """Submit (export + Retailed) and approve: the one way an invoice reaches the ledger."""
+    preview = await submit(api_client, invoice_id)
+    r = await approve_submission(api_client, invoice_id, preview, overrides, reasons)
+    assert r.status_code == 200, r.text
     return r.json()["data"]
 
 
@@ -298,7 +355,7 @@ class TestCorrectionsAfterReceipt:
                                                   json={"decision": "same_row", "decided_by": "m"}),
             "assign_store": api_client.post(f"{base}/assign-store", json={"store_id": str(other.id),
                                                                           "assigned_by": "m"}),
-            "delete_invoice": api_client.delete(base),
+            # delete_invoice reverses the receipt first: tests/integration/test_inventory_approval_db.py
             "move_to_bin": api_client.post(f"/api/v1/documents/{before['document_id']}/move-to-bin"),
             "reprocess": api_client.post(f"/api/v1/documents/{before['document_id']}/reprocess"),
         }
@@ -371,7 +428,10 @@ class TestReversingAReceipt:
 
         preview = (await api_client.get(f"/api/v1/inventory/invoices/{received.invoice_id}/receipt")).json()["data"]
         assert preview["receipt"] is None and [h["status"] for h in preview["history"]] == ["REVERSED"]
-        assert preview["can_post"] is True
+        # Reversal never reopens Retailed and submits nothing by itself.
+        assert preview["submission"] is None and preview["can_approve"] is False
+        detail = (await api_client.get(f"/api/v1/invoices/{received.invoice_id}")).json()["data"]
+        assert detail["completion"]["status"] == "retailed"
 
     async def test_after_reversal_the_invoice_is_corrected_and_received_again(
         self, api_client, db_session, received,  # noqa: F811
@@ -387,8 +447,10 @@ class TestReversingAReceipt:
         assert r.status_code == 200, r.text
         assert (await api_client.get(base)).json()["data"]["status"] == "VALIDATED"
 
+        # The correction made the Retailed mark stale: export again, re-mark (a new submission), approve.
         second = await receive(api_client, received.invoice_id)
         assert second["receipt"]["status"] == "POSTED" and second["receipt"]["id"] != receipt["id"]
+        assert second["receipt"]["previous_receipt_id"] == receipt["id"]
         assert [h["status"] for h in second["history"]] == ["REVERSED", "POSTED"]
         assert await balances(db_session, received.store_id) == {LAGER_CODE: 24, ALE_CODE: 12}
         refused_as_received(await api_client.patch(f"{base}/items/0", json={"quantity": 3, "corrected_by": "m"}))
@@ -406,19 +468,23 @@ class TestReversingAReceipt:
         await approve(api_client, db_session, received.invoice_id, LAGER, 12)
         await approve(api_client, db_session, received.invoice_id, ALE, 6)
         url = f"/api/v1/inventory/invoices/{received.invoice_id}/receipt"
-        preview = (await api_client.get(url)).json()["data"]
+        preview = await submit(api_client, received.invoice_id)
         with monkeypatch.context() as broken:
-            # The receipt row flushes, then the movements fail (source_unit is VARCHAR(16)).
+            # The receipt becomes POSTED and flushes, then the movements fail (source_unit is VARCHAR(16)).
             broken.setattr(inventory_service, "SOURCE_UNIT_CASE", "C" * 40)
             with pytest.raises(DBAPIError, match="value too long"):
-                await api_client.post(url, json={"received_on": "2026-10-09", "lines": acceptance(preview["lines"])})
-        assert await ledger_counts(db_session) == (0, 0)
+                await approve_submission(api_client, received.invoice_id, preview)
+        db_session.expire_all()
+        assert await ledger_counts(db_session) == (1, 0)
+        assert (await db_session.execute(select(InventoryReceipt.status))).scalar() == "SUBMITTED"
 
-        receipt = (await receive(api_client, received.invoice_id))["receipt"]
+        r = await approve_submission(api_client, received.invoice_id, preview)       # the same submission, intact
+        assert r.status_code == 200, r.text
+        receipt = r.json()["data"]["receipt"]
         with monkeypatch.context() as broken:
-            # Compensating movements are added, then the receipt's new status fails its CHECK.
-            broken.setattr(inventory_service, "RECEIPT_REVERSED", "BROKEN")
-            with pytest.raises(IntegrityError, match="ck_inventory_receipts_status"):
+            # The receipt becomes REVERSED, then the compensating movements fail (idempotency_key is VARCHAR(160)).
+            broken.setattr(inventory_service, "reversal_movement_key", lambda _m: "k" * 200)
+            with pytest.raises(DBAPIError, match="value too long"):
                 await api_client.post(f"{url}/reverse", json={"receipt_id": receipt["id"], "reason": "x"})
         db_session.expire_all()
         assert await ledger_counts(db_session) == (1, 2)
@@ -456,14 +522,14 @@ class TestTheInvoiceLock:
         finally:
             await engine.dispose()
 
-    async def test_the_database_allows_one_posted_receipt_per_invoice(self, db_session, received):
+    async def test_the_database_allows_one_active_receipt_per_invoice(self, db_session, received):
         row = {"invoice_id": uuid.UUID(received.invoice_id), "store_id": received.store_id, "received_on": date(2026, 10, 9),
                    "confirmed_by": "testadmin", "confirmed_role": "ADMIN", "line_count": 0, "discrepancy_count": 0,
                    "resolution_snapshot": {}}
         db_session.add(InventoryReceipt(status="POSTED", **row))
         await db_session.commit()
         db_session.add(InventoryReceipt(status="POSTED", **row))
-        with pytest.raises(IntegrityError, match="uq_inventory_receipts_invoice_posted"):
+        with pytest.raises(IntegrityError, match="uq_inventory_receipts_invoice_active"):
             await db_session.commit()
         await db_session.rollback()
         db_session.add(InventoryReceipt(status="REVERSED", **row))              # reversed without who/when/why

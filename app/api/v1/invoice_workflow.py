@@ -6,7 +6,10 @@ Invoice workflow endpoints — app/api/v1/invoice_workflow.py
   POST /invoices/{id}/retailed/reopen  remove the Retailed mark, with an optional reason
 
 MANAGER or ADMIN only, on an invoice the user may see. Invoice-scoped: nothing
-here touches inventory, a mapping, or Product Master. See
+here changes stock, a mapping, or Product Master. With inventory switched on,
+marking Retailed also submits the invoice's receipt for approval (no movement
+until a person with a grant for the store approves it), and removing the mark
+withdraws a pending submission. See
 app/services/invoice_workflow_service.py for the rules.
 """
 
@@ -68,9 +71,10 @@ async def save_reference_link(
     "/invoices/{invoice_id}/retailed",
     response_model=APIResponse[CompletionData],
     summary="Mark an invoice Retailed (MANAGER/ADMIN)",
-    description=("Workflow completion, not goods receipt — no inventory, mapping or Product Master effect. "
+    description=("Workflow completion, not goods receipt — no stock, mapping or Product Master change. "
                  "Allowed only when the EDI export ledger records a delivered PDI file identical to the one the "
-                 "invoice produces now."),
+                 "invoice produces now. With inventory switched on it also submits the receipt for approval "
+                 "(no movement until approved)."),
     responses={404: {"description": "Invoice not found"}, 422: {"description": "Not provably complete, or already marked"}},
 )
 async def mark_invoice_retailed(

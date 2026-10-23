@@ -4,17 +4,29 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { InventoryItemRow, ReceiptPreview, StoreDirectoryEntry, StoreInvoiceRow } from "@/api/types";
+import type {
+  InventoryReceiptSummary,
+  PendingApprovalRow,
+  ReceiptPreview,
+  InventoryItemRow,
+  StoreDirectoryEntry,
+  StoreInvoiceRow,
+} from "@/api/types";
 
 /**
  * Store inventory: off unless the server says it is on; only the stores the
  * server says this account may use (per-user grants; the server enforces them);
- * no on-hand figure without an audited opening count; a receipt prefilled
- * with expected units, a reason required for any difference, and a receipt
- * blocked outright while any product line lacks an approved conversion.
+ * no on-hand figure without an audited opening count. A receipt is never posted
+ * directly: Retailed submits it; the store's approval queue lists it; the review
+ * prefills the proposed units, needs a reason for any difference, shows a stale
+ * submission's changes and refuses to approve it, and blocks it while any product
+ * line lacks an approved conversion. Rejection needs a reason.
  */
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/hooks/use-auth", () => ({
+  useAuth: () => ({ user: { username: "barj", role: "MANAGER" }, isLoading: false, hasRole: () => true }),
+}));
 
 const getInventoryStatus = vi.fn();
 const listStores = vi.fn();
@@ -23,7 +35,9 @@ const getInventoryOverview = vi.fn();
 const listInventoryItems = vi.fn();
 const listStoreInvoices = vi.fn();
 const getReceiptPreview = vi.fn();
-const postReceipt = vi.fn();
+const listPendingApprovals = vi.fn();
+const approveReceipt = vi.fn();
+const rejectReceipt = vi.fn();
 const reverseReceipt = vi.fn();
 
 vi.mock("@/api/endpoints", async (importOriginal) => ({
@@ -35,7 +49,9 @@ vi.mock("@/api/endpoints", async (importOriginal) => ({
   listInventoryItems: (...a: unknown[]) => listInventoryItems(...a),
   listStoreInvoices: (...a: unknown[]) => listStoreInvoices(...a),
   getReceiptPreview: (...a: unknown[]) => getReceiptPreview(...a),
-  postReceipt: (...a: unknown[]) => postReceipt(...a),
+  listPendingApprovals: (...a: unknown[]) => listPendingApprovals(...a),
+  approveReceipt: (...a: unknown[]) => approveReceipt(...a),
+  rejectReceipt: (...a: unknown[]) => rejectReceipt(...a),
   reverseReceipt: (...a: unknown[]) => reverseReceipt(...a),
 }));
 
@@ -63,15 +79,34 @@ const INVOICE: StoreInvoiceRow = {
   product_lines: 2, receipt: null, receivable_reasons: [],
 };
 
+const LINES: ReceiptPreview["lines"] = [
+  { invoice_item_id: "line-1", sort_order: 1, description: "BUD LIGHT B-4/6", item_code: "01820000833", cases: "2",
+    units_per_case: 24, expected_units: "48", conversion_path: "PRODUCT_MASTER_GLOBAL", conversion_scope: "Global" },
+  { invoice_item_id: "line-2", sort_order: 2, description: "TWISTED TEA", item_code: "08769283102", cases: "3",
+    units_per_case: 4, expected_units: "12", conversion_path: "PRODUCT_MASTER_GLOBAL", conversion_scope: "Global" },
+];
+
+function receipt(extra: Partial<InventoryReceiptSummary>): InventoryReceiptSummary {
+  return { id: "r1", invoice_id: "inv-508655", invoice_number: "508655", status: "SUBMITTED", line_count: 2,
+           created_at: "2026-10-09T12:00:00Z", submitted_at: "2026-10-09T12:00:00Z", submitted_by: "vivek",
+           submitted_role: "MANAGER", received_on: null, confirmed_by: null, confirmed_role: null,
+           discrepancy_count: null, ...extra };
+}
+
+const SUBMITTED = receipt({});
+
 const PREVIEW: ReceiptPreview = {
   invoice_id: "inv-508655", invoice_number: "508655", store: MIDLER, eligibility_reasons: [], blockers: [], receipt: null,
-  history: [], can_post: true,
-  lines: [
-    { invoice_item_id: "line-1", sort_order: 1, description: "BUD LIGHT B-4/6", item_code: "01820000833", cases: "2",
-      units_per_case: 24, expected_units: "48", conversion_path: "PRODUCT_MASTER_GLOBAL", conversion_scope: "Global" },
-    { invoice_item_id: "line-2", sort_order: 2, description: "TWISTED TEA", item_code: "08769283102", cases: "3",
-      units_per_case: 4, expected_units: "12", conversion_path: "PRODUCT_MASTER_GLOBAL", conversion_scope: "Global" },
-  ],
+  history: [SUBMITTED], can_approve: true, lines: LINES,
+  submission: { receipt: SUBMITTED, proposed_lines: LINES, proposed_blockers: [], export_number: 3, stale_reasons: [],
+                line_changes: [] },
+};
+
+const NOT_SUBMITTED: ReceiptPreview = { ...PREVIEW, submission: null, history: [], can_approve: false };
+
+const QUEUE_ROW: PendingApprovalRow = {
+  receipt: SUBMITTED, invoice_id: "inv-508655", invoice_number: "508655", invoice_date: "2026-10-01", vendor: "Testani",
+  stale_reasons: [], blockers: 0,
 };
 
 function renderPage(path = "/inventory?store=midler") {
@@ -90,7 +125,7 @@ beforeEach(() => {
   listInventoryStores.mockResolvedValue([MIDLER]);          // the server returns only granted physical stores
   getInventoryOverview.mockResolvedValue({
     store: MIDLER, tracked_products: 2, opening_required: 1, out_of_stock: 0, in_stock: 1,
-    last_recorded_at: "2026-10-09T12:00:00Z", recent_receipts: [],
+    last_recorded_at: "2026-10-09T12:00:00Z", recent_receipts: [], pending_approvals: 1,
   });
   listInventoryItems.mockResolvedValue({
     success: true, total: 2, page: 1, page_size: 50, request_id: null,
@@ -102,15 +137,19 @@ beforeEach(() => {
   });
   listStoreInvoices.mockResolvedValue({ success: true, total: 1, page: 1, page_size: 25, request_id: null, items: [INVOICE] });
   getReceiptPreview.mockResolvedValue(PREVIEW);
-  postReceipt.mockResolvedValue({ ...PREVIEW, can_post: false });
+  listPendingApprovals.mockResolvedValue([QUEUE_ROW]);
+  approveReceipt.mockResolvedValue({ ...PREVIEW, can_approve: false, submission: null });
+  rejectReceipt.mockResolvedValue({ ...PREVIEW, can_approve: false, submission: null });
 });
 
-async function openReceipt() {
+/** Open the store's approval queue and review the one pending submission. */
+async function openReview() {
   const user = userEvent.setup();
   renderPage();
-  await user.click(await screen.findByRole("tab", { name: /invoices/i }));
-  const row = (await screen.findByText("#508655")).closest("tr")!;
-  await user.click(within(row).getByRole("button", { name: "Receive" }));
+  await user.click(await screen.findByRole("tab", { name: /approvals/i }));
+  const row = (await screen.findByTestId("approval-row"));
+  await user.click(within(row).getByRole("button", { name: "Review" }));
+  await screen.findByTestId("receipt-submission");
   return user;
 }
 
@@ -167,23 +206,51 @@ describe("Inventory page", () => {
     expect(screen.getByTestId("provisional-note")).toHaveTextContent("Sales are not imported yet");
   });
 
-  it("prefills expected units and requires a reason for any line that differs", async () => {
-    const user = await openReceipt();
-    const bud = await screen.findByRole("spinbutton", { name: "Accepted units for BUD LIGHT B-4/6" });
+  it("lists the store's pending submissions with who submitted them, from the server's queue", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByRole("tab", { name: "Approvals (1)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /approvals/i }));
+    const row = await screen.findByTestId("approval-row");
+    expect(listPendingApprovals).toHaveBeenCalledWith("midler");
+    expect(row).toHaveTextContent("#508655");
+    expect(row).toHaveTextContent("vivek");
+    expect(row).toHaveTextContent("Ready to review");
+  });
+
+  it("opens the approval queue directly from a link", async () => {
+    renderPage("/inventory?store=midler&tab=approvals");
+    expect(await screen.findByTestId("approval-row")).toBeInTheDocument();
+  });
+
+  it("shows a stale queue entry as out of date", async () => {
+    listPendingApprovals.mockResolvedValue([{ ...QUEUE_ROW, stale_reasons: ["invoice_changed_since_retailed"] }]);
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("tab", { name: /approvals/i }));
+    expect(await screen.findByTestId("approval-row")).toHaveTextContent("Out of date");
+  });
+
+  it("prefills the proposed units, requires a reason for any difference, and approves that submission", async () => {
+    const user = await openReview();
+    expect(screen.getByTestId("receipt-submission")).toHaveTextContent("Submitted by vivek");
+    expect(screen.getByTestId("receipt-submission")).toHaveTextContent("PDI export #3");
+    const bud = screen.getByRole("spinbutton", { name: "Accepted units for BUD LIGHT B-4/6" });
     expect(bud).toHaveValue(48);
     expect(screen.getByRole("spinbutton", { name: "Accepted units for TWISTED TEA" })).toHaveValue(12);
-    expect(screen.getByTestId("confirm-receipt")).toBeEnabled();
+    expect(screen.getByTestId("confirm-approve")).toBeEnabled();
 
     await user.clear(bud);
     await user.type(bud, "46");
     expect(screen.getByText("Differs from expected: give a reason")).toBeInTheDocument();
-    expect(screen.getByTestId("confirm-receipt")).toBeDisabled();
+    expect(screen.getByTestId("confirm-approve")).toBeDisabled();
 
     await user.type(screen.getByRole("textbox", { name: "Reason for BUD LIGHT B-4/6" }), "2 cans crushed");
-    await user.click(screen.getByTestId("confirm-receipt"));
-    await waitFor(() => expect(postReceipt).toHaveBeenCalledTimes(1));
-    const [invoiceId, body] = postReceipt.mock.calls[0];
+    await user.click(screen.getByTestId("confirm-approve"));
+    await waitFor(() => expect(approveReceipt).toHaveBeenCalledTimes(1));
+    const [invoiceId, body] = approveReceipt.mock.calls[0];
     expect(invoiceId).toBe("inv-508655");
+    expect(body.receipt_id).toBe("r1");
     expect(body.lines).toEqual([
       { invoice_item_id: "line-1", accepted_units: 46, reason: "2 cans crushed" },
       { invoice_item_id: "line-2", accepted_units: 12, reason: null },
@@ -192,44 +259,100 @@ describe("Inventory page", () => {
   });
 
   it("refuses a fractional or negative quantity before it is sent", async () => {
-    const user = await openReceipt();
-    const tea = await screen.findByRole("spinbutton", { name: "Accepted units for TWISTED TEA" });
+    const user = await openReview();
+    const tea = screen.getByRole("spinbutton", { name: "Accepted units for TWISTED TEA" });
     await user.clear(tea);
     await user.type(tea, "11.5");
     expect(screen.getByText("Whole sellable units only")).toBeInTheDocument();
-    expect(screen.getByTestId("confirm-receipt")).toBeDisabled();
+    expect(screen.getByTestId("confirm-approve")).toBeDisabled();
+    await user.clear(tea);
+    await user.type(tea, "-1");
+    expect(screen.getByText("Cannot be negative")).toBeInTheDocument();
+    expect(approveReceipt).not.toHaveBeenCalled();
   });
 
-  it("blocks the whole receipt and names every product without an approved conversion", async () => {
+  it("says when you are approving your own submission", async () => {
+    const own = receipt({ submitted_by: "barj" });
+    getReceiptPreview.mockResolvedValue({ ...PREVIEW, submission: { ...PREVIEW.submission!, receipt: own } });
+    await openReview();
+    expect(screen.getByText(/approving it yourself is recorded as self-approval/)).toBeInTheDocument();
+  });
+
+  it("shows a stale submission's reasons and changes, and offers no approval", async () => {
     getReceiptPreview.mockResolvedValue({
-      ...PREVIEW, can_post: false, lines: [PREVIEW.lines[0]],
+      ...PREVIEW, can_approve: false,
+      submission: { ...PREVIEW.submission!, stale_reasons: ["invoice_changed_since_retailed", "lines_changed_since_submission"],
+                    line_changes: [{ invoice_item_id: "line-1", item_code: "01820000833", description: "BUD LIGHT B-4/6",
+                                     change: "changed", proposed_units: "48", current_units: "24",
+                                     proposed_units_per_case: 24, current_units_per_case: 24 }] },
+    });
+    await openReview();
+    const stale = screen.getByTestId("submission-stale");
+    expect(stale).toHaveTextContent("cannot be approved");
+    expect(stale).toHaveTextContent("changed after it was marked Retailed");
+    expect(within(screen.getByTestId("submission-changes")).getByText("BUD LIGHT B-4/6")).toBeInTheDocument();
+    expect(screen.queryByTestId("confirm-approve")).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject…" })).toBeInTheDocument();
+  });
+
+  it("rejects only with a reason", async () => {
+    const user = await openReview();
+    await user.click(screen.getByRole("button", { name: "Reject…" }));
+    expect(screen.getByTestId("confirm-reject")).toBeDisabled();
+    await user.type(screen.getByRole("textbox", { name: "Why the submission is rejected" }), "wrong delivery");
+    await user.click(screen.getByTestId("confirm-reject"));
+    await waitFor(() => expect(rejectReceipt).toHaveBeenCalledWith("inv-508655", { receipt_id: "r1", reason: "wrong delivery" }));
+    expect(approveReceipt).not.toHaveBeenCalled();
+  });
+
+  it("blocks approval and names every product without an approved conversion", async () => {
+    getReceiptPreview.mockResolvedValue({
+      ...PREVIEW, can_approve: false, lines: [LINES[0]],
       blockers: [{ sort_order: 2, description: "FIREBALL 50ML", item_code: "08800404783", reason: "no approved units-per-case mapping" }],
     });
-    await openReceipt();
-    const blocked = await screen.findByTestId("receipt-blocked");
+    await openReview();
+    const blocked = screen.getByTestId("receipt-blocked");
     expect(within(blocked).getByText("FIREBALL 50ML")).toBeInTheDocument();
     expect(within(blocked).getByText("08800404783")).toBeInTheDocument();
-    expect(screen.queryByTestId("confirm-receipt")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("confirm-approve")).not.toBeInTheDocument();
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
   });
 
-  it("shows an invoice that was already received, without offering to receive it again", async () => {
-    getReceiptPreview.mockResolvedValue({
-      ...PREVIEW, can_post: false,
-      receipt: { id: "r1", invoice_id: "inv-508655", invoice_number: "508655", status: "POSTED", received_on: "2026-10-09",
-                 confirmed_by: "barj", confirmed_role: "MANAGER", line_count: 2, discrepancy_count: 1,
-                 created_at: "2026-10-09T12:00:00Z" },
-    });
-    await openReceipt();
-    expect(await screen.findByTestId("receipt-posted")).toHaveTextContent("Confirmed by barj");
-    expect(screen.queryByTestId("confirm-receipt")).not.toBeInTheDocument();
+  it("never offers to receive an invoice that has not been submitted", async () => {
+    getReceiptPreview.mockResolvedValue(NOT_SUBMITTED);
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("tab", { name: /invoices/i }));
+    const row = (await screen.findByText("#508655")).closest("tr")!;
+    expect(within(row).getByText("Not submitted")).toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: "Details" }));
+    expect(await screen.findByTestId("receipt-not-submitted")).toHaveTextContent("marked Retailed");
+    expect(screen.queryByTestId("confirm-approve")).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+  });
+
+  it("shows a posted receipt with its submitter and approver, without offering to receive it again", async () => {
+    const posted = receipt({ status: "POSTED", received_on: "2026-10-09", confirmed_by: "barj", confirmed_role: "MANAGER",
+                             discrepancy_count: 1 });
+    getReceiptPreview.mockResolvedValue({ ...PREVIEW, can_approve: false, submission: null, receipt: posted, history: [posted] });
+    listStoreInvoices.mockResolvedValue({ success: true, total: 1, page: 1, page_size: 25, request_id: null,
+                                          items: [{ ...INVOICE, receipt: posted }] });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("tab", { name: /invoices/i }));
+    const row = (await screen.findByText("#508655")).closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "View" }));
+    const shown = await screen.findByTestId("receipt-posted");
+    expect(shown).toHaveTextContent("Submitted by vivek");
+    expect(shown).toHaveTextContent("Approved by barj");
+    expect(screen.queryByTestId("confirm-approve")).not.toBeInTheDocument();
   });
 
   it("reverses a posted receipt only with a reason, naming the receipt it reverses", async () => {
-    const posted = { id: "r1", invoice_id: "inv-508655", invoice_number: "508655", status: "POSTED" as const,
-                     received_on: "2026-10-09", confirmed_by: "barj", confirmed_role: "MANAGER", line_count: 2,
-                     discrepancy_count: 0, created_at: "2026-10-09T12:00:00Z" };
-    getReceiptPreview.mockResolvedValue({ ...PREVIEW, can_post: false, receipt: posted, history: [posted] });
+    const posted = receipt({ status: "POSTED", received_on: "2026-10-09", confirmed_by: "barj", confirmed_role: "MANAGER",
+                             discrepancy_count: 0 });
+    getReceiptPreview.mockResolvedValue({ ...PREVIEW, can_approve: false, submission: null, receipt: posted, history: [posted] });
     reverseReceipt.mockResolvedValue({ receipt: { ...posted, status: "REVERSED" }, movements_reversed: 2, already_reversed: false });
     listStoreInvoices.mockResolvedValue({ success: true, total: 1, page: 1, page_size: 25, request_id: null,
                                           items: [{ ...INVOICE, receipt: posted }] });
@@ -239,27 +362,22 @@ describe("Inventory page", () => {
     const row = (await screen.findByText("#508655")).closest("tr")!;
     await user.click(within(row).getByRole("button", { name: "View" }));
     await user.click(await screen.findByRole("button", { name: "Reverse receipt…" }));
+    expect(screen.getByTestId("reverse-form")).toHaveTextContent("Retailed mark is not changed");
     expect(screen.getByTestId("confirm-reverse")).toBeDisabled();
     await user.type(screen.getByRole("textbox", { name: "Why the receipt is being reversed" }), "lager was 2 cases");
     await user.click(screen.getByTestId("confirm-reverse"));
     await waitFor(() => expect(reverseReceipt).toHaveBeenCalledWith("inv-508655", { receipt_id: "r1", reason: "lager was 2 cases" }));
   });
 
-  it("shows a reversed receipt as history and offers to receive the invoice again", async () => {
-    const reversed = { id: "r1", invoice_id: "inv-508655", invoice_number: "508655", status: "REVERSED" as const,
-                       received_on: "2026-10-09", confirmed_by: "barj", confirmed_role: "MANAGER", line_count: 2,
-                       discrepancy_count: 0, created_at: "2026-10-09T12:00:00Z", reversed_at: "2026-10-09T13:00:00Z",
-                       reversed_by: "prabh", reversal_reason: "lager was 2 cases" };
-    listStoreInvoices.mockResolvedValue({ success: true, total: 1, page: 1, page_size: 25, request_id: null,
-                                          items: [{ ...INVOICE, receipt: reversed }] });
-    getReceiptPreview.mockResolvedValue({ ...PREVIEW, history: [reversed] });
-    const user = userEvent.setup();
-    renderPage();
-    await user.click(await screen.findByRole("tab", { name: /invoices/i }));
-    const row = (await screen.findByText("#508655")).closest("tr")!;
-    expect(within(row).getByText("Receipt reversed")).toBeInTheDocument();
-    await user.click(within(row).getByRole("button", { name: "Receive" }));
-    expect(await screen.findByTestId("reversed-receipts")).toHaveTextContent("reversed by prabh");
-    expect(screen.getByTestId("confirm-receipt")).toBeEnabled();
+  it("keeps rejected and reversed receipts as history beside a new submission", async () => {
+    const rejected = receipt({ id: "r0", status: "REJECTED", rejected_by: "prabh", rejection_reason: "short-shipped" });
+    const reversed = receipt({ id: "rx", status: "REVERSED", received_on: "2026-10-08", confirmed_by: "barj",
+                               confirmed_role: "MANAGER", discrepancy_count: 0, reversed_by: "prabh",
+                               reversed_at: "2026-10-09T13:00:00Z", reversal_reason: "lager was 2 cases" });
+    getReceiptPreview.mockResolvedValue({ ...PREVIEW, history: [rejected, reversed, SUBMITTED] });
+    await openReview();
+    const history = screen.getByTestId("receipt-history");
+    expect(history).toHaveTextContent("rejected by prabh: short-shipped");
+    expect(history).toHaveTextContent("reversed by prabh");
   });
 });

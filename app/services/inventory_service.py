@@ -13,7 +13,9 @@ Rules (business decisions, 2026-10-09):
     date are already in it; only later movements change the balance. The POS
     "Current Inventory Count" is never used.
   * A receipt is a person's explicit confirmation — never inferred from an
-    invoice being validated or exported. It may be posted only for an invoice
+    invoice being validated or exported. It is never posted directly: marking
+    the invoice Retailed submits it, and an approver posts it (see
+    app/services/inventory_approval.py). It may be posted only for an invoice
     that receiving_eligibility allows (VALIDATED, physical store, document not
     withdrawn), and only when every line the PDI export would carry (product,
     quantity > 0, not voided) has an approved conversion under the live
@@ -26,10 +28,12 @@ Rules (business decisions, 2026-10-09):
     opening count can never post twice.
   * A POSTED receipt locks the invoice: no change to its lines, store or
     document (ensure_invoice_changeable) until the receipt is reversed. A
-    reversal compensates every movement (same business date, pointing at the
+    pending (SUBMITTED) one does not: a change makes it stale and unapprovable.
+    A reversal compensates every movement (same business date, pointing at the
     original), keeps the receipt as history and frees the invoice to be
-    corrected and received again. Posting, reversing and every guarded change
-    take the same row lock on the invoice, so they cannot interleave.
+    corrected and submitted again; it never touches the Retailed mark.
+    Submitting, approving, reversing and every guarded change take the same
+    row lock on the invoice, so they cannot interleave.
 """
 
 from __future__ import annotations
@@ -51,8 +55,11 @@ from app.models.inventory import (
     BASE_UNIT_SELLABLE,
     MOVEMENT_OPENING_COUNT,
     MOVEMENT_RECEIPT,
+    POSTING_STATES,
+    RECEIPT_ACTIVE,
     RECEIPT_POSTED,
     RECEIPT_REVERSED,
+    RECEIPT_SUBMITTED,
     InventoryMovement,
     InventoryReceipt,
 )
@@ -229,23 +236,40 @@ def fold_balances(rows: Sequence[Any]) -> list[ItemBalance]:
 
 # ---- database ----------------------------------------------------------------------
 
-_ledger_present = False
+# What the database has reached. The correction guard runs on every invoice change, whatever
+# INVENTORY_ENABLED says (a receipt must keep locking its invoice even if the feature is switched
+# off again), so it must work at each of these, not only at head:
+SCHEMA_ABSENT = "absent"        # before 0033: no inventory tables
+SCHEMA_LEDGER = "ledger"        # 0033/0034: receipts and movements, no approval columns (0035)
+SCHEMA_APPROVAL = "approval"    # 0035: the receipt approval lifecycle
+_approval_schema_seen = False
 
 
-async def _ledger_exists(session: AsyncSession) -> bool:
+async def inventory_schema(session: AsyncSession) -> str:
     """
-    Whether migration 0033 has been applied. The correction guard runs on
-    every invoice change, whatever INVENTORY_ENABLED says (a receipt must keep
-    locking its invoice even if the feature is switched off again), so it must
-    not fail on a database the migration has not reached yet. Once seen, the
-    tables are assumed to stay.
+    Which inventory schema the database has: SCHEMA_ABSENT, SCHEMA_LEDGER or
+    SCHEMA_APPROVAL. 0035 is one transaction, so one of its columns stands for
+    all of it. Only the final state is cached (migrations only move forward);
+    the earlier ones are re-read, so applying 0035 takes effect on the next
+    request without a restart.
     """
-    global _ledger_present
-    if not _ledger_present:
-        _ledger_present = bool((await session.execute(
-            text("SELECT to_regclass('public.inventory_receipts') IS NOT NULL")
-        )).scalar())
-    return _ledger_present
+    global _approval_schema_seen
+    if _approval_schema_seen:
+        return SCHEMA_APPROVAL
+    row = (await session.execute(text(
+        "SELECT to_regclass('public.inventory_receipts') IS NOT NULL, "
+        "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND table_name = 'inventory_receipts' AND column_name = 'submitted_at')"
+    ))).one()
+    if row[0] and row[1]:
+        _approval_schema_seen = True
+        return SCHEMA_APPROVAL
+    return SCHEMA_LEDGER if row[0] else SCHEMA_ABSENT
+
+
+async def approval_schema_ready(session: AsyncSession) -> bool:
+    """Whether migration 0035 is applied: receipts can be submitted, approved, rejected or withdrawn."""
+    return await inventory_schema(session) == SCHEMA_APPROVAL
 
 
 async def lock_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> None:
@@ -253,11 +277,15 @@ async def lock_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> None:
     await session.execute(select(Invoice.id).where(Invoice.id == invoice_id).with_for_update())
 
 
-async def posted_receipt(session: AsyncSession, invoice_id: uuid.UUID) -> InventoryReceipt | None:
+async def posted_receipt(session: AsyncSession, invoice_id: uuid.UUID):
+    """
+    The invoice's POSTED receipt (id, received_on, confirmed_by), or None. Reads
+    only columns that exist since 0033, so it works before and after 0035.
+    """
     return (await session.execute(
-        select(InventoryReceipt).where(InventoryReceipt.invoice_id == invoice_id,
-                                       InventoryReceipt.status == RECEIPT_POSTED)
-    )).scalars().first()
+        select(InventoryReceipt.id, InventoryReceipt.received_on, InventoryReceipt.confirmed_by)
+        .where(InventoryReceipt.invoice_id == invoice_id, InventoryReceipt.status == RECEIPT_POSTED)
+    )).first()
 
 
 async def ensure_invoice_changeable(session: AsyncSession, invoice_id: uuid.UUID, action: str) -> None:
@@ -266,14 +294,17 @@ async def ensure_invoice_changeable(session: AsyncSession, invoice_id: uuid.UUID
     Call before any write that changes what a receipt would have recorded —
     a line's quantity, code or type, the lines themselves, the store, or the
     document's standing. Holds the lock until the caller's transaction ends.
+    Works at every schema state: before 0033 it only locks; from 0033 on a
+    POSTED receipt refuses the change.
     """
     await lock_invoice(session, invoice_id)
-    if not await _ledger_exists(session):
+    if await inventory_schema(session) == SCHEMA_ABSENT:
         return
     receipt = await posted_receipt(session, invoice_id)
     if receipt is not None:
+        received_on = receipt.received_on.isoformat() if receipt.received_on else "a recorded date"  # always set when POSTED
         raise InvoiceReceivedError(
-            message=(f"This invoice was received into inventory on {receipt.received_on.isoformat()} by "
+            message=(f"This invoice was received into inventory on {received_on} by "
                      f"{receipt.confirmed_by}. Reverse the receipt (Inventory → Invoices & receipts) before "
                      "changing it."),
             detail={"invoice_id": str(invoice_id), "reason": "invoice_received", "action": action,
@@ -300,10 +331,7 @@ class ReceiptPreview:
     receipt: InventoryReceipt | None                 # the POSTED one, if any
     resolution: CommercialResolution = field(repr=False, default_factory=CommercialResolution)
     history: list[InventoryReceipt] = field(default_factory=list)   # every receipt, oldest first
-
-    @property
-    def can_post(self) -> bool:
-        return not self.eligibility_reasons and not self.blockers and self.receipt is None and bool(self.lines)
+    submission: InventoryReceipt | None = None       # the pending (SUBMITTED) one, if any
 
 
 def _invoice_not_found(invoice_id: uuid.UUID) -> RecordNotFoundError:
@@ -311,14 +339,15 @@ def _invoice_not_found(invoice_id: uuid.UUID) -> RecordNotFoundError:
     return RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
 
 
-async def receipt_preview(session: AsyncSession, invoice_id: uuid.UUID, user) -> ReceiptPreview:
+async def receipt_preview(session: AsyncSession, invoice_id: uuid.UUID, user, *, fresh: bool = False) -> ReceiptPreview:
     """
     What a receipt for the invoice would record. The invoice's store must be
     one `user` may use (store_access); otherwise, or with no store, it is the
     same 404 as an unknown invoice, so an invoice id never reveals another
-    store's data.
+    store's data. `fresh=True` re-reads the invoice and its receipts from the
+    database — required after taking the invoice lock.
     """
-    invoice = await InvoiceRepository(session).get_detail(invoice_id)
+    invoice = await InvoiceRepository(session).get_detail(invoice_id, fresh=fresh)
     if invoice is None or not await store_access.has_store_access(session, user, invoice.store_id):
         raise _invoice_not_found(invoice_id)
     store = await StoreRepository(session).get(invoice.store_id) if invoice.store_id else None
@@ -327,71 +356,44 @@ async def receipt_preview(session: AsyncSession, invoice_id: uuid.UUID, user) ->
     lines, blockers = build_receipt_lines(invoice, resolution)
     history = list((await session.execute(
         select(InventoryReceipt).where(InventoryReceipt.invoice_id == invoice.id)
-        .order_by(InventoryReceipt.created_at)
+        .order_by(InventoryReceipt.created_at).execution_options(populate_existing=fresh)
     )).scalars().all())
     receipt = next((r for r in history if r.status == RECEIPT_POSTED), None)
-    return ReceiptPreview(invoice, store, list(eligibility.reasons), lines, blockers, receipt, resolution, history)
+    submission = next((r for r in history if r.status == RECEIPT_SUBMITTED), None)
+    return ReceiptPreview(invoice, store, list(eligibility.reasons), lines, blockers, receipt, resolution, history,
+                          submission)
 
 
-async def post_receipt(
-    session: AsyncSession, invoice_id: uuid.UUID, *, accepted: Mapping[uuid.UUID, Decimal],
-    reasons: Mapping[uuid.UUID, str], received_on: date, note: str | None, user,
-) -> InventoryReceipt:
-    """Record a confirmed receipt and its movements in one transaction. Flushes; the caller commits."""
-    await lock_invoice(session, invoice_id)     # a concurrent correction waits, or has already committed
-    # Authorized under the lock: the store checked is the store the movements will carry.
-    preview = await receipt_preview(session, invoice_id, user)
-    if preview.receipt is not None:
-        raise ValidationError(message="This invoice has already been received.",
-                              detail={"invoice_id": str(invoice_id), "reason": "already_received",
-                                      "receipt_id": str(preview.receipt.id)})
-    if preview.eligibility_reasons:
-        raise ValidationError(message="This invoice cannot be received yet.",
-                              detail={"invoice_id": str(invoice_id), "reasons": preview.eligibility_reasons})
-    if preview.blockers:
-        raise ValidationError(
-            message=f"{len(preview.blockers)} product line(s) have no approved units-per-case conversion; "
-                    "nothing was received.",
-            detail={"invoice_id": str(invoice_id), "reason": "unresolved_conversions",
-                    "blockers": [vars(b) for b in preview.blockers]},
-        )
-    if not preview.lines:
-        raise ValidationError(message="This invoice has no product lines to receive.",
-                              detail={"invoice_id": str(invoice_id)})
-    confirmed = accepted_quantities(preview.lines, accepted, reasons)
-    invoice, store = preview.invoice, preview.store
-    assert store is not None
+def receipt_movement_key(receipt_id: uuid.UUID, invoice_item_id: uuid.UUID) -> str:
+    return f"receipt:{receipt_id}:{invoice_item_id}"
 
-    receipt = InventoryReceipt(
-        invoice_id=invoice.id, invoice_number=invoice.invoice_number, store_id=store.id, status=RECEIPT_POSTED,
-        received_on=received_on, confirmed_by_user_id=user.id, confirmed_by=user.username,
-        confirmed_role=user.role, note=(note or "").strip() or None, line_count=len(confirmed),
-        discrepancy_count=sum(1 for line, qty, _ in confirmed if qty != line.expected_units),
-        resolution_snapshot={"enabled": preview.resolution.enabled, "paths": preview.resolution.paths()},
-    )
-    session.add(receipt)
-    try:
-        await session.flush()            # the partial unique index refuses a second POSTED receipt
-    except IntegrityError as exc:
-        if "uq_inventory_receipts_invoice_posted" not in str(exc.orig):
-            raise
-        raise ValidationError(message="This invoice has already been received.",
-                              detail={"invoice_id": str(invoice_id), "reason": "already_received"}) from exc
-    session.add_all([
+
+def reversal_movement_key(movement_id: uuid.UUID) -> str:
+    return f"reversal:{movement_id}"
+
+
+def receipt_movements(
+    receipt: InventoryReceipt, confirmed: Sequence[tuple[ReceiptLine, Decimal, str | None]], *,
+    invoice_id: uuid.UUID, received_on: date, user,
+) -> list[InventoryMovement]:
+    """
+    One RECEIPT movement per accepted line, with its conversion snapshot.
+    Used only by approval (app.services.inventory_approval); there is no
+    other path that posts a receipt.
+    """
+    return [
         InventoryMovement(
-            store_id=store.id, item_code=line.item_code, description=(line.description or "")[:255] or None,
+            store_id=receipt.store_id, item_code=line.item_code, description=(line.description or "")[:255] or None,
             movement_type=MOVEMENT_RECEIPT, quantity=quantity, base_unit=BASE_UNIT_SELLABLE,
             expected_quantity=line.expected_units, source_quantity=line.cases, source_unit=SOURCE_UNIT_CASE,
             units_per_case=line.units_per_case, conversion_path=line.conversion_path,
-            conversion_mapping_id=line.conversion_mapping_id, invoice_id=invoice.id,
+            conversion_mapping_id=line.conversion_mapping_id, invoice_id=invoice_id,
             invoice_item_id=line.invoice_item_id, receipt_id=receipt.id, business_date=received_on,
-            idempotency_key=f"receipt:{receipt.id}:{line.invoice_item_id}", actor_user_id=user.id,
+            idempotency_key=receipt_movement_key(receipt.id, line.invoice_item_id), actor_user_id=user.id,
             actor_username=user.username, reason=reason,
         )
         for line, quantity, reason in confirmed
-    ])
-    await session.flush()
-    return receipt
+    ]
 
 
 @dataclass
@@ -408,8 +410,10 @@ async def reverse_receipt(
     Reverse the invoice's POSTED receipt: one compensating movement per
     receipt movement (negated, same business date, reversal_of_id set), the
     receipt marked REVERSED with who, when and why. Nothing is deleted or
-    edited in place. Asking again for a receipt already reversed changes
-    nothing and says so. Flushes; the caller commits.
+    edited in place, and the invoice's Retailed mark is left as it is.
+    Asking again for a receipt already reversed changes nothing and says so;
+    a receipt that was never posted (submitted, rejected, withdrawn,
+    superseded) cannot be reversed. Flushes; the caller commits.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -418,7 +422,7 @@ async def reverse_receipt(
     await lock_invoice(session, invoice_id)
     receipt = (await session.execute(
         select(InventoryReceipt).where(InventoryReceipt.id == receipt_id, InventoryReceipt.invoice_id == invoice_id)
-        .with_for_update()
+        .with_for_update().execution_options(populate_existing=True)
     )).scalars().first()
     # Authorized under the lock on the store whose ledger the reversal writes to; an unknown
     # receipt and one at a store the account cannot use are the same 404.
@@ -427,6 +431,12 @@ async def reverse_receipt(
                                   detail={"invoice_id": str(invoice_id), "receipt_id": str(receipt_id)})
     if receipt.status == RECEIPT_REVERSED:
         return ReversalResult(receipt, [], already_reversed=True)
+    if receipt.status != RECEIPT_POSTED:
+        raise ValidationError(
+            message=f"Only a posted receipt can be reversed; this one is {receipt.status.lower()} and moved no stock.",
+            detail={"invoice_id": str(invoice_id), "receipt_id": str(receipt.id), "reason": "not_posted",
+                    "status": receipt.status},
+        )
 
     originals = list((await session.execute(
         select(InventoryMovement).where(InventoryMovement.receipt_id == receipt.id,
@@ -440,7 +450,7 @@ async def reverse_receipt(
             source_unit=m.source_unit, units_per_case=m.units_per_case, conversion_path=m.conversion_path,
             conversion_mapping_id=m.conversion_mapping_id, invoice_id=m.invoice_id,
             invoice_item_id=m.invoice_item_id, receipt_id=receipt.id, business_date=m.business_date,
-            idempotency_key=f"reversal:{m.id}", actor_user_id=user.id, actor_username=user.username,
+            idempotency_key=reversal_movement_key(m.id), actor_user_id=user.id, actor_username=user.username,
             reason=reason, reversal_of_id=m.id,
         )
         for m in originals
@@ -540,7 +550,8 @@ async def item_movements(session: AsyncSession, store_id: uuid.UUID, item_code: 
 
 async def recent_receipts(session: AsyncSession, store_id: uuid.UUID, limit: int = 5) -> list[InventoryReceipt]:
     return list((await session.execute(
-        select(InventoryReceipt).where(InventoryReceipt.store_id == store_id)
+        select(InventoryReceipt).where(InventoryReceipt.store_id == store_id,
+                                       InventoryReceipt.status.in_(POSTING_STATES))
         .order_by(InventoryReceipt.received_on.desc(), InventoryReceipt.created_at.desc()).limit(limit)
     )).scalars().all())
 
@@ -552,7 +563,7 @@ async def last_recorded(session: AsyncSession, store_id: uuid.UUID) -> datetime 
 
 
 async def store_invoices(session: AsyncSession, store_id: uuid.UUID, *, page: int, page_size: int):
-    """The store's invoices, newest first, with each one's receipt (if any)."""
+    """The store's invoices, newest first, with each one's receipt (the active one, else the latest)."""
     total = (await session.execute(
         select(func.count()).select_from(Invoice).where(Invoice.store_id == store_id)
     )).scalar() or 0
@@ -569,6 +580,6 @@ async def store_invoices(session: AsyncSession, store_id: uuid.UUID, *, page: in
             select(InventoryReceipt).where(InventoryReceipt.invoice_id.in_([i.id for i in invoices]))
             .order_by(InventoryReceipt.created_at)
         )).scalars().all():
-            if receipts.get(r.invoice_id) is None or receipts[r.invoice_id].status != RECEIPT_POSTED:
-                receipts[r.invoice_id] = r      # the POSTED one, else the latest reversed
+            if receipts.get(r.invoice_id) is None or receipts[r.invoice_id].status not in RECEIPT_ACTIVE:
+                receipts[r.invoice_id] = r      # the SUBMITTED or POSTED one, else the latest
     return list(invoices), receipts, total

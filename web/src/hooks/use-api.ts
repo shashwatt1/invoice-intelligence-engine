@@ -59,7 +59,9 @@ import {
   listVendors,
   markRetailed,
   moveDocumentToBin,
-  postReceipt,
+  approveReceipt,
+  listPendingApprovals,
+  rejectReceipt,
   processInvoice,
   proposeCommercialCandidate,
   recordOpeningCounts,
@@ -97,7 +99,7 @@ import type {
   ProposalDecision,
   ProposalListParams,
   ProposalRevision,
-  ReceiptPostRequest,
+  ReceiptApproveRequest,
   StoreCreate,
   StoreIdentityUpdate,
   UserRole,
@@ -212,9 +214,11 @@ export function useRetailed(invoiceId: string) {
     mutationFn: ({ action, note }: { action: "mark" | "reopen"; note?: string | null }) =>
       action === "mark" ? markRetailed(invoiceId) : reopenRetailed(invoiceId, note ?? null),
     onSettled: () => {
-      // Success or refusal, the status shown must be the server's current one.
+      // Success or refusal, the status shown must be the server's current one. Marking also
+      // submits (and reopening withdraws) the invoice's inventory receipt.
       void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      void queryClient.invalidateQueries({ queryKey: ["inventory"] });
     },
   });
 }
@@ -782,20 +786,50 @@ export function useStoreInvoices(storeId: string | null, params: { page: number;
   });
 }
 
-export function useReceiptPreview(invoiceId: string | null) {
+/**
+ * The invoice's receipt state: pending submission (with staleness), posted receipt, history.
+ * `quiet` is for the invoice page: a 404 there means inventory is not this account's to see
+ * for that store (or it is off) and is shown as nothing, so it is not retried.
+ */
+export function useReceiptPreview(invoiceId: string | null, { enabled = true, quiet = false }: { enabled?: boolean; quiet?: boolean } = {}) {
   return useQuery({
     queryKey: ["inventory", "receipt", invoiceId],
     queryFn: () => getReceiptPreview(invoiceId!),
-    enabled: Boolean(invoiceId),
+    enabled: Boolean(invoiceId) && enabled,
+    ...(quiet ? { retry: false } : {}),
   });
 }
 
-/** Posting changes the store's balances, its invoice list and the preview: re-read them all. */
-export function usePostReceipt() {
+/** A store's pending receipt submissions (only stores the account holds a grant for). */
+export function usePendingApprovals(storeId: string | null) {
+  return useQuery({
+    queryKey: ["inventory", storeId, "approvals"],
+    queryFn: () => listPendingApprovals(storeId!),
+    enabled: Boolean(storeId),
+  });
+}
+
+/** Approving posts stock: balances, lists, the queue, the preview and the invoice page all change. */
+export function useApproveReceipt() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ invoiceId, body }: { invoiceId: string; body: ReceiptPostRequest }) => postReceipt(invoiceId, body),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["inventory"] }),
+    mutationFn: ({ invoiceId, body }: { invoiceId: string; body: ReceiptApproveRequest }) => approveReceipt(invoiceId, body),
+    onSettled: (_data, _error, { invoiceId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+    },
+  });
+}
+
+export function useRejectReceipt() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invoiceId, receiptId, reason }: { invoiceId: string; receiptId: string; reason: string }) =>
+      rejectReceipt(invoiceId, { receipt_id: receiptId, reason }),
+    onSettled: (_data, _error, { invoiceId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+    },
   });
 }
 

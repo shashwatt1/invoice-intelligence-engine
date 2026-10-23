@@ -5,11 +5,15 @@ Store-scoped and per-user: every route resolves its store through
 app.services.store_access, so an account sees and changes inventory only for
 physical stores it holds an active grant for (MANAGER and ADMIN alike; USER
 never). A store id in the path that is unknown, a source identity or not
-granted is the same 404. Invoice-linked routes (receipt preview, posting,
-reversal) are authorized inside the service on the invoice's or receipt's own
-store, under the invoice lock, and refuse with the same 404 as an unknown
-invoice. Every query is filtered by the authorized store. Answers 404 while
-INVENTORY_ENABLED is off.
+granted is the same 404. Invoice-linked routes (receipt review, approval,
+rejection, reversal) are authorized inside the service on the invoice's or
+receipt's own store, under the invoice lock, and refuse with the same 404 as
+an unknown invoice. Every query is filtered by the authorized store. Answers
+404 while INVENTORY_ENABLED is off, and while the database has not reached migration 0035.
+
+There is no route that posts a receipt directly: marking the invoice Retailed
+submits it, and POST .../receipt/approve posts a pending submission
+(app/services/inventory_approval.py).
 """
 
 from __future__ import annotations
@@ -31,27 +35,36 @@ from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.inventory import (
     InventoryItemRow,
     InventoryOverview,
+    LineChangeOut,
     MovementRow,
     OpeningCountRequest,
+    PendingApprovalRow,
+    ReceiptApproveRequest,
     ReceiptBlockerOut,
     ReceiptLineOut,
-    ReceiptPostRequest,
     ReceiptPreviewOut,
+    ReceiptRejectRequest,
     ReceiptReversalOut,
     ReceiptReversalRequest,
     ReceiptSummary,
     StoreInvoiceRow,
+    SubmissionOut,
 )
 from app.schemas.processing import StoreRef
+from app.services import inventory_approval as approval
 from app.services import inventory_service as inventory
 from app.services import store_access
 from app.services.export_service import pdi_items
 from app.services.receiving_eligibility import receiving_eligibility
 
 
-async def _enabled() -> None:
+async def _enabled(db: AsyncSession = Depends(get_db)) -> None:
     if not get_settings().inventory_enabled:
         raise RecordNotFoundError(message="Inventory is not enabled.", detail={"feature": "inventory"})
+    # Switched on before its migration reached the database: refuse plainly rather than fail.
+    if not await inventory.approval_schema_ready(db):
+        raise RecordNotFoundError(message="Inventory is not available until its database migration (0035) is applied.",
+                                  detail={"feature": "inventory", "reason": "inventory_schema_not_migrated"})
 
 
 router = APIRouter(tags=["Inventory"], dependencies=[Depends(_enabled)])
@@ -60,23 +73,50 @@ status_router = APIRouter(tags=["Inventory"])
 
 
 @status_router.get("/inventory/status", response_model=APIResponse[dict], summary="Whether inventory is switched on")
-async def inventory_status(user: User = Depends(require_manager)) -> APIResponse[dict]:
-    return APIResponse(data={"enabled": get_settings().inventory_enabled})
+async def inventory_status(db: AsyncSession = Depends(get_db),
+                           user: User = Depends(require_manager)) -> APIResponse[dict]:
+    """On only when switched on AND its migration (0035) is applied; the database is asked only when switched on."""
+    enabled = get_settings().inventory_enabled and await inventory.approval_schema_ready(db)
+    return APIResponse(data={"enabled": enabled})
 
 
 def _receipt(row) -> ReceiptSummary:
-    return ReceiptSummary.model_validate(row, from_attributes=True)
+    summary = ReceiptSummary.model_validate(row, from_attributes=True)
+    submitter = getattr(row, "submitted_by_user_id", None)
+    approver = getattr(row, "confirmed_by_user_id", None)
+    return summary.model_copy(update={"self_approved": submitter is not None and submitter == approver})
+
+
+def _line_out(line) -> ReceiptLineOut:
+    return ReceiptLineOut(**{k: getattr(line, k) for k in ReceiptLineOut.model_fields})
+
+
+def _submission_out(review: approval.Review) -> SubmissionOut | None:
+    receipt = review.preview.submission
+    if receipt is None:
+        return None
+    snapshot = receipt.submission_snapshot or {}
+    return SubmissionOut(
+        receipt=_receipt(receipt),
+        proposed_lines=[ReceiptLineOut(**{k: line.get(k) for k in ReceiptLineOut.model_fields})
+                        for line in snapshot.get("lines", [])],
+        proposed_blockers=[ReceiptBlockerOut(**b) for b in snapshot.get("blockers", [])],
+        export_number=(snapshot.get("export") or {}).get("number"),
+        stale_reasons=review.stale_reasons,
+        line_changes=[LineChangeOut(**vars(c)) for c in review.line_changes],
+    )
 
 
 async def _preview_out(db: AsyncSession, invoice_id: uuid.UUID, user: User) -> ReceiptPreviewOut:
-    p = await inventory.receipt_preview(db, invoice_id, user)
+    review = await approval.review(db, invoice_id, user)
+    p = review.preview
     return ReceiptPreviewOut(
         invoice_id=p.invoice.id, invoice_number=p.invoice.invoice_number,
         store=StoreRef.from_store(p.store) if p.store else None, eligibility_reasons=p.eligibility_reasons,
-        lines=[ReceiptLineOut(**{k: getattr(line, k) for k in ReceiptLineOut.model_fields}) for line in p.lines],
+        lines=[_line_out(line) for line in p.lines],
         blockers=[ReceiptBlockerOut(**vars(b)) for b in p.blockers],
-        receipt=_receipt(p.receipt) if p.receipt else None, history=[_receipt(r) for r in p.history],
-        can_post=p.can_post,
+        receipt=_receipt(p.receipt) if p.receipt else None, submission=_submission_out(review),
+        history=[_receipt(r) for r in p.history], can_approve=review.can_approve,
     )
 
 
@@ -100,6 +140,7 @@ async def overview(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
         in_stock=sum(1 for b in balances if b.status == inventory.STATUS_IN_STOCK),
         last_recorded_at=await inventory.last_recorded(db, store.id),
         recent_receipts=[_receipt(r) for r in await inventory.recent_receipts(db, store.id)],
+        pending_approvals=await approval.pending_count(db, store.id),
     ))
 
 
@@ -162,28 +203,57 @@ async def invoices(store_id: uuid.UUID, page: int = Query(default=1, ge=1),
 
 
 @router.get("/inventory/invoices/{invoice_id}/receipt", response_model=APIResponse[ReceiptPreviewOut],
-            summary="What a receipt for this invoice would record — or the receipt already posted")
+            summary="The invoice's receipt: the pending submission (with staleness), the posted receipt, history")
 async def receipt_preview(invoice_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                           user: User = Depends(require_manager)) -> APIResponse[ReceiptPreviewOut]:
     return APIResponse(data=await _preview_out(db, invoice_id, user))
 
 
-@router.post("/inventory/invoices/{invoice_id}/receipt", response_model=APIResponse[ReceiptPreviewOut],
-             status_code=201, summary="Confirm the invoice's goods were received (MANAGER/ADMIN)",
-             responses={422: {"description": "Not receivable, unresolved conversions, or a line needs a reason"}})
-async def post_receipt(invoice_id: uuid.UUID, payload: ReceiptPostRequest, db: AsyncSession = Depends(get_db),
-                       user: User = Depends(require_manager)) -> APIResponse[ReceiptPreviewOut]:
-    await inventory.post_receipt(
-        db, invoice_id, received_on=payload.received_on, note=payload.note, user=user,
-        accepted={line.invoice_item_id: line.accepted_units for line in payload.lines},
+@router.get("/inventory/stores/{store_id}/approvals", response_model=APIResponse[list[PendingApprovalRow]],
+            summary="Receipt submissions awaiting approval at a physical store, oldest first")
+async def approvals(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
+                    user: User = Depends(require_manager)) -> APIResponse[list[PendingApprovalRow]]:
+    rows = await approval.pending_approvals(db, store_id, user)
+    return APIResponse(data=[
+        PendingApprovalRow(
+            receipt=_receipt(row.receipt), invoice_id=row.invoice.id if row.invoice else None,
+            invoice_number=row.receipt.invoice_number,
+            invoice_date=row.invoice.invoice_date if row.invoice else None,
+            vendor=(row.invoice.vendor.label if row.invoice.vendor else row.invoice.vendor_name) if row.invoice else None,
+            stale_reasons=row.stale_reasons, blockers=row.blockers,
+        )
+        for row in rows
+    ])
+
+
+@router.post("/inventory/invoices/{invoice_id}/receipt/approve", response_model=APIResponse[ReceiptPreviewOut],
+             summary="Approve a pending receipt submission and post it (MANAGER/ADMIN with a grant for the store)",
+             responses={404: {"description": "No such submission, or no access to its store"},
+                        422: {"description": "Not pending, stale, not receivable, or a line needs a reason"}})
+async def approve_receipt(invoice_id: uuid.UUID, payload: ReceiptApproveRequest, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(require_manager)) -> APIResponse[ReceiptPreviewOut]:
+    await approval.approve_receipt(
+        db, invoice_id, receipt_id=payload.receipt_id, received_on=payload.received_on, note=payload.note,
+        user=user, accepted={line.invoice_item_id: line.accepted_units for line in payload.lines},
         reasons={line.invoice_item_id: line.reason for line in payload.lines if line.reason},
     )
     await db.commit()
     return APIResponse(data=await _preview_out(db, invoice_id, user))
 
 
+@router.post("/inventory/invoices/{invoice_id}/receipt/reject", response_model=APIResponse[ReceiptPreviewOut],
+             summary="Reject a pending receipt submission, with a reason (MANAGER/ADMIN with a grant for the store)",
+             responses={404: {"description": "No such submission, or no access to its store"},
+                        422: {"description": "Not pending, or no reason"}})
+async def reject_receipt(invoice_id: uuid.UUID, payload: ReceiptRejectRequest, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(require_manager)) -> APIResponse[ReceiptPreviewOut]:
+    await approval.reject_receipt(db, invoice_id, receipt_id=payload.receipt_id, reason=payload.reason, user=user)
+    await db.commit()
+    return APIResponse(data=await _preview_out(db, invoice_id, user))
+
+
 @router.post("/inventory/invoices/{invoice_id}/receipt/reverse", response_model=APIResponse[ReceiptReversalOut],
-             summary="Reverse the invoice's receipt so it can be corrected and received again (MANAGER/ADMIN)",
+             summary="Reverse the invoice's posted receipt (MANAGER/ADMIN); the Retailed mark is not changed",
              responses={404: {"description": "No such receipt on this invoice"}})
 async def reverse_receipt(invoice_id: uuid.UUID, payload: ReceiptReversalRequest, db: AsyncSession = Depends(get_db),
                           user: User = Depends(require_manager)) -> APIResponse[ReceiptReversalOut]:

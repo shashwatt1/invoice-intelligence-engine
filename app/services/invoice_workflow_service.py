@@ -9,8 +9,11 @@ Two invoice-scoped workflow facts, both set by a MANAGER or ADMIN:
    reachability (a private chat link still needs the viewer's own access).
 
 2. Retailed — a person's attestation that the invoice was verified against
-   the source document and is finished. NOT goods receipt: it never creates
-   or changes inventory, and never touches a mapping or Product Master.
+   the source document and is finished. NOT goods receipt: it never changes
+   stock and never touches a mapping or Product Master. With inventory
+   switched on, marking it also submits the invoice's receipt for approval
+   (a proposal with no movements — app/services/inventory_approval.py), in
+   the same transaction; removing the mark withdraws a pending submission.
 
    It can be set only when the invoice is VALIDATED and the EDI export ledger
    records a delivered PDI file byte-for-byte equal to the file the invoice
@@ -107,7 +110,8 @@ async def set_reference_link(session: AsyncSession, invoice: Invoice, value: str
 # Retailed is a person's attestation that THIS invoice — its lines, quantities,
 # prices, line totals, subtotal, discounts, deposits and totals, and the
 # mappings that turn it into a PDI file — has been checked against the source
-# document and is finished. It is not goods receipt and never touches inventory.
+# document and is finished. It is not goods receipt and never changes stock; with
+# inventory on it submits the receipt for a separate approval.
 #
 # Automatic (enforced here):
 #   * the invoice's status is VALIDATED: the deterministic checks passed (line
@@ -288,6 +292,9 @@ async def mark_retailed(session: AsyncSession, invoice_id: uuid.UUID, user) -> C
                  "previous_status": state.status},
     )
     await session.flush()
+    # Imported here: inventory_approval reads this module's fingerprint at import time.
+    from app.services.inventory_approval import submit_on_retailed
+    await submit_on_retailed(session, invoice, fingerprint=fingerprint, export=latest, user=user)
     return await completion_state(session, invoice)
 
 
@@ -313,4 +320,14 @@ async def reopen_retailed(session: AsyncSession, invoice_id: uuid.UUID, user,
         payload={"event": "invoice_retail_reopened", "by": user.username, "note": note, "previous": previous},
     )
     await session.flush()
+    from app.services.inventory_approval import withdraw_pending
+    withdrawn = await withdraw_pending(
+        session, invoice.id, user=user,
+        reason=f"Retailed mark removed by {user.username}" + (f": {note.strip()}" if note and note.strip() else ""))
+    if withdrawn is not None:
+        await ProcessingLogRepository(session).add(
+            document_id=invoice.document_id, stage=PipelineStage.LIFECYCLE,
+            message=f"Pending inventory receipt withdrawn: the Retailed mark was removed by {user.username}.",
+            payload={"event": "inventory_receipt_withdrawn", "receipt_id": str(withdrawn.id), "by": user.username},
+        )
     return await completion_state(session, invoice)
