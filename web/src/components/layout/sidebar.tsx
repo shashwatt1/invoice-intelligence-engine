@@ -7,6 +7,7 @@ import {
   ListChecks,
   LogOut,
   MapPin,
+  PackageCheck,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
@@ -18,7 +19,7 @@ import type { LucideIcon } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 
 import type { UserRole } from "@/api/types";
-import { useApiHealth, useMappingQueueSummary, usePendingProposalCount } from "@/hooks/use-api";
+import { useApiHealth, useInventoryStatus, useMappingQueueSummary, usePendingProposalCount } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +33,11 @@ import { cn } from "@/lib/utils";
  * MANAGER adds the business surface, an ADMIN adds the technical one.
  * Hiding is presentation only — the API refuses these areas by role.
  */
-type NavItem = { to: string; label: string; icon: LucideIcon; badge?: "pending" | "mapping"; minimum: UserRole };
+type NavItem = {
+  to: string; label: string; icon: LucideIcon; badge?: "pending" | "mapping"; minimum: UserRole;
+  /** Shown only while the server reports the feature switched on. */
+  feature?: "inventory";
+};
 
 const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
@@ -41,6 +46,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, minimum: "MANAGER" },
       { to: "/process", label: "Process invoice", icon: UploadCloud, minimum: "USER" },
       { to: "/invoices", label: "Invoices", icon: FileClock, minimum: "USER" },
+      { to: "/inventory", label: "Inventory", icon: PackageCheck, minimum: "MANAGER", feature: "inventory" },
     ],
   },
   {
@@ -84,8 +90,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     mapping: (n) => `${n} product${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} mapping`,
   };
 
+  const inventory = useInventoryStatus({ enabled: canReview });
+  const features = { inventory: canReview && inventory.isSuccess && inventory.data.enabled };
+
   const groups = NAV_GROUPS
-    .map((group) => ({ ...group, items: group.items.filter((item) => hasRole(item.minimum)) }))
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => hasRole(item.minimum) && (!item.feature || features[item.feature])),
+    }))
     .filter((group) => group.items.length > 0);
 
   const signOut = async () => {

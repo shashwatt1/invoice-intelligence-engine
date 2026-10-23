@@ -6,44 +6,44 @@
 import { apiClient, BULK_APPROVAL_PATH, PROCESS_TIMEOUT_MS } from "./client";
 import type {
   ApiEnvelope,
-  Completion,
-  ReferenceLink,
+  BulkDecisionResult,
+  BulkProposalDecision,
+  CaseMappingConfirmation,
+  CaseMappingResult,
+  CommercialBulkApprovalRequest,
+  CommercialBulkApprovalResult,
   CommercialCandidateDetail,
   CommercialCandidateParams,
   CommercialCandidateRow,
   CommercialProposalRequest,
-  CommercialBulkApprovalRequest,
-  CommercialBulkApprovalResult,
   CommercialReopenRequest,
   CommercialReviewRequest,
   CommercialReviewSummary,
-  IdentityUnresolvedRow,
-  LineItemCorrection,
-  LineItemCorrectionResult,
-  CaseMappingConfirmation,
-  CaseMappingResult,
+  Completion,
   DashboardData,
   DocumentStatusData,
-  HistoryRow,
-  InvoiceDetail,
-  InvoiceListParams,
-  Paginated,
-  VendorDecision,
-  VendorDetail,
-  VendorListParams,
-  VendorRow,
-  BulkDecisionResult,
-  BulkProposalDecision,
   DuplicateDecision,
   DuplicateDecisionResult,
+  HistoryRow,
+  IdentityUnresolvedRow,
+  InventoryItemParams,
+  InventoryItemRow,
+  InventoryMovementRow,
+  InventoryOverview,
   InvoiceDateCorrection,
   InvoiceDateCorrectionResult,
+  InvoiceDetail,
+  InvoiceListParams,
   InvoiceTotalsCorrection,
   InvoiceTotalsCorrectionResult,
+  LineItemCorrection,
+  LineItemCorrectionResult,
   LineItemCreate,
   MappingQueueListParams,
   MappingQueueRow,
   MappingQueueSummary,
+  OpeningCountRequest,
+  Paginated,
   ProcessAccepted,
   ProductHistory,
   ProposalDecision,
@@ -54,12 +54,21 @@ import type {
   ProposalRevisionResult,
   ProposalRow,
   ProposalSourceInvoice,
+  ReceiptPostRequest,
+  ReceiptPreview,
+  ReceiptReversalResult,
+  ReferenceLink,
   StoreAssignmentResult,
   StoreCreate,
   StoreDirectoryEntry,
   StoreIdentityUpdate,
+  StoreInvoiceRow,
   UserAccount,
   UserRole,
+  VendorDecision,
+  VendorDetail,
+  VendorListParams,
+  VendorRow,
 } from "./types";
 
 /** Sets the httpOnly session cookie on success; never returns a token in
@@ -586,3 +595,52 @@ export async function reopenVendor(id: string, body: { basis: string }): Promise
   return data.data!;
 }
 
+
+// ---- Store inventory (MANAGER/ADMIN; 404 unless INVENTORY_ENABLED) -----------------------
+
+export async function getInventoryStatus(): Promise<{ enabled: boolean }> {
+  const { data } = await apiClient.get<ApiEnvelope<{ enabled: boolean }>>("/inventory/status");
+  return data.data!;
+}
+
+export async function getInventoryOverview(storeId: string): Promise<InventoryOverview> {
+  const { data } = await apiClient.get<ApiEnvelope<InventoryOverview>>(`/inventory/stores/${storeId}/overview`);
+  return data.data!;
+}
+
+export async function listInventoryItems(storeId: string, params: InventoryItemParams): Promise<Paginated<InventoryItemRow>> {
+  const { data } = await apiClient.get<Paginated<InventoryItemRow>>(`/inventory/stores/${storeId}/items`, { params });
+  return data;
+}
+
+export async function listInventoryMovements(storeId: string, itemCode: string): Promise<InventoryMovementRow[]> {
+  const { data } = await apiClient.get<ApiEnvelope<InventoryMovementRow[]>>(
+    `/inventory/stores/${storeId}/items/${encodeURIComponent(itemCode)}/movements`,
+  );
+  return data.data!;
+}
+
+export async function listStoreInvoices(storeId: string, params: { page: number; page_size: number }): Promise<Paginated<StoreInvoiceRow>> {
+  const { data } = await apiClient.get<Paginated<StoreInvoiceRow>>(`/inventory/stores/${storeId}/invoices`, { params });
+  return data;
+}
+
+export async function getReceiptPreview(invoiceId: string): Promise<ReceiptPreview> {
+  const { data } = await apiClient.get<ApiEnvelope<ReceiptPreview>>(`/inventory/invoices/${invoiceId}/receipt`);
+  return data.data!;
+}
+
+export async function postReceipt(invoiceId: string, body: ReceiptPostRequest): Promise<ReceiptPreview> {
+  const { data } = await apiClient.post<ApiEnvelope<ReceiptPreview>>(`/inventory/invoices/${invoiceId}/receipt`, body);
+  return data.data!;
+}
+
+export async function recordOpeningCounts(storeId: string, body: OpeningCountRequest): Promise<{ recorded: number }> {
+  const { data } = await apiClient.post<ApiEnvelope<{ recorded: number }>>(`/inventory/stores/${storeId}/opening-counts`, body);
+  return data.data!;
+}
+
+export async function reverseReceipt(invoiceId: string, body: { receipt_id: string; reason: string }): Promise<ReceiptReversalResult> {
+  const { data } = await apiClient.post<ApiEnvelope<ReceiptReversalResult>>(`/inventory/invoices/${invoiceId}/receipt/reverse`, body);
+  return data.data!;
+}

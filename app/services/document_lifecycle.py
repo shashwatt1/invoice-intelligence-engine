@@ -43,6 +43,7 @@ from app.models.processing_log import LogStatus, PipelineStage
 from app.models.user import ROLE_RANK, User, UserRole
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
+from app.services.inventory_service import ensure_document_changeable
 from app.services.validation.report import ProcessingDecision
 
 logger = get_logger(__name__)
@@ -308,6 +309,8 @@ async def move_document_to_bin(session: AsyncSession, document: Document, user: 
     current = DocumentStatus(document.status)
     if current == DocumentStatus.BINNED:
         return document
+    # Binning withdraws the invoice from receiving: refused while its goods are recorded as received.
+    await ensure_document_changeable(session, document.id, "move_to_bin")
     await DocumentRepository(session).set_status(document, DocumentStatus.BINNED)
     await ProcessingLogRepository(session).add(
         document_id=document.id,

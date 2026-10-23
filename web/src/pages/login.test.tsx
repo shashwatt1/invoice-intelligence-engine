@@ -28,6 +28,7 @@ vi.mock("@/api/endpoints", () => ({
   me: vi.fn(),
   listProposals: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 1 })),
   getMappingQueueSummary: vi.fn(async () => ({ unique_products: 0, invoice_occurrences: 0, stores: 0 })),
+  getInventoryStatus: vi.fn(async () => ({ enabled: false })),
 }));
 
 import { ApiError } from "@/api/client";
@@ -148,6 +149,21 @@ describe("Sidebar role gating", () => {
     // A USER's queue/proposal counts are MANAGER-only — the sidebar must not even ask.
     expect(api.getMappingQueueSummary).not.toHaveBeenCalled();
     expect(api.listProposals).not.toHaveBeenCalled();
+    expect(api.getInventoryStatus).not.toHaveBeenCalled();
+    expect(rail()).not.toHaveTextContent("Inventory");
+  });
+
+  it("offers Inventory to a MANAGER only while the server reports it switched on", async () => {
+    vi.mocked(api.me).mockResolvedValue(account("MANAGER"));
+    const { unmount } = mount(<Sidebar collapsed={false} onToggle={() => {}} />);
+    await screen.findByTestId("account");
+    await waitFor(() => expect(api.getInventoryStatus).toHaveBeenCalled());
+    expect(rail()).not.toHaveTextContent("Inventory");
+    unmount();
+
+    vi.mocked(api.getInventoryStatus).mockResolvedValueOnce({ enabled: true });
+    mount(<Sidebar collapsed={false} onToggle={() => {}} />);
+    expect(await screen.findByRole("link", { name: /Inventory/ })).toHaveAttribute("href", "/inventory");
   });
 
   it("gives a MANAGER the business surface, including Requires Mapping, but no technical or user administration", async () => {

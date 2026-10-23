@@ -362,10 +362,11 @@ class TestReceivingEligibility:
         assert invoice.status == "VALIDATED"
         assert not rx.receiving_eligibility(invoice, store, document).eligible
 
-    def test_it_is_a_contract_nothing_calls_yet(self):
-        callers = [str(p.relative_to(ROOT)) for p in (ROOT / "app").rglob("*.py")
-                   if p.name != "receiving_eligibility.py" and "receiving_eligibility" in p.read_text()]
-        assert callers == []
+    def test_only_inventory_receiving_calls_it(self):
+        # The contract's one consumer: store inventory receipts (feature-flagged).
+        callers = sorted(str(p.relative_to(ROOT)) for p in (ROOT / "app").rglob("*.py")
+                         if p.name != "receiving_eligibility.py" and "receiving_eligibility" in p.read_text())
+        assert callers == ["app/api/v1/inventory.py", "app/services/inventory_service.py"]
 
 
 # ---- A6: every store write path is known and guarded -------------------------
