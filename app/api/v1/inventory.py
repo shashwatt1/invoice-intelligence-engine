@@ -1,10 +1,15 @@
 """
 Store inventory API — app/api/v1/inventory.py
 
-Store-scoped: every store route refuses a source identity (only physical
-stores have inventory) and every query is filtered by the store in the path;
-a receipt always posts to its invoice's own store. MANAGER and ADMIN only.
-Answers 404 while INVENTORY_ENABLED is off.
+Store-scoped and per-user: every route resolves its store through
+app.services.store_access, so an account sees and changes inventory only for
+physical stores it holds an active grant for (MANAGER and ADMIN alike; USER
+never). A store id in the path that is unknown, a source identity or not
+granted is the same 404. Invoice-linked routes (receipt preview, posting,
+reversal) are authorized inside the service on the invoice's or receipt's own
+store, under the invoice lock, and refuse with the same 404 as an unknown
+invoice. Every query is filtered by the authorized store. Answers 404 while
+INVENTORY_ENABLED is off.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from app.schemas.inventory import (
 )
 from app.schemas.processing import StoreRef
 from app.services import inventory_service as inventory
+from app.services import store_access
 from app.services.export_service import pdi_items
 from app.services.receiving_eligibility import receiving_eligibility
 
@@ -62,8 +68,8 @@ def _receipt(row) -> ReceiptSummary:
     return ReceiptSummary.model_validate(row, from_attributes=True)
 
 
-async def _preview_out(db: AsyncSession, invoice_id: uuid.UUID) -> ReceiptPreviewOut:
-    p = await inventory.receipt_preview(db, invoice_id)
+async def _preview_out(db: AsyncSession, invoice_id: uuid.UUID, user: User) -> ReceiptPreviewOut:
+    p = await inventory.receipt_preview(db, invoice_id, user)
     return ReceiptPreviewOut(
         invoice_id=p.invoice.id, invoice_number=p.invoice.invoice_number,
         store=StoreRef.from_store(p.store) if p.store else None, eligibility_reasons=p.eligibility_reasons,
@@ -74,11 +80,18 @@ async def _preview_out(db: AsyncSession, invoice_id: uuid.UUID) -> ReceiptPrevie
     )
 
 
+@router.get("/inventory/stores", response_model=APIResponse[list[StoreRef]],
+            summary="The physical stores the signed-in account may use in inventory")
+async def stores(db: AsyncSession = Depends(get_db),
+                 user: User = Depends(require_manager)) -> APIResponse[list[StoreRef]]:
+    return APIResponse(data=[StoreRef.from_store(s) for s in await store_access.accessible_stores(db, user)])
+
+
 @router.get("/inventory/stores/{store_id}/overview", response_model=APIResponse[InventoryOverview],
             summary="A physical store's inventory at a glance")
 async def overview(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                    user: User = Depends(require_manager)) -> APIResponse[InventoryOverview]:
-    store = await inventory.physical_store(db, store_id)
+    store = await store_access.ensure_store_access(db, user, store_id)
     balances = await inventory.store_balances(db, store.id)
     return APIResponse(data=InventoryOverview(
         store=StoreRef.from_store(store), tracked_products=len(balances),
@@ -99,7 +112,7 @@ async def items(
     page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db), user: User = Depends(require_manager),
 ) -> PaginatedResponse[InventoryItemRow]:
-    store = await inventory.physical_store(db, store_id)
+    store = await store_access.ensure_store_access(db, user, store_id)
     rows = await inventory.store_balances(db, store.id)
     term = (search or "").strip().lower()
     if term:
@@ -115,7 +128,7 @@ async def items(
             response_model=APIResponse[list[MovementRow]], summary="Every movement behind one product's balance")
 async def movements(store_id: uuid.UUID, item_code: str, db: AsyncSession = Depends(get_db),
                     user: User = Depends(require_manager)) -> APIResponse[list[MovementRow]]:
-    store = await inventory.physical_store(db, store_id)
+    store = await store_access.ensure_store_access(db, user, store_id)
     rows = await inventory.item_movements(db, store.id, item_code)
     invoice_ids = {m.invoice_id for m in rows if m.invoice_id}
     numbers = dict((await db.execute(
@@ -134,7 +147,7 @@ async def movements(store_id: uuid.UUID, item_code: str, db: AsyncSession = Depe
 async def invoices(store_id: uuid.UUID, page: int = Query(default=1, ge=1),
                    page_size: int = Query(default=25, ge=1, le=100), db: AsyncSession = Depends(get_db),
                    user: User = Depends(require_manager)) -> PaginatedResponse[StoreInvoiceRow]:
-    store = await inventory.physical_store(db, store_id)
+    store = await store_access.ensure_store_access(db, user, store_id)
     rows, receipts, total = await inventory.store_invoices(db, store.id, page=page, page_size=page_size)
     return PaginatedResponse(items=[
         StoreInvoiceRow(
@@ -152,7 +165,7 @@ async def invoices(store_id: uuid.UUID, page: int = Query(default=1, ge=1),
             summary="What a receipt for this invoice would record — or the receipt already posted")
 async def receipt_preview(invoice_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                           user: User = Depends(require_manager)) -> APIResponse[ReceiptPreviewOut]:
-    return APIResponse(data=await _preview_out(db, invoice_id))
+    return APIResponse(data=await _preview_out(db, invoice_id, user))
 
 
 @router.post("/inventory/invoices/{invoice_id}/receipt", response_model=APIResponse[ReceiptPreviewOut],
@@ -166,7 +179,7 @@ async def post_receipt(invoice_id: uuid.UUID, payload: ReceiptPostRequest, db: A
         reasons={line.invoice_item_id: line.reason for line in payload.lines if line.reason},
     )
     await db.commit()
-    return APIResponse(data=await _preview_out(db, invoice_id))
+    return APIResponse(data=await _preview_out(db, invoice_id, user))
 
 
 @router.post("/inventory/invoices/{invoice_id}/receipt/reverse", response_model=APIResponse[ReceiptReversalOut],

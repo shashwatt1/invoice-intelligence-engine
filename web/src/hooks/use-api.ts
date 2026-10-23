@@ -47,6 +47,7 @@ import {
   listCommercialCandidates,
   listIdentityUnresolved,
   listInventoryItems,
+  listInventoryStores,
   listInventoryMovements,
   listInvoices,
   listMappingQueue,
@@ -742,6 +743,11 @@ export function useReopenVendor() {
 /** Whether inventory is switched on (INVENTORY_ENABLED). Asked only by a MANAGER or ADMIN. */
 export function useInventoryStatus({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({ queryKey: ["inventory", "status"], queryFn: getInventoryStatus, enabled, staleTime: 5 * 60_000 });
+}
+
+/** Only the stores this account may use in inventory; the route itself is behind the inventory switch. */
+export function useInventoryStores({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ["inventory", "stores"], queryFn: listInventoryStores, enabled, staleTime: 60_000 });
 }
 
 export function useInventoryOverview(storeId: string | null) {

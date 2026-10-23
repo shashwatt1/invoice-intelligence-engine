@@ -22,11 +22,10 @@ import {
   useInventoryOverview,
   useInventoryStatus,
   useStoreInvoices,
-  useStores,
+  useInventoryStores,
 } from "@/hooks/use-api";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { formatUnits, ITEM_STATUS, receivableReason } from "@/lib/inventory";
-import { physicalStores } from "@/lib/stores";
 
 const ITEM_PAGE_SIZE = 50;
 
@@ -40,19 +39,21 @@ const INVOICE_PAGE_SIZE = 25;
  * On hand exists only after an audited opening count; sales are not imported
  * yet, so every on-hand figure is provisional (count + receipts), and says so.
  * A receipt is a person's explicit confirmation per invoice, never inferred.
- * MANAGER/ADMIN; the server scopes every query to the store in the request.
+ * MANAGER/ADMIN, and only for stores the account has been granted: the store
+ * list comes from the server (GET /inventory/stores) and every route checks the
+ * grant again, so hiding stores here is convenience, not the control.
  */
 export function InventoryPage() {
   const status = useInventoryStatus();
-  const stores = useStores();
-  const physical = useMemo(() => physicalStores(stores.data), [stores.data]);
+  const stores = useInventoryStores({ enabled: status.data?.enabled === true });
+  const physical = useMemo(() => stores.data ?? [], [stores.data]);
   const [params, setParams] = useSearchParams();
   const requested = params.get("store");
   const storeId = physical.some((s) => s.id === requested) ? requested : null;
   const store = physical.find((s) => s.id === storeId) ?? null;
   const chooseStore = (id: string) => setParams((prev) => { const next = new URLSearchParams(prev); next.set("store", id); return next; });
 
-  if (status.isLoading || stores.isLoading) return <><Header /><TableSkeleton rows={6} /></>;
+  if (status.isLoading || (status.data?.enabled && stores.isLoading)) return <><Header /><TableSkeleton rows={6} /></>;
   if (status.isError) return <><Header /><ErrorState error={status.error} onRetry={() => void status.refetch()} /></>;
   if (!status.data?.enabled) {
     return (
@@ -77,8 +78,8 @@ export function InventoryPage() {
         </Select>
       </FilterBar>
       {!physical.length ? (
-        <EmptyState icon={Boxes} title="No physical stores"
-                    description="Inventory is kept per physical store. Add or identify one in the Store directory." />
+        <EmptyState icon={Boxes} title="No stores assigned to you"
+                    description="Inventory access is granted per store. Ask an administrator to grant you access to a store." />
       ) : !store ? (
         <EmptyState icon={Boxes} title="Choose a store" description="Inventory is kept per physical store." />
       ) : (

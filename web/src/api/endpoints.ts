@@ -63,6 +63,7 @@ import type {
   StoreDirectoryEntry,
   StoreIdentityUpdate,
   StoreInvoiceRow,
+  StoreRef,
   UserAccount,
   UserRole,
   VendorDecision,
@@ -600,6 +601,12 @@ export async function reopenVendor(id: string, body: { basis: string }): Promise
 
 export async function getInventoryStatus(): Promise<{ enabled: boolean }> {
   const { data } = await apiClient.get<ApiEnvelope<{ enabled: boolean }>>("/inventory/status");
+  return data.data!;
+}
+
+/** The physical stores the signed-in account holds an inventory grant for (the server decides). */
+export async function listInventoryStores(): Promise<StoreRef[]> {
+  const { data } = await apiClient.get<ApiEnvelope<StoreRef[]>>("/inventory/stores");
   return data.data!;
 }
 

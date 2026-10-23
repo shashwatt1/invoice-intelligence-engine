@@ -7,7 +7,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InventoryItemRow, ReceiptPreview, StoreDirectoryEntry, StoreInvoiceRow } from "@/api/types";
 
 /**
- * Store inventory: off unless the server says it is on; only physical stores;
+ * Store inventory: off unless the server says it is on; only the stores the
+ * server says this account may use (per-user grants; the server enforces them);
  * no on-hand figure without an audited opening count; a receipt prefilled
  * with expected units, a reason required for any difference, and a receipt
  * blocked outright while any product line lacks an approved conversion.
@@ -17,6 +18,7 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const getInventoryStatus = vi.fn();
 const listStores = vi.fn();
+const listInventoryStores = vi.fn();
 const getInventoryOverview = vi.fn();
 const listInventoryItems = vi.fn();
 const listStoreInvoices = vi.fn();
@@ -28,6 +30,7 @@ vi.mock("@/api/endpoints", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/endpoints")>()),
   getInventoryStatus: (...a: unknown[]) => getInventoryStatus(...a),
   listStores: (...a: unknown[]) => listStores(...a),
+  listInventoryStores: (...a: unknown[]) => listInventoryStores(...a),
   getInventoryOverview: (...a: unknown[]) => getInventoryOverview(...a),
   listInventoryItems: (...a: unknown[]) => listInventoryItems(...a),
   listStoreInvoices: (...a: unknown[]) => listStoreInvoices(...a),
@@ -84,6 +87,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   getInventoryStatus.mockResolvedValue({ enabled: true });
   listStores.mockResolvedValue([MIDLER, SOURCE]);
+  listInventoryStores.mockResolvedValue([MIDLER]);          // the server returns only granted physical stores
   getInventoryOverview.mockResolvedValue({
     store: MIDLER, tracked_products: 2, opening_required: 1, out_of_stock: 0, in_stock: 1,
     last_recorded_at: "2026-10-09T12:00:00Z", recent_receipts: [],
@@ -117,6 +121,33 @@ describe("Inventory page", () => {
     expect(await screen.findByText("Inventory is not switched on")).toBeInTheDocument();
     expect(getInventoryOverview).not.toHaveBeenCalled();
     expect(listInventoryItems).not.toHaveBeenCalled();
+    expect(listInventoryStores).not.toHaveBeenCalled();
+  });
+
+  it("offers only the stores the server says this account may use, never the whole directory", async () => {
+    const other = store("other", "AF Other Street", "physical");
+    listStores.mockResolvedValue([MIDLER, other, SOURCE]);
+    const user = userEvent.setup();
+    renderPage("/inventory");
+    await user.click(await screen.findByRole("combobox", { name: "Store" }));
+    const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
+    expect(options).toEqual(["AF NV Midler"]);
+    expect(listInventoryStores).toHaveBeenCalled();
+    expect(listStores).not.toHaveBeenCalled();
+  });
+
+  it("says no stores are assigned when the account has no grants, and loads no inventory", async () => {
+    listInventoryStores.mockResolvedValue([]);
+    renderPage();
+    expect(await screen.findByText("No stores assigned to you")).toBeInTheDocument();
+    expect(screen.getByText(/Ask an administrator to grant you access/)).toBeInTheDocument();
+    expect(getInventoryOverview).not.toHaveBeenCalled();
+  });
+
+  it("does not open a store the account cannot use, even when the URL names it", async () => {
+    renderPage("/inventory?store=other");
+    expect(await screen.findByText("Choose a store")).toBeInTheDocument();
+    expect(getInventoryOverview).not.toHaveBeenCalled();
   });
 
   it("never treats a source identity as a store, even when the URL names one", async () => {

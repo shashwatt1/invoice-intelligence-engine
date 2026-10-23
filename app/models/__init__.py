@@ -27,6 +27,7 @@ from app.models.product_reference import ProductIdentifier, ProductIdentity, Pro
 from app.models.store import Store, StoreIdentifier
 from app.models.store_product_reference import StoreProductReference
 from app.models.user import ROLE_RANK, User, UserRole
+from app.models.user_store_access import UserStoreAccess
 from app.models.vendor import Vendor
 
 __all__ = [
@@ -59,4 +60,5 @@ __all__ = [
     "User",
     "UserRole",
     "Vendor",
+    "UserStoreAccess",
 ]

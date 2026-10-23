@@ -1,6 +1,6 @@
 # Inventory Phase 1 — release plan
 
-Status: integrated locally onto release `e81ebad` (branch `integ/inventory-ledger`, uncommitted);
+Status: integrated locally onto release `e81ebad` (branch `integ/inventory-ledger`; per-user store access uncommitted);
 not deployed. `INVENTORY_ENABLED` defaults to off. The pilot is expected at revision `0032` (the head
 of the deployed release); that is unverified and must be confirmed (step 1) before anything is
 applied. No migration has been applied to any database as part of this work.
@@ -13,7 +13,7 @@ unused, requiring the ledger migration to be re-parented onto `0032` before rele
 revision `0033`, `down_revision = "0032"`. Revision id `0031` stays unused.
 
 ```
-0001 → … → 0023 → 0024 ─┬→ 0026 → 0027 → 0028 → 0029 → 0030 → 0032 → 0033   (one head: 0033)
+0001 → … → 0023 → 0024 ─┬→ 0026 → 0027 → 0028 → 0029 → 0030 → 0032 → 0033 → 0034   (one head: 0034)
                         └→ 0025          (Identifier Resolution; untracked in the main tree only, unreleased)
 ```
 
@@ -25,10 +25,11 @@ revision `0033`, `down_revision = "0032"`. Revision id `0031` stays unused.
 | 0030 | 0029 | deployed (`edi_exports`, RLS) |
 | 0032 | 0030 | deployed with v1.2.0 (reference link, Retailed columns); expected pilot head (to confirm) |
 | 0033 | 0032 | new: `inventory_receipts`, `inventory_movements`, RLS; additive only |
+| 0034 | 0033 | new: `user_store_access` (per-user physical-store grants and their history), RLS; additive only; grants nothing |
 
 Consequences:
 
-- **`alembic heads` → `0033 (head)`** on this branch, and upgrading an empty database to head leaves
+- **`alembic heads` → `0034 (head)`** on this branch, and upgrading an empty database to head leaves
   nothing for autogenerate (`test_migrations_match_models`).
 - The re-parent is safe only while no database has the old `0031` applied. Step 1 checks the pilot
   for it (and for the inventory tables) before anything is applied; any database that ever had
@@ -58,32 +59,34 @@ Nothing below has been run. Each step is a separate, deliberate action.
    SELECT to_regclass('public.invoice_identifier_observations') AS ir_observations,
           to_regclass('public.invoice_line_resolutions')        AS ir_resolutions,
           to_regclass('public.inventory_receipts')              AS inventory_receipts,
-          to_regclass('public.inventory_movements')             AS inventory_movements;  -- expect all NULL
+          to_regclass('public.inventory_movements')             AS inventory_movements,
+          to_regclass('public.user_store_access')               AS user_store_access;    -- expect all NULL
    ```
    Stop if the revision is not exactly `0032` (in particular if it is `0031`) or any table exists.
 2. **Commit the integration** (when asked) from branch `integ/inventory-ledger`. It contains only
    the ledger work merged onto `e81ebad`; 0025 and the Identifier Resolution files are not in it.
-3. **Verify the commit in a clean checkout:** `alembic heads` → `0033` only; render the SQL with
-   `alembic upgrade 0032:0033 --sql` and review it.
-4. **Apply 0033 before deploying the code**, as one transaction that refuses to run unless the
-   database is at 0032:
+3. **Verify the commit in a clean checkout:** `alembic heads` → `0034` only; render the SQL with
+   `alembic upgrade 0032:0034 --sql` and review it.
+4. **Apply 0033 and 0034 before deploying the code**, as one transaction that refuses to run unless
+   the database is at 0032:
    ```sql
    BEGIN;
    DO $$ BEGIN
      IF (SELECT count(*) FROM alembic_version) <> 1
         OR (SELECT version_num FROM alembic_version) <> '0032' THEN
-       RAISE EXCEPTION 'expected alembic_version 0032; aborting 0033';
+       RAISE EXCEPTION 'expected alembic_version 0032; aborting 0033/0034';
      END IF;
    END $$;
-   -- … the reviewed body of `alembic upgrade 0032:0033 --sql`, without its own BEGIN/COMMIT …
+   -- … the reviewed body of `alembic upgrade 0032:0034 --sql`, without its own BEGIN/COMMIT …
    COMMIT;
    ```
    The running code (`e81ebad`) never touches the new tables, so this is safe before the deploy.
    Then verify:
    ```sql
-   SELECT version_num FROM alembic_version;                                   -- 0033
+   SELECT version_num FROM alembic_version;                                   -- 0034
    SELECT relname, relrowsecurity FROM pg_class
-    WHERE relname IN ('inventory_receipts', 'inventory_movements');           -- both true
+    WHERE relname IN ('inventory_receipts', 'inventory_movements', 'user_store_access');  -- all true
+   SELECT count(*) FROM user_store_access;                                    -- 0: nothing granted
    ```
 5. **Deploy the code with `INVENTORY_ENABLED` unset.** Inventory routes answer 404, the sidebar hides
    Inventory, `GET /api/v1/inventory/status` → `{"enabled": false}`. The receipt lock on invoice
@@ -91,14 +94,56 @@ Nothing below has been run. Each step is a separate, deliberate action.
    tables itself (`to_regclass`), so a deploy that accidentally precedes step 4 does not fail
    corrections.
 6. **Smoke test:** correct, add and void a line on a test invoice; export PDI for a validated invoice.
-7. **Later, separately:** set `INVENTORY_ENABLED=true`, redeploy, then record opening counts.
+7. **Grant store access explicitly** (no account has any by default, ADMIN included). Each grant is
+   audited (who, role, when, why); an administrator may grant their own account, recorded as such:
+   ```
+   python scripts/grant_store_access.py grant --actor <active ADMIN> --username <MANAGER or ADMIN> \
+       --store-id <physical store id> --reason "<why>"
+   ```
+   or `POST /api/v1/users/{user_id}/store-access` as an ADMIN. Revoke the same way (`revoke`, or
+   `POST /api/v1/users/{user_id}/store-access/{store_id}/revoke`); `list` shows the history.
+8. **Later, separately:** set `INVENTORY_ENABLED=true`, redeploy, then record opening counts. Not for
+   pilot users until this release is approved for them.
 
 **Rollback.**
 - Turning the flag off hides inventory, but received invoices stay locked against correction.
   Reverse their receipts first (that needs the flag on).
 - Redeploying `e81ebad` is safe with 0033 applied: it never touches the new tables.
-- Downgrading 0033 (back to 0032) drops both tables. Do it only while they are empty. A Render
-  rollback alone does not undo the migration.
+- Downgrading 0034 drops `user_store_access`, and with it the grant history; downgrading 0033
+  (back to 0032) drops the ledger tables. Do either only while the tables are empty; with grants
+  or receipts on record, redeploy the earlier code instead and leave the tables. A Render rollback
+  alone does not undo a migration.
+
+## 3a. Per-user store access (migration 0034)
+
+Inventory is per user and per physical store. An account may list, view or change a store's
+inventory only while all of these hold, checked on every request (nothing is cached):
+
+- the account is active (`get_current_user` refuses inactive accounts: 401);
+- its role is MANAGER or ADMIN (USER is refused, grant or not: 403);
+- the store is a physical store;
+- the account holds an active grant for that store in `user_store_access`.
+
+There is no implicit all-store access for any role, ADMIN included.
+
+- **Every inventory route** resolves its store through `app.services.store_access`. A store id that
+  is unknown, a source identity, or not granted gets the same 404 (`Store not found.`, echoing only
+  the requested id), so ids cannot be probed for existence.
+- **Invoice-linked routes** (receipt preview, posting, reversal) authorize inside the service, on the
+  invoice's store (preview, post) or the receipt's store (reversal), after taking the invoice row
+  lock. Refusals are the same 404 as an unknown invoice or receipt, and write nothing.
+- **The store picker** lists only `GET /inventory/stores`: the account's granted physical stores.
+- **Grants are history.** Grant and revoke are ADMIN-only (API or CLI), need a reason, and lock the
+  target account's row, so concurrent changes for one account are serialized; a partial unique
+  index allows one active grant per account and store. A revocation stamps the row once; a revoked
+  row never changes again (refused in the service, in an ORM guard, and by a CHECK constraint), and
+  granting again inserts a new row. Rows are never deleted; foreign keys to the account and store
+  RESTRICT deletion.
+- **Demotion, deactivation and revocation take effect on the account's next request.** A demoted or
+  deactivated account keeps its grant rows as history, but they confer nothing.
+- **Scope:** inventory only. Invoices, the dashboard, Requires Mapping, Data Review and the store
+  directory are not store-scoped yet; every MANAGER/ADMIN still sees every store there (app-wide
+  store access is later work, B7/C3).
 
 ## 4. Received invoices: correction lock and reversal
 
@@ -145,6 +190,10 @@ only at the isolated test server (`invoice_test`, `invoice_test_migrations`):
 | Frontend (vitest) | 373 passed, 38 files |
 | Type check, lint, build | pass (lint: 7 pre-existing warnings) |
 | `alembic heads` | `0033 (head)`; `test_migrations_match_models` passes |
+
+These are the results of the ledger integration (merge commit `af8841e`, migration head `0033`). The
+per-user store access added on top (migration `0034`) has passed its unit and frontend tests; its
+isolated database run is pending approval and is not reflected in the table above.
 
 The integration fixtures now upload to physical fixture stores (release `b101eb0`), so the red
 baseline recorded before that release no longer applies; the golden-EDI tests for invoice 1000540 run

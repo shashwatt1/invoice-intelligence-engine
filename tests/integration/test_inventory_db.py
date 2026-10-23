@@ -36,7 +36,13 @@ from app.models.invoice_item import InvoiceItem
 from app.repositories.store_repository import StoreRepository
 from app.schemas.extraction import ExtractedLineItem
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import TEST_URL, approve_all_pending, requires_db, store_id
+from tests.integration.conftest import (
+    KNOWN_USERS,
+    TEST_URL,
+    approve_all_pending,
+    requires_db,
+    store_id,
+)
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -58,6 +64,8 @@ async def received(api_client, app, db_session, monkeypatch):  # noqa: F811
     store = await StoreRepository(db_session).get(store_id(STORE))
     store.display_name = "AF NV Midler"                      # a named location: physical
     await db_session.commit()
+    # Inventory is per-user: the signed-in test administrator needs an explicit grant for this store.
+    await grant(db_session, "ADMIN", store.id)
 
     invoice = extracted_invoice(
         line_items=[
@@ -80,6 +88,19 @@ async def received(api_client, app, db_session, monkeypatch):  # noqa: F811
     detail = (await api_client.get(f"/api/v1/invoices/{status['invoice_id']}")).json()["data"]
     assert detail["status"] == "VALIDATED", detail["status"]
     return SimpleNamespace(invoice_id=status["invoice_id"], store_id=store_id(STORE))
+
+
+async def grant(db_session, role, store, reason="test fixture: inventory DB tests"):
+    """An explicit, audited grant of `store` to the seeded account for `role`, made by the seeded ADMIN."""
+    from app.repositories.user_repository import UserRepository
+    from app.services import store_access
+
+    users = UserRepository(db_session)
+    target, actor = await users.get(KNOWN_USERS[role]), await users.get(KNOWN_USERS["ADMIN"])
+    row, _created = await store_access.grant_store_access(db_session, user_id=target.id, store_id=store,
+                                                          actor=actor, reason=reason)
+    await db_session.commit()
+    return row
 
 
 async def approve(api_client, db_session, invoice_id, code, units):  # noqa: F811
@@ -217,12 +238,15 @@ class TestStoreBalances:
         assert [(h["movement_type"], Decimal(h["quantity"])) for h in history] == [("OPENING_COUNT", 10), ("RECEIPT", 36)]
         assert history[1]["invoice_number"] == "INV-001"
 
+        # A source identity, and a physical store without a grant, are the same 404 (nothing revealed).
         source_identity = await api_client.get(f"/api/v1/inventory/stores/{store_id('47708760')}/items")
-        assert source_identity.status_code == 422
-        assert source_identity.json()["error"]["detail"]["reason"] == "source_identity"
+        assert source_identity.status_code == 404
+        assert source_identity.json()["error"]["message"] == "Store not found."
 
         other = await StoreRepository(db_session).create(display_name="AF Other Street")
         await db_session.commit()
+        assert (await api_client.get(f"/api/v1/inventory/stores/{other.id}/items")).status_code == 404
+        await grant(db_session, "ADMIN", other.id)
         assert (await api_client.get(f"/api/v1/inventory/stores/{other.id}/items")).json()["total"] == 0
 
 

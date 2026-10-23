@@ -35,6 +35,7 @@ from app.models.inventory import InventoryMovement, InventoryReceipt
 from app.models.store import Store
 from app.models.user import User, UserRole
 from app.services import inventory_service as inv
+from app.services import store_access
 from app.services.product_master import commercial_resolution as cr
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -209,7 +210,7 @@ def endpoint(app, monkeypatch):
     from app.database.session import get_db
 
     session = _Session()
-    state = SimpleNamespace(session=session, role=UserRole.MANAGER.value, calls=[], flag=True)
+    state = SimpleNamespace(session=session, role=UserRole.MANAGER.value, calls=[], flag=True, access_checks=[])
 
     async def fake_db():
         yield session
@@ -217,11 +218,16 @@ def endpoint(app, monkeypatch):
     def current_user():
         return User(id=uuid.uuid4(), username="barj", password_hash="x", role=state.role, is_active=True)
 
-    async def physical_store(_db, sid):
+    async def ensure_store_access(_db, user, sid):
+        # The real check (grants, roles, physical stores) runs against Postgres in
+        # tests/integration/test_store_access_db.py; here only STORE is granted.
+        state.access_checks.append((user.username, sid))
         if sid != STORE.id:
-            raise ValidationError(message="Item Sales · 47708760 is an unresolved source identity",
-                                  detail={"field": "store_id", "reason": "source_identity"})
+            raise store_access.store_not_found(sid)
         return STORE
+
+    async def accessible_stores(_db, user):
+        return [STORE]
 
     async def balances(_db, sid):
         return inv.fold_balances([mv(BUD, "OPENING_COUNT", 0, date(2026, 10, 5), "BUD LIGHT"),
@@ -231,13 +237,14 @@ def endpoint(app, monkeypatch):
     async def post_receipt(_db, invoice_id, **kwargs):
         state.calls.append(("receipt", invoice_id, kwargs))
 
-    async def preview(_db, invoice_id):
+    async def preview(_db, invoice_id, user):
+        state.calls.append(("preview", invoice_id, user.username))
         return SimpleNamespace(invoice=SimpleNamespace(id=invoice_id, invoice_number="508655"), store=STORE,
                                eligibility_reasons=[], lines=[], receipt=None, history=[], can_post=False,
                                blockers=[inv.ReceiptBlocker(2, "FIREBALL 50ML", MINI, "no approved units-per-case mapping")])
 
     async def opening(_db, sid, **kwargs):
-        await physical_store(_db, sid)
+        await ensure_store_access(_db, kwargs["user"], sid)
         state.calls.append(("opening", sid, kwargs))
         return [object()] * len(kwargs["entries"])
 
@@ -247,13 +254,20 @@ def endpoint(app, monkeypatch):
     async def none_list(*_a, **_k):
         return []
 
-    monkeypatch.setattr(inv, "physical_store", physical_store)
+    monkeypatch.setattr(store_access, "ensure_store_access", ensure_store_access)
+    monkeypatch.setattr(store_access, "accessible_stores", accessible_stores)
     monkeypatch.setattr(inv, "store_balances", balances)
     monkeypatch.setattr(inv, "post_receipt", post_receipt)
     monkeypatch.setattr(inv, "receipt_preview", preview)
     monkeypatch.setattr(inv, "record_opening_counts", opening)
     monkeypatch.setattr(inv, "last_recorded", nothing)
     monkeypatch.setattr(inv, "recent_receipts", none_list)
+    monkeypatch.setattr(inv, "item_movements", none_list)
+
+    async def no_invoices(*_a, **_k):
+        return [], {}, 0
+
+    monkeypatch.setattr(inv, "store_invoices", no_invoices)
     monkeypatch.setattr(api, "get_settings", lambda: SimpleNamespace(inventory_enabled=state.flag))
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_current_user] = current_user
@@ -290,9 +304,30 @@ class TestTheInventoryApi:
         r = await client.get(f"/api/v1/inventory/stores/{STORE.id}/overview")
         assert r.status_code == 403, r.text
 
-    async def test_a_source_identity_is_not_a_store(self, client, endpoint):
-        r = await client.get(f"/api/v1/inventory/stores/{uuid.uuid4()}/items")
-        assert r.status_code == 422 and r.json()["error"]["detail"]["reason"] == "source_identity"
+    async def test_an_unknown_source_identity_or_ungranted_store_is_one_and_the_same_404(self, client, endpoint):
+        other = uuid.uuid4()
+        r = await client.get(f"/api/v1/inventory/stores/{other}/items")
+        assert r.status_code == 404
+        assert r.json()["error"] == {"error_code": "ERR_NOT_FOUND", "message": "Store not found.",
+                                     "detail": {"store_id": str(other)}}
+
+    async def test_every_store_route_checks_the_signed_in_accounts_access(self, client, endpoint):
+        base = f"/api/v1/inventory/stores/{STORE.id}"
+        for path in (f"{base}/overview", f"{base}/items", f"{base}/items/{BUD}/movements", f"{base}/invoices"):
+            endpoint.access_checks.clear()
+            await client.get(path)
+            assert endpoint.access_checks == [("barj", STORE.id)], path
+
+    async def test_the_store_list_is_the_accounts_accessible_stores(self, client, endpoint):
+        r = await client.get("/api/v1/inventory/stores")
+        assert r.status_code == 200 and [s["id"] for s in r.json()["data"]] == [str(STORE.id)]
+        endpoint.role = UserRole.USER.value
+        assert (await client.get("/api/v1/inventory/stores")).status_code == 403
+
+    async def test_invoice_routes_hand_the_signed_in_account_to_the_service(self, client, endpoint):
+        invoice_id = uuid.uuid4()
+        await client.get(f"/api/v1/inventory/invoices/{invoice_id}/receipt")
+        assert endpoint.calls == [("preview", invoice_id, "barj")]
 
     async def test_overview_counts_and_the_opening_required_label(self, client, endpoint):
         r = await client.get(f"/api/v1/inventory/stores/{STORE.id}/overview")
@@ -316,7 +351,8 @@ class TestTheInventoryApi:
             "lines": [{"invoice_item_id": str(line_a), "accepted_units": 46, "reason": "2 crushed"},
                       {"invoice_item_id": str(line_b), "accepted_units": 12}]})
         assert r.status_code == 201, r.text
-        [(kind, iid, kwargs)] = endpoint.calls
+        [(kind, iid, kwargs)] = [c for c in endpoint.calls if c[0] == "receipt"]
+        assert ("preview", invoice_id, "barj") in endpoint.calls      # the answer is re-read as the same account
         assert (kind, iid, kwargs["user"].username, kwargs["received_on"]) == ("receipt", invoice_id, "barj",
                                                                                  date(2026, 10, 9))
         assert kwargs["accepted"] == {line_a: Decimal("46"), line_b: Decimal("12")}
@@ -339,7 +375,7 @@ class TestTheInventoryApi:
         r = await client.post(f"/api/v1/inventory/stores/{STORE.id}/opening-counts", json={**body, "reason": ""})
         assert r.status_code == 422
         r = await client.post(f"/api/v1/inventory/stores/{uuid.uuid4()}/opening-counts", json=body)
-        assert r.status_code == 422 and len(endpoint.calls) == 1
+        assert r.status_code == 404 and len(endpoint.calls) == 1
 
 
 # ---- service refusals (no database) ----------------------------------------------------------
@@ -349,7 +385,7 @@ class TestPostingRefusals:
     def preview(self, monkeypatch):
         state = SimpleNamespace(value=None)
 
-        async def fake(_session, _invoice_id):
+        async def fake(_session, _invoice_id, _user):
             return state.value
 
         async def no_lock(_session, _invoice_id):

@@ -60,6 +60,7 @@ from app.models.invoice import Invoice
 from app.models.store import Store
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.store_repository import StoreRepository
+from app.services import store_access
 from app.services.case_mapping_service import invoice_commercial_resolution
 from app.services.export_service import normalize_item_code, pdi_items
 from app.services.product_master.commercial_resolution import (
@@ -70,7 +71,6 @@ from app.services.product_master.commercial_resolution import (
     CommercialResolution,
 )
 from app.services.receiving_eligibility import receiving_eligibility
-from app.services.store_guard import ensure_physical_store
 
 # Conversions the receipt accepts: exactly the ones the EDI export accepts.
 APPROVED_PATHS = frozenset({PATH_PRODUCT_MASTER_PHYSICAL, PATH_PRODUCT_MASTER_GLOBAL, PATH_LEGACY_FALLBACK})
@@ -281,14 +281,6 @@ async def ensure_invoice_changeable(session: AsyncSession, invoice_id: uuid.UUID
         )
 
 
-async def physical_store(session: AsyncSession, store_id: uuid.UUID) -> Store:
-    """The store, refused unless it is a physical store (never a source identity such as 47708760)."""
-    store = await StoreRepository(session).get(store_id)
-    if store is None:
-        raise RecordNotFoundError(message="Store not found.", detail={"store_id": str(store_id)})
-    return ensure_physical_store(store)
-
-
 async def ensure_document_changeable(session: AsyncSession, document_id: uuid.UUID, action: str) -> None:
     """ensure_invoice_changeable for the document's invoice, if it has one."""
     invoice_id = (await session.execute(
@@ -314,10 +306,21 @@ class ReceiptPreview:
         return not self.eligibility_reasons and not self.blockers and self.receipt is None and bool(self.lines)
 
 
-async def receipt_preview(session: AsyncSession, invoice_id: uuid.UUID) -> ReceiptPreview:
+def _invoice_not_found(invoice_id: uuid.UUID) -> RecordNotFoundError:
+    """The one refusal for an unknown invoice and for one at a store the account cannot use."""
+    return RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+
+
+async def receipt_preview(session: AsyncSession, invoice_id: uuid.UUID, user) -> ReceiptPreview:
+    """
+    What a receipt for the invoice would record. The invoice's store must be
+    one `user` may use (store_access); otherwise, or with no store, it is the
+    same 404 as an unknown invoice, so an invoice id never reveals another
+    store's data.
+    """
     invoice = await InvoiceRepository(session).get_detail(invoice_id)
-    if invoice is None:
-        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    if invoice is None or not await store_access.has_store_access(session, user, invoice.store_id):
+        raise _invoice_not_found(invoice_id)
     store = await StoreRepository(session).get(invoice.store_id) if invoice.store_id else None
     eligibility = receiving_eligibility(invoice, store, invoice.document)
     resolution = await invoice_commercial_resolution(session, invoice)
@@ -336,7 +339,8 @@ async def post_receipt(
 ) -> InventoryReceipt:
     """Record a confirmed receipt and its movements in one transaction. Flushes; the caller commits."""
     await lock_invoice(session, invoice_id)     # a concurrent correction waits, or has already committed
-    preview = await receipt_preview(session, invoice_id)
+    # Authorized under the lock: the store checked is the store the movements will carry.
+    preview = await receipt_preview(session, invoice_id, user)
     if preview.receipt is not None:
         raise ValidationError(message="This invoice has already been received.",
                               detail={"invoice_id": str(invoice_id), "reason": "already_received",
@@ -416,7 +420,9 @@ async def reverse_receipt(
         select(InventoryReceipt).where(InventoryReceipt.id == receipt_id, InventoryReceipt.invoice_id == invoice_id)
         .with_for_update()
     )).scalars().first()
-    if receipt is None:
+    # Authorized under the lock on the store whose ledger the reversal writes to; an unknown
+    # receipt and one at a store the account cannot use are the same 404.
+    if receipt is None or not await store_access.has_store_access(session, user, receipt.store_id):
         raise RecordNotFoundError(message="Receipt not found for this invoice.",
                                   detail={"invoice_id": str(invoice_id), "receipt_id": str(receipt_id)})
     if receipt.status == RECEIPT_REVERSED:
@@ -461,7 +467,7 @@ async def record_opening_counts(
     reason: str | None, user,
 ) -> list[InventoryMovement]:
     """One audited OPENING_COUNT per product per store. All or nothing. Flushes; the caller commits."""
-    store = await physical_store(session, store_id)
+    store = await store_access.ensure_store_access(session, user, store_id)
     reason = (reason or "").strip()
     if not reason:
         raise ValidationError(message="Say what the count rests on — e.g. who counted, and how.",
