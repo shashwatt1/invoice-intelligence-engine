@@ -191,6 +191,14 @@ class ValidationError(InvoiceBaseException):
     message = "Invoice data failed validation checks."
 
 
+class InvoiceReceivedError(InvoiceBaseException):
+    """Raised when a change would alter an invoice whose goods are recorded as received."""
+
+    error_code = "ERR_INVOICE_RECEIVED"
+    http_status = 409
+    message = "This invoice has been received into inventory; reverse the receipt before changing it."
+
+
 # ---------------------------------------------------------------------------
 # Authorization Errors
 # ---------------------------------------------------------------------------

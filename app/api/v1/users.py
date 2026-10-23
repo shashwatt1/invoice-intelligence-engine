@@ -29,6 +29,7 @@ from app.core.logging import get_logger
 from app.core.security import hash_password
 from app.database.session import get_db
 from app.models.user import SECURITY_EVENT_PASSWORD_RESET, User, UserSecurityEvent
+from app.repositories.store_repository import StoreRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import (
     PASSWORD_MAX_LENGTH,
@@ -40,6 +41,13 @@ from app.schemas.auth import (
     UserOut,
 )
 from app.schemas.base import APIResponse
+from app.schemas.store_access import (
+    StoreAccessGrantRequest,
+    StoreAccessGrantResult,
+    StoreAccessOut,
+    StoreAccessRevokeRequest,
+)
+from app.services import store_access
 
 logger = get_logger(__name__)
 
@@ -168,3 +176,69 @@ async def reset_user_password(
     logger.info("user_password_reset", target_user_id=str(target.id), target_username=target.username,
                 actor_user_id=str(actor.id), actor_username=actor.username, actor_role=actor.role)
     return APIResponse(data=user_out(target))
+
+
+# ---- per-user physical-store access for inventory ------------------------------------------
+
+@router.get(
+    "/{user_id}/store-access", response_model=APIResponse[list[StoreAccessOut]],
+    summary="An account's store-access history (inventory)",
+    description="Every grant for the account, active and revoked, oldest first, exactly as recorded.",
+    responses={404: {"description": "User not found"}},
+)
+async def list_store_access(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> APIResponse[list[StoreAccessOut]]:
+    await _get_or_404(db, user_id)
+    grants = await store_access.store_access_history(db, user_id)
+    stores = {sid: await StoreRepository(db).get(sid) for sid in {g.store_id for g in grants}}
+    return APIResponse(data=[StoreAccessOut.from_grant(g, stores.get(g.store_id)) for g in grants])
+
+
+@router.post(
+    "/{user_id}/store-access", response_model=APIResponse[StoreAccessGrantResult],
+    summary="Grant an account access to one physical store's inventory",
+    description=(
+        "Grants an active MANAGER or ADMIN account access to a physical store's inventory, with a reason. "
+        "The acting administrator is the authenticated session and is recorded with the grant; granting "
+        "your own account is allowed and recorded as such. An existing active grant is returned unchanged "
+        "(created=false). USER accounts, inactive accounts and source identities are refused."
+    ),
+    responses={404: {"description": "User or store not found"},
+               422: {"description": "Account not eligible, store is a source identity, or no reason"}},
+)
+async def grant_store_access(
+    user_id: uuid.UUID, body: StoreAccessGrantRequest, db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_admin),
+) -> APIResponse[StoreAccessGrantResult]:
+    grant, created = await store_access.grant_store_access(
+        db, user_id=user_id, store_id=body.store_id, actor=actor, reason=body.reason)
+    await db.commit()
+    store = await StoreRepository(db).get(grant.store_id)
+    if created:
+        logger.info("store_access_granted", grant_id=str(grant.id), user_id=str(grant.user_id),
+                    username=grant.username, store_id=str(grant.store_id), actor_user_id=str(actor.id),
+                    actor_username=actor.username, actor_role=actor.role, self_granted=actor.id == grant.user_id)
+    return APIResponse(data=StoreAccessGrantResult(grant=StoreAccessOut.from_grant(grant, store), created=created))
+
+
+@router.post(
+    "/{user_id}/store-access/{store_id}/revoke", response_model=APIResponse[StoreAccessOut],
+    summary="Revoke an account's active access to one physical store's inventory",
+    description=(
+        "Stamps the active grant as revoked, once, with the acting administrator and a reason. The grant "
+        "row is kept as history and never changes again; access ends on the account's next request. "
+        "With no active grant this is a 404 and nothing is written."
+    ),
+    responses={404: {"description": "User not found, or no active grant for that store"}},
+)
+async def revoke_store_access(
+    user_id: uuid.UUID, store_id: uuid.UUID, body: StoreAccessRevokeRequest, db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_admin),
+) -> APIResponse[StoreAccessOut]:
+    grant = await store_access.revoke_store_access(
+        db, user_id=user_id, store_id=store_id, actor=actor, reason=body.reason)
+    await db.commit()
+    store = await StoreRepository(db).get(grant.store_id)
+    logger.info("store_access_revoked", grant_id=str(grant.id), user_id=str(grant.user_id),
+                username=grant.username, store_id=str(grant.store_id), actor_user_id=str(actor.id),
+                actor_username=actor.username, actor_role=actor.role)
+    return APIResponse(data=StoreAccessOut.from_grant(grant, store))

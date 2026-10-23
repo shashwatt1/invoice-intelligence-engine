@@ -1174,3 +1174,142 @@ export interface IdentityUnresolvedRow {
   reason: string;
   units_statement: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Store inventory (app/api/v1/inventory.py) — MANAGER/ADMIN, off unless INVENTORY_ENABLED
+// ---------------------------------------------------------------------------
+
+export type InventoryItemStatus = "OPENING_STOCK_REQUIRED" | "OUT_OF_STOCK" | "IN_STOCK";
+
+/** Decimals arrive as strings (Pydantic Decimal); quantities are sellable units. */
+export type DecimalString = string;
+
+export interface InventoryReceiptSummary {
+  id: string;
+  invoice_id: string | null;
+  invoice_number: string | null;
+  status: "POSTED" | "REVERSED";
+  received_on: string;
+  confirmed_by: string;
+  confirmed_role: string;
+  line_count: number;
+  discrepancy_count: number;
+  created_at: string;
+  reversed_at?: string | null;
+  reversed_by?: string | null;
+  reversal_reason?: string | null;
+}
+
+export interface InventoryOverview {
+  store: StoreRef;
+  tracked_products: number;
+  opening_required: number;
+  out_of_stock: number;
+  in_stock: number;
+  last_recorded_at: string | null;
+  recent_receipts: InventoryReceiptSummary[];
+}
+
+export interface InventoryItemRow {
+  item_code: string;
+  description: string | null;
+  status: InventoryItemStatus;
+  base_unit: string;
+  opening_date: string | null;
+  opening_quantity: DecimalString | null;
+  received: DecimalString;
+  sold: DecimalString;
+  other: DecimalString;
+  /** Null until an audited opening count exists. */
+  on_hand: DecimalString | null;
+  last_movement: string | null;
+}
+
+export interface InventoryItemParams {
+  search?: string;
+  status?: InventoryItemStatus;
+  page: number;
+  page_size: number;
+}
+
+export interface InventoryMovementRow {
+  id: string;
+  movement_type: string;
+  quantity: DecimalString;
+  expected_quantity: DecimalString | null;
+  source_quantity: DecimalString | null;
+  source_unit: string | null;
+  units_per_case: number | null;
+  conversion_path: string | null;
+  conversion_mapping_id: string | null;
+  business_date: string;
+  recorded_at: string;
+  actor_username: string;
+  reason: string | null;
+  invoice_id: string | null;
+  invoice_number: string | null;
+  receipt_id: string | null;
+}
+
+export interface StoreInvoiceRow {
+  invoice_id: string;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  vendor: string | null;
+  status: string;
+  product_lines: number;
+  receipt: InventoryReceiptSummary | null;
+  /** Why the invoice cannot be received yet; empty when it can. */
+  receivable_reasons: string[];
+}
+
+export interface ReceiptLine {
+  invoice_item_id: string;
+  sort_order: number;
+  description: string | null;
+  item_code: string;
+  cases: DecimalString;
+  units_per_case: number;
+  expected_units: DecimalString;
+  conversion_path: string;
+  conversion_scope: string | null;
+}
+
+export interface ReceiptBlocker {
+  sort_order: number;
+  description: string | null;
+  item_code: string | null;
+  reason: string;
+}
+
+export interface ReceiptPreview {
+  invoice_id: string;
+  invoice_number: string | null;
+  store: StoreRef | null;
+  eligibility_reasons: string[];
+  lines: ReceiptLine[];
+  blockers: ReceiptBlocker[];
+  /** The POSTED receipt, if any. */
+  receipt: InventoryReceiptSummary | null;
+  /** Every receipt for this invoice, oldest first — reversed ones included. */
+  history: InventoryReceiptSummary[];
+  can_post: boolean;
+}
+
+export interface ReceiptReversalResult {
+  receipt: InventoryReceiptSummary;
+  movements_reversed: number;
+  already_reversed: boolean;
+}
+
+export interface ReceiptPostRequest {
+  received_on: string;
+  note?: string | null;
+  lines: { invoice_item_id: string; accepted_units: number; reason?: string | null }[];
+}
+
+export interface OpeningCountRequest {
+  count_date: string;
+  reason: string;
+  entries: { item_code: string; quantity: number; description?: string | null }[];
+}

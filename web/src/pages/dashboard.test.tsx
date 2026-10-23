@@ -23,6 +23,7 @@ vi.mock("@/api/endpoints", () => ({
   listProposals: vi.fn(async () => ({ success: true, items: [], total: 3, page: 1, page_size: 1, request_id: null })),
   getMappingQueueSummary: vi.fn(async () => ({ unique_products: 0, invoice_occurrences: 0, stores: 0 })),
   listStores: vi.fn(async () => []),
+  getInventoryStatus: vi.fn(async () => ({ enabled: false })),
   // The shell reads the signed-in account for its role-gated rail.
   me: vi.fn(async () => ({
     id: "u1", username: "admin", role: "ADMIN", is_active: true,

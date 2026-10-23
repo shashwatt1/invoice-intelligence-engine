@@ -135,6 +135,17 @@ class _NoInvoiceRepository:
 MANAGER = SimpleNamespace(username="testmanager", role="MANAGER")
 
 
+def _record_lock(monkeypatch) -> list:
+    """Stub the posted-receipt lock (it needs a session) and record each call."""
+    calls: list = []
+
+    async def lock(db, invoice_id, action):
+        calls.append(action)
+
+    monkeypatch.setattr(invoices_module, "ensure_invoice_changeable", lock)
+    return calls
+
+
 class TestTheCorrectionEndpointRefusesNonAsciiDigits:
     """The real PATCH handler: its UPC checks run before any database access."""
 
@@ -145,22 +156,29 @@ class TestTheCorrectionEndpointRefusesNonAsciiDigits:
     ])
     async def test_fullwidth_and_arabic_indic_upcs_are_refused_with_a_422(self, code, monkeypatch):
         monkeypatch.setattr(invoices_module, "InvoiceRepository", _NoInvoiceRepository)
+        locks = _record_lock(monkeypatch)
         with pytest.raises(ValidationError) as refused:
             await correct_line_item(uuid.uuid4(), 0, LineItemCorrection(product_code=code), db=None, user=MANAGER)
         assert "digits only" in refused.value.message
         assert refused.value.detail["field"] == "product_code"
+        assert locks == []                    # refused on input, before the receipt lock is taken
 
     @pytest.mark.parametrize("code", ["012000126300", "0-12000-12630-0", "0 12000 12630 0"])
     async def test_ascii_upcs_pass_the_checks_as_before(self, code, monkeypatch):
         monkeypatch.setattr(invoices_module, "InvoiceRepository", _NoInvoiceRepository)
-        # Past the UPC checks the handler looks the invoice up; the stand-in has none.
+        locks = _record_lock(monkeypatch)
+        # Past the UPC checks the handler takes the receipt lock, then looks the invoice up;
+        # the stand-in has none.
         with pytest.raises(RecordNotFoundError):
             await correct_line_item(uuid.uuid4(), 0, LineItemCorrection(product_code=code), db=None, user=MANAGER)
+        assert locks == ["correct_line_item"]
 
     async def test_clearing_the_code_is_unchanged(self, monkeypatch):
         monkeypatch.setattr(invoices_module, "InvoiceRepository", _NoInvoiceRepository)
+        locks = _record_lock(monkeypatch)
         with pytest.raises(RecordNotFoundError):
             await correct_line_item(uuid.uuid4(), 0, LineItemCorrection(product_code=""), db=None, user=MANAGER)
+        assert locks == ["correct_line_item"]
 
 
 def _invoice(skus: list[str | None]) -> Invoice:

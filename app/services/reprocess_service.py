@@ -56,6 +56,7 @@ from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.repositories.vendor_repository import VendorRepository
 from app.services.document_lifecycle import document_status_for
+from app.services.inventory_service import ensure_invoice_changeable
 from app.services.photo_context import PhotoOCR, combine_photos
 from app.services.storage_service import get_storage_service
 
@@ -157,6 +158,9 @@ async def reprocess_document(
             message="This document has no persisted invoice to replace; let the normal pipeline finish it.",
             detail={"document_id": str(document_id), "status": document.status},
         )
+    # Replacing the extraction replaces the lines a receipt recorded: refused while
+    # one is POSTED. The invoice stays locked until this transaction ends.
+    await ensure_invoice_changeable(session, invoice.id, "reprocess")
     await session.refresh(invoice, ["items"])
     blocking = _blocking_corrections(invoice)
     if blocking:
