@@ -17,6 +17,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -95,6 +96,7 @@ from app.services.revalidation_service import revalidate_invoice
 from app.services.storage_service import get_storage_service
 from app.services.store_guard import ensure_physical_store, require_store_choice
 from app.services.store_reference_service import match_invoice_against_reference
+from app.services.supplier_item_context import digits, supplier_item_ids
 from app.services.upload_service import UploadService
 
 logger = get_logger(__name__)
@@ -424,6 +426,7 @@ async def get_invoice(
     pdi_eligibility = persisted_pdi_export_eligibility(invoice, pdi_eligibility_units)
     photos = await DocumentRepository(db).pages(document)
     names = await line_product_names(db, invoice, resolution)
+    supplier_items = supplier_item_ids(invoice)
 
     data = InvoiceDetailData(
         invoice_id=invoice.id,
@@ -486,6 +489,11 @@ async def get_invoice(
                     printed_code_incompleteness(item.product_sku)
                     if (item.line_type or "product") == "product" else None
                 ),
+                product_code_missing=(
+                    (item.line_type or "product") == "product"
+                    and normalize_item_code(item.product_sku) is None
+                ),
+                supplier_item_id=supplier_items.get(item.sort_order),
                 **names.get(item.sort_order, {}),
                 unit_discount=float(item.discount) if item.discount is not None else None,
                 entry_source=item.entry_source or "extracted",
@@ -741,6 +749,13 @@ async def confirm_case_mappings(
     )
 
 
+# A UPC typed by a person: ASCII digits, optionally grouped by spaces or dashes.
+# ASCII only: Python's \d also matches fullwidth and other Unicode digits, which
+# normalize_item_code would keep and the fixed-width PDI writer must never see.
+# No length rule: the existing export gates decide what is exportable.
+_UPC_CHARACTERS = re.compile(r"[0-9](?:[0-9 -]*[0-9])?")
+
+
 @router.patch(
     "/invoices/{invoice_id}/items/{sort_order}",
     response_model=APIResponse[LineItemCorrectionResult],
@@ -788,11 +803,29 @@ async def correct_line_item(
                     "fields": negative},
         )
 
+    new_code = updates.get("product_code")
+    if new_code is not None and not _UPC_CHARACTERS.fullmatch(new_code):
+        raise ValidationError(
+            message="A UPC is digits only (spaces and dashes are allowed). "
+                    "Letters mean it is not a UPC, e.g. a supplier item number.",
+            detail={"invoice_id": str(invoice_id), "sort_order": sort_order, "field": "product_code"},
+        )
+
     repository = InvoiceRepository(db)
     if await repository.get(invoice_id) is None:
         raise RecordNotFoundError(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
+
+    if new_code is not None:
+        # The supplier's own ITEM number is never a UPC (Frito-Lay prints both on a row).
+        supplier_item = supplier_item_ids(await repository.get_detail(invoice_id)).get(sort_order)
+        if supplier_item and digits(supplier_item) and digits(new_code) == digits(supplier_item):
+            raise ValidationError(
+                message=f"{new_code} is this row's supplier ITEM number, not a UPC. "
+                        "Enter the UPC printed for the product.",
+                detail={"invoice_id": str(invoice_id), "sort_order": sort_order, "field": "product_code"},
+            )
 
     item = await repository.correct_item(
         invoice_id, sort_order, updates, corrected_by=user.username, note=payload.note,

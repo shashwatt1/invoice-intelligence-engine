@@ -13,11 +13,23 @@ the check was relaxed.
 
 from __future__ import annotations
 
+import json
 import uuid
 
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+from app.models.invoice import Invoice
 from app.schemas.extraction import ExtractedLineItem
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import approve_all_pending, requires_db
+from tests.integration.conftest import (
+    MANAGER_PASSWORD,
+    MANAGER_USERNAME,
+    USER_PASSWORD,
+    USER_USERNAME,
+    approve_all_pending,
+    requires_db,
+)
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -282,6 +294,82 @@ class TestACutOffPrintedUpc:
         assert (entry["field"], entry["old"], entry["new"], entry["by"]) == (
             "product_code", "0-12000-1263", "0-12000-12630-0", "testadmin")
         assert not any(c["name"] == "PRODUCT_CODE_COMPLETE" for c in detail["validation_report"]["checks"])
+
+
+class TestEnteringAMissingUpc:
+    """
+    A Frito-Lay row prints a short UPC fragment and the supplier's ITEM number,
+    so extraction leaves the UPC empty and the export gate blocks the invoice.
+    A manager enters the UPC through the same audited correction; the
+    supplier ITEM number is shown as context and is refused as a UPC.
+    """
+
+    async def _client_as(self, app, username, password):  # noqa: F811
+        client = AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+        assert (await client.post("/api/v1/auth/login",
+                                  json={"username": username, "password": password})).status_code == 200
+        return client
+
+    async def test_flagged_with_item_context_then_entered_with_history_and_the_gate_moves_on(
+        self, api_client, app, db_session  # noqa: F811
+    ):
+        invoice_id = await process(
+            api_client, app, [line(description="2.09 GM VAN MINI CRE", upc=None)],
+            "missingupc.pdf", "missing upc", subtotal=22.70, grand_total=22.70,
+        )
+        # The model's own output carries the supplier ITEM (the test fake stores no content).
+        invoice = (await db_session.execute(select(Invoice).where(Invoice.id == uuid.UUID(invoice_id)))).scalar_one()
+        invoice.raw_extraction_json = {"choices": [{"message": {"content": json.dumps({"line_items": [
+            {"description": "2.09 GM VAN MINI CRE", "product_code": None, "supplier_item_id": "00025328"}]})}}]}
+        await db_session.commit()
+
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        row = detail["line_items"][0]
+        assert row["product_code"] is None
+        assert row["product_code_missing"] is True
+        assert row["product_code_cut_off"] is None
+        assert row["supplier_item_id"] == "00025328"
+        assert detail["pdi_export_allowed"] is False
+        assert "no resolved UPC" in detail["pdi_export_blocked_reason"]
+
+        # Letters are not a UPC; the supplier ITEM number is not a UPC either.
+        letters = await patch(api_client, invoice_id, 0, product_code="RB248904")
+        assert letters.status_code == 422, letters.text
+        assert "digits only" in letters.json()["error"]["message"]
+        item = await patch(api_client, invoice_id, 0, product_code="0002-5328")
+        assert item.status_code == 422, item.text
+        assert "supplier ITEM number" in item.json()["error"]["message"]
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        assert detail["line_items"][0]["correction_history"] == []          # refused, so nothing recorded
+
+        # A USER may see the flag but not correct it.
+        user = await self._client_as(app, USER_USERNAME, USER_PASSWORD)
+        try:
+            assert (await user.patch(f"/api/v1/invoices/{invoice_id}/items/0",
+                                     json={"product_code": UPC})).status_code == 403
+        finally:
+            await user.aclose()
+
+        manager = await self._client_as(app, MANAGER_USERNAME, MANAGER_PASSWORD)
+        try:
+            response = await manager.patch(f"/api/v1/invoices/{invoice_id}/items/0", json={"product_code": UPC})
+        finally:
+            await manager.aclose()
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["item"]["product_code"] == UPC
+        assert data["item"]["corrected_fields"] == ["product_code"]
+        assert "no resolved UPC" not in (data["pdi_export_blocked_reason"] or "")
+        assert "units-per-case" in data["pdi_export_blocked_reason"]      # the next gate still applies
+
+        detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        row = detail["line_items"][0]
+        assert row["product_code_missing"] is False
+        assert row["supplier_item_id"] == "00025328"          # still context; the UPC column holds the UPC
+        entry = row["correction_history"][-1]
+        assert (entry["field"], entry["old"], entry["new"], entry["by"]) == (
+            "product_code", None, UPC, MANAGER_USERNAME)
+        assert detail["status"] == detail["validation_report"]["decision"]   # revalidated report is current
 
 
 class TestRejection:

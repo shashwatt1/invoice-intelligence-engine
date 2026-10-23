@@ -287,6 +287,10 @@ export interface LineItem {
    * through a dashed UPC layout); null/absent when there is no such evidence. `product_code` keeps
    * the raw printed value — never completed automatically — and export stays blocked until corrected. */
   product_code_cut_off?: string | null;
+  /** True when this product row has no resolved UPC (the export gate's test); a manager enters it. */
+  product_code_missing?: boolean;
+  /** The supplier's own item number (e.g. Frito-Lay ITEM), display context only — never a UPC. */
+  supplier_item_id?: string | null;
   /** The product's normalized name: the Product Master canonical description when one exists,
    * otherwise this line's own `description`. Never a PDI description — none is held. */
   normalized_description?: string | null;
