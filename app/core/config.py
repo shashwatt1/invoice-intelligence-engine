@@ -133,9 +133,11 @@ class Settings(BaseSettings):
     # Record every delivered PDI file in edi_exports (migration 0030). Off by
     # default so this code can be deployed before the migration is applied.
     edi_export_ledger: bool = False
-    # Store inventory (receipts and the movement ledger, migration 0033). Off
-    # by default: the inventory API answers 404 until this is on, so the code
-    # can be deployed before the migration is applied.
+    # Store inventory (receipts, the movement ledger and receipt approval,
+    # migrations 0033-0035). Off by default. Apply migrations through 0035
+    # before deploying this code (docs/inventory-phase1-release.md); the
+    # schema checks that keep older schemas working are a safety fallback,
+    # not the rollout plan. The approval workflow also needs EDI_EXPORT_LEDGER.
     inventory_enabled: bool = False
     ocr_provider: Literal["google_vision", "paddleocr", "easyocr"] = "google_vision"
     google_vision_api_key: str = ""
