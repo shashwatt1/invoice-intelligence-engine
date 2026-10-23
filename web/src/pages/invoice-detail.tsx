@@ -279,29 +279,50 @@ function EditableDescription({ invoiceId, item, serial, by, readOnly, inactive }
 
 /** The backend's limit for a corrected product code (LineItemCorrection.product_code). */
 const MAX_PRODUCT_CODE = 64;
+/** What the backend accepts as a typed UPC: digits, optionally grouped by spaces or dashes. */
+const UPC_CHARACTERS = /^\d(?:[\d -]*\d)?$/;
+const onlyDigits = (value: string | null | undefined) => (value ?? "").replace(/\D/g, "");
 
 /**
- * The UPC a line shows. When the backend says the printed code is visibly
- * cut off (`product_code_cut_off`, e.g. a dashed UPC wrapped onto the next
- * print line), the raw value is marked and a manager or admin can enter the
- * full code through the existing line-correction path. That path keeps the
- * old value in the line's history with who changed it, revalidates the
- * invoice, and recomputes export eligibility. Nothing is completed
- * automatically, and the cut-off judgement stays on the backend; this cell
- * only shows it. Rows the backend does not flag render as before.
+ * The UPC a line shows, and the one place a manager or admin enters one.
+ *
+ * Two backend judgements make a row editable; this cell only shows them:
+ *  - `product_code_cut_off`: the printed code is visibly cut off (e.g. a dashed
+ *    UPC wrapped onto the next print line). The raw value is marked.
+ *  - `product_code_missing`: the row has no resolved UPC at all (the export
+ *    gate's own test), e.g. a Frito-Lay row that prints only a short fragment
+ *    and the supplier's ITEM number. The supplier ITEM is shown beside the
+ *    field as context; it is never a UPC and is never filled in for one.
+ *
+ * Either way the value goes through the existing audited line correction: the
+ * old value stays in the line's history with the signed-in author, the invoice
+ * is revalidated, and export eligibility is recomputed. Nothing is completed,
+ * padded or composed automatically. Rows with a complete UPC render as before.
  */
 function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
   invoiceId: string; item: LineItem; serial: number; by: string; readOnly: boolean;
 }) {
   const cutOff = item.product_code_cut_off ?? null;
+  const missing = !cutOff && (item.product_code_missing ?? false);
+  const supplierItem = missing ? item.supplier_item_id ?? null : null;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  // Validation speaks only once the reviewer has typed: an editor that has just opened,
+  // empty or holding the printed value, says nothing and only keeps Save disabled.
+  const [touched, setTouched] = useState(false);
   const correct = useCorrectLineItem(invoiceId);
   const edited = item.corrected_fields.includes("product_code");
   const value = draft.trim();
-  const problem = !value ? "Enter the full UPC."
+  // "untouched" and "unchanged" block Save silently; every other value is a message.
+  const problem = !value ? (touched ? (missing ? "Enter the UPC." : "Enter the full UPC.") : "untouched")
+    : value === (item.product_code ?? "").trim() ? "unchanged"
     : value.length > MAX_PRODUCT_CODE ? `The UPC is limited to ${MAX_PRODUCT_CODE} characters.`
-    : value === (item.product_code ?? "").trim() ? "unchanged" : null;
+    : !UPC_CHARACTERS.test(value) ? "A UPC is digits only (spaces and dashes are allowed)."
+    : supplierItem && onlyDigits(supplierItem) && onlyDigits(value) === onlyDigits(supplierItem)
+      ? "That is the supplier ITEM number, not a UPC."
+    : null;
+  const message = problem === "untouched" || problem === "unchanged" ? null : problem;
+  const open = (initial: string) => { setDraft(initial); setTouched(false); setEditing(true); };
 
   const save = () => {
     if (problem || correct.isPending) return;
@@ -317,6 +338,13 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
     );
   };
 
+  const itemContext = supplierItem ? (
+    <div className="t-meta text-muted-foreground" data-testid="supplier-item"
+         title="The supplier's own item number, shown for reference. It is not a UPC.">
+      Supplier ITEM {supplierItem}
+    </div>
+  ) : null;
+
   if (editing) {
     return (
       <div className="space-y-1" data-testid="upc-edit">
@@ -324,11 +352,12 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
           <Input
             autoFocus
             className="t-mono h-7 min-w-40 text-[0.8rem]"
-            aria-label={`Full UPC printed on this line (row ${serial})`}
+            aria-label={missing ? `UPC for this line (row ${serial})` : `Full UPC printed on this line (row ${serial})`}
+            placeholder={missing ? "Enter the UPC" : undefined}
             value={draft}
             maxLength={MAX_PRODUCT_CODE}
             disabled={correct.isPending}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => { setDraft(event.target.value); setTouched(true); }}
             onKeyDown={(event) => {
               if (event.key === "Enter") save();
               if (event.key === "Escape") setEditing(false);
@@ -342,10 +371,36 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
             <X className="size-3" />
           </Button>
         </div>
+        {itemContext}
         <div className="t-meta max-w-64 whitespace-normal">
-          {problem && problem !== "unchanged" ? <span className="text-danger" role="alert">{problem} </span> : null}
-          Type the whole code as printed on the invoice, including any part on the next line. The printed value stays in the line's history.
+          {message ? <span className="text-danger" role="alert">{message} </span> : null}
+          {missing
+            ? "Type the UPC printed for this product. The supplier ITEM number is not a UPC. The change is recorded in the line's history."
+            : "Type the whole code as printed on the invoice, including any part on the next line. The printed value stays in the line's history."}
         </div>
+      </div>
+    );
+  }
+
+  if (missing) {
+    return (
+      <div>
+        <span className="inline-flex items-center gap-1 text-warning" data-testid="upc-missing">
+          <AlertTriangle className="size-3 shrink-0" aria-hidden />
+          <span title={item.product_code
+            ? `"${item.product_code}" is not a usable UPC. Enter the UPC; export stays blocked until then.`
+            : "No UPC was read for this row. Enter the UPC; export stays blocked until then."}>
+            No UPC
+          </span>
+          {!readOnly ? (
+            <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground"
+                    aria-label={`Enter the UPC for row ${serial}`} data-testid="edit-upc"
+                    onClick={() => open("")}>
+              <Pencil />
+            </Button>
+          ) : null}
+        </span>
+        {itemContext}
       </div>
     );
   }
@@ -367,7 +422,7 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
       {!readOnly ? (
         <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground"
                 aria-label={`Enter the full UPC for row ${serial}: ${item.product_code ?? ""}`} data-testid="edit-upc"
-                onClick={() => { setDraft(item.product_code ?? ""); setEditing(true); }}>
+                onClick={() => open(item.product_code ?? "")}>
           <Pencil />
         </Button>
       ) : null}

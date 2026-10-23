@@ -454,6 +454,152 @@ describe("InvoiceDetailPage — correcting a cut-off UPC", () => {
   });
 });
 
+/**
+ * The UPC editor says nothing until the reviewer types. An editor that has just opened,
+ * empty or holding the printed value, keeps Save disabled without an error message.
+ */
+describe("InvoiceDetailPage — UPC editor messages", () => {
+  function editorInvoice(): InvoiceDetail {
+    const detail = rcmInvoice();
+    return {
+      ...detail,
+      line_items: [
+        line({ sort_order: 0, description: "ALANINU CSMCSTDST", product_code: "8-10030-51002-",
+               product_code_cut_off: "ends in a separator, so the rest of the code is missing" }),
+        line({ sort_order: 1, description: "2.09 GM VAN MINI CRE", product_code: null, product_code_missing: true,
+               supplier_item_id: "00025328" }),
+      ],
+    };
+  }
+
+  it("opens an unchanged cut-off code without an error, and reports one once it is edited", async () => {
+    const user = userEvent.setup();
+    mount("MANAGER", redactForRole(editorInvoice(), "MANAGER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(2));
+    const row = screen.getAllByTestId("line-item-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Enter the full UPC for row 1: 8-10030-51002-" }));
+    const input = within(row).getByRole("textbox", { name: "Full UPC printed on this line (row 1)" });
+    expect(input).toHaveValue("8-10030-51002-");
+    expect(within(row).queryByRole("alert")).toBeNull();                 // the printed value is not an error
+    expect(within(row).getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.type(input, "x");                                          // now an invalid edit
+    expect(within(row).getByRole("alert")).toHaveTextContent("A UPC is digits only (spaces and dashes are allowed).");
+    expect(within(row).getByRole("button", { name: "Save" })).toBeDisabled();
+    await user.clear(input);
+    expect(within(row).getByRole("alert")).toHaveTextContent("Enter the full UPC.");
+    await user.type(input, "8-10030-51002-1");
+    expect(within(row).queryByRole("alert")).toBeNull();
+    expect(within(row).getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("opens an empty missing-UPC editor with neutral help, and asks for the UPC only after typing", async () => {
+    const user = userEvent.setup();
+    mount("MANAGER", redactForRole(editorInvoice(), "MANAGER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(2));
+    const row = screen.getAllByTestId("line-item-row")[1];
+    await user.click(within(row).getByRole("button", { name: "Enter the UPC for row 2" }));
+    const input = within(row).getByRole("textbox", { name: "UPC for this line (row 2)" });
+    expect(input).toHaveValue("");
+    expect(input).toHaveAttribute("placeholder", "Enter the UPC");
+    expect(within(row).queryByRole("alert")).toBeNull();
+    expect(within(row).getByTestId("upc-edit")).toHaveTextContent("Type the UPC printed for this product.");
+    expect(within(row).getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.type(input, "1");
+    await user.clear(input);
+    expect(within(row).getByRole("alert")).toHaveTextContent("Enter the UPC.");
+    expect(within(row).getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+});
+
+/**
+ * Frito-Lay prints a short UPC fragment and its own 8-digit ITEM number, so a row can
+ * arrive with no resolved UPC. The backend marks it (product_code_missing) and blocks
+ * the export; a manager enters the UPC through the same audited correction. The
+ * supplier ITEM is context only and is refused as a UPC.
+ */
+describe("InvoiceDetailPage — entering a missing UPC", () => {
+  function fritoInvoice(): InvoiceDetail {
+    const detail = rcmInvoice();
+    return {
+      ...detail,
+      pdi_export_blocked_reason: "2 products have no resolved UPC/item code (2.09 GM VAN MINI CRE, 2.09 GM PNB CREMES).",
+      line_items: [
+        line({ sort_order: 0, description: "2.09 GM VAN MINI CRE", product_code: null, product_code_missing: true, supplier_item_id: "00025328" }),
+        line({ sort_order: 1, description: "2.09 GM PNB CREMES", product_code: null, product_code_missing: true, supplier_item_id: null }),
+        line({ sort_order: 2, description: "PEPSI 20OZ", product_code: "0-12000-00113-0" }),
+        line({ sort_order: 3, description: "MT DEW 20OZ", product_code: "0-12000-1263", product_code_cut_off: "stops partway through a dashed UPC (1-5-5-1) layout" }),
+      ],
+    };
+  }
+
+  it("shows the gap with the supplier ITEM as context and lets a manager enter the UPC", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.correctLineItem).mockClear();
+    vi.mocked(api.correctLineItem).mockResolvedValue({
+      item: { sort_order: 0, description: "2.09 GM VAN MINI CRE", product_code: "028400260921", quantity: 12, unit_price: 1.19,
+              line_total: 14.28, unit_deposit: null, corrected_fields: ["product_code"] },
+      status: "REVIEW_REQUIRED", composite_confidence: 0.9, failed_checks: 1, review_reasons: [],
+      pdi_export_allowed: false, pdi_export_blocked_reason: null,
+    } as never);
+    mount("MANAGER", redactForRole(fritoInvoice(), "MANAGER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    const [missing, missingNoItem, complete, cutOff] = screen.getAllByTestId("line-item-row");
+
+    expect(within(missing).getByTestId("upc-missing")).toHaveTextContent("No UPC");
+    expect(within(missing).getByTestId("supplier-item")).toHaveTextContent("Supplier ITEM 00025328");
+    expect(within(missingNoItem).getByTestId("upc-missing")).toBeInTheDocument();
+    expect(within(missingNoItem).queryByTestId("supplier-item")).toBeNull();
+    // A complete UPC renders as before; a cut-off code keeps its own editor.
+    expect(within(complete).queryByTestId("upc-missing")).toBeNull();
+    expect(within(complete).queryByTestId("edit-upc")).toBeNull();
+    expect(within(complete).queryByTestId("supplier-item")).toBeNull();
+    expect(within(cutOff).getByTestId("upc-cut-off")).toBeInTheDocument();
+    expect(within(cutOff).getByRole("button", { name: "Enter the full UPC for row 4: 0-12000-1263" })).toBeInTheDocument();
+
+    await user.click(within(missing).getByRole("button", { name: "Enter the UPC for row 1" }));
+    const input = within(missing).getByRole("textbox", { name: "UPC for this line (row 1)" });
+    expect(input).toHaveValue("");                                     // never pre-filled with the ITEM number
+    expect(within(missing).getByTestId("upc-edit")).toHaveTextContent("The supplier ITEM number is not a UPC");
+    const save = within(missing).getByRole("button", { name: "Save" });
+
+    await user.type(input, "0002-5328");
+    expect(within(missing).getByRole("alert")).toHaveTextContent("That is the supplier ITEM number, not a UPC.");
+    expect(save).toBeDisabled();
+    await user.clear(input);
+    await user.type(input, "RB248904");
+    expect(within(missing).getByRole("alert")).toHaveTextContent("A UPC is digits only");
+    expect(save).toBeDisabled();
+    await user.clear(input);
+    await user.type(input, "028400260921{Enter}");
+    await waitFor(() => expect(api.correctLineItem).toHaveBeenCalledWith(
+      "623b4a1c-d91d-4023-b702-d4eb8fc2683e", 0, { product_code: "028400260921", corrected_by: null }));
+    expect(api.correctLineItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a USER the gap and the ITEM context but no way to enter a UPC", async () => {
+    mount("USER", redactForRole(fritoInvoice(), "USER"));
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    expect(screen.getAllByTestId("upc-missing")).toHaveLength(2);
+    expect(screen.getByTestId("supplier-item")).toHaveTextContent("00025328");
+    expect(screen.queryByTestId("edit-upc")).toBeNull();
+  });
+
+  it("stops offering entry once the row has a resolved UPC, and marks it corrected", async () => {
+    const detail = fritoInvoice();
+    detail.line_items[0] = { ...detail.line_items[0], product_code: "028400260921", product_code_missing: false,
+                             corrected_fields: ["product_code"] };
+    mount("ADMIN", detail);
+    await waitFor(() => expect(screen.getAllByTestId("line-item-row")).toHaveLength(4));
+    const row = screen.getAllByTestId("line-item-row")[0];
+    expect(within(row).queryByTestId("upc-missing")).toBeNull();
+    expect(within(row).queryByTestId("edit-upc")).toBeNull();
+    expect(within(row).queryByTestId("supplier-item")).toBeNull();
+    expect(within(row).getByTitle("Corrected by hand; the printed value is in the line's history")).toHaveTextContent("028400260921");
+  });
+});
+
 
 /**
  * Invoice #501315 (T.J. Sheehan → PB Wolf, 38 rows) as the shape for row

@@ -983,6 +983,22 @@ class LineItemData(BaseModel):
             "automatically; export stays blocked until a person corrects it."
         ),
     )
+    product_code_missing: bool = Field(
+        default=False,
+        description=(
+            "True when this product row has no resolved UPC/item code (the same test the export "
+            "gate uses: normalize_item_code(product_code) is None). Export stays blocked until a "
+            "person enters the UPC through the audited line correction."
+        ),
+    )
+    supplier_item_id: str | None = Field(
+        default=None,
+        description=(
+            "The supplier's own item number (e.g. Frito-Lay's ITEM) read from the raw extraction, "
+            "display context only. Never a UPC, never written or exported. Null when not printed "
+            "or when the row cannot be matched to the extraction with certainty."
+        ),
+    )
     normalized_description: str | None = Field(
         default=None,
         description=("The product's normalized name: the Product Master canonical description when one exists, "
