@@ -308,6 +308,55 @@ class TestStoreBalances:
         assert (await api_client.get(f"/api/v1/inventory/stores/{other.id}/items")).json()["total"] == 0
 
 
+class TestStoreFilters:
+    async def test_products_sort_and_invoices_filter_by_search_and_receipt_state(
+        self, api_client, db_session, received,  # noqa: F811
+    ):
+        base = f"/api/v1/inventory/stores/{received.store_id}"
+
+        async def invoice_total(**params):
+            r = await api_client.get(f"{base}/invoices", params=params)
+            assert r.status_code == 200, r.text
+            return r.json()["total"]
+
+        # Before any receipt: nothing awaits approval or is received.
+        assert await invoice_total() == 1
+        assert await invoice_total(receipt="not_received") == 1
+        assert await invoice_total(receipt="awaiting") == 0
+
+        await approve(api_client, db_session, received.invoice_id, LAGER, 12)
+        await approve(api_client, db_session, received.invoice_id, ALE, 6)
+        preview = await submit(api_client, received.invoice_id)
+        assert await invoice_total(receipt="awaiting") == 1
+        assert await invoice_total(receipt="not_received") == 0
+
+        approved = await approve_submission(api_client, received.invoice_id, preview)
+        assert approved.status_code == 200, approved.text
+        assert (await invoice_total(receipt="received"), await invoice_total(receipt="awaiting")) == (1, 0)
+        assert await invoice_total(search="inv-00") == 1
+        assert await invoice_total(search="acme") == 1                       # vendor name
+        assert await invoice_total(search="nothing-like-this") == 0
+        assert (await api_client.get(f"{base}/invoices", params={"receipt": "lost"})).status_code == 422
+
+        async def order(sort):
+            r = await api_client.get(f"{base}/items", params={"sort": sort})
+            assert r.status_code == 200, r.text
+            return [i["item_code"] for i in r.json()["items"]]
+
+        # LAGER received 36 units, ALE 12. Item code order is the default.
+        assert await order("code") == [LAGER_CODE, ALE_CODE]
+        assert await order("name") == [ALE_CODE, LAGER_CODE]                  # EASTGATE before NORTHWIND
+        assert await order("received_desc") == [LAGER_CODE, ALE_CODE]
+        # Only ALE gets an opening count: a product with on-hand sorts before one without, either way.
+        r = await api_client.post(f"{base}/opening-counts", json={
+            "count_date": "2026-10-01", "reason": "shelf count", "entries": [
+                {"item_code": ALE, "quantity": 4, "description": "EASTGATE ALE 6PK"}]})
+        assert r.status_code == 201, r.text
+        assert await order("on_hand_asc") == [ALE_CODE, LAGER_CODE]
+        assert await order("on_hand_desc") == [ALE_CODE, LAGER_CODE]
+        assert (await api_client.get(f"{base}/items", params={"sort": "price"})).status_code == 422
+
+
 async def receive(api_client, invoice_id, overrides=None, reasons=None):  # noqa: F811
     """Submit (export + Retailed) and approve: the one way an invoice reaches the ledger."""
     preview = await submit(api_client, invoice_id)

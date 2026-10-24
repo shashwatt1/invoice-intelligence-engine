@@ -27,6 +27,7 @@ import type {
   HistoryRow,
   IdentityUnresolvedRow,
   InventoryItemParams,
+  StoreInvoiceParams,
   InventoryItemRow,
   InventoryMovementRow,
   InventoryOverview,
@@ -628,7 +629,7 @@ export async function listInventoryMovements(storeId: string, itemCode: string):
   return data.data!;
 }
 
-export async function listStoreInvoices(storeId: string, params: { page: number; page_size: number }): Promise<Paginated<StoreInvoiceRow>> {
+export async function listStoreInvoices(storeId: string, params: StoreInvoiceParams): Promise<Paginated<StoreInvoiceRow>> {
   const { data } = await apiClient.get<Paginated<StoreInvoiceRow>>(`/inventory/stores/${storeId}/invoices`, { params });
   return data;
 }

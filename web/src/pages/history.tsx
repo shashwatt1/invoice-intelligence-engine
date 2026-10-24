@@ -1,4 +1,4 @@
-import { ArrowDownUp, FileClock } from "lucide-react";
+import { ArrowDownUp, FileClock, Store } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody } from "@/components/ui/table";
 import { useAuth } from "@/hooks/use-auth";
-import { useInvoices } from "@/hooks/use-api";
+import { useInvoices, useStores } from "@/hooks/use-api";
 import { rowDestination } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 
@@ -59,41 +59,55 @@ export function HistoryPage() {
   const [search, setSearch] = useSearchParams();
   const [searchInput, setSearchInput] = useState(search.get("q") ?? "");
   const [statusFilter, setStatusFilter] = useState(search.get("status") ?? "ALL");
+  const [storeFilter, setStoreFilter] = useState(search.get("store") ?? "ALL");
+  const stores = useStores();
+  // Physical stores, plus any other store that already holds invoices; A–Z.
+  const storeOptions = useMemo(
+    () => (stores.data ?? [])
+      .filter((s) => s.kind !== "source_identity" || s.invoices > 0)
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    [stores.data],
+  );
+  const storeLabel = storeOptions.find((s) => s.id === storeFilter)?.label ?? "Selected store";
   const [sortKey, setSortKey] = useState(search.get("sort") ?? "newest");
   const [page, setPage] = useState(1);
 
   const query = useDebounced(searchInput.trim());
   const sort = SORT_OPTIONS.find((option) => option.value === sortKey) ?? SORT_OPTIONS[0];
 
-  useEffect(() => setPage(1), [query, statusFilter, sortKey]);
+  useEffect(() => setPage(1), [query, statusFilter, storeFilter, sortKey]);
   useEffect(() => {
     const next = new URLSearchParams();
     if (query) next.set("q", query);
     if (statusFilter !== "ALL") next.set("status", statusFilter);
+    if (storeFilter !== "ALL") next.set("store", storeFilter);
     if (sortKey !== "newest") next.set("sort", sortKey);
     setSearch(next, { replace: true });
-  }, [query, statusFilter, sortKey, setSearch]);
+  }, [query, statusFilter, storeFilter, sortKey, setSearch]);
 
   const params = useMemo(
     () => ({
       search: query || undefined,
       status: statusFilter === "ALL" ? undefined : (statusFilter as DocumentStatus),
+      store_id: storeFilter === "ALL" ? undefined : storeFilter,
       sort_by: sort.sortBy,
       descending: sort.descending,
       page,
       page_size: PAGE_SIZE,
     }),
-    [query, statusFilter, sort, page],
+    [query, statusFilter, storeFilter, sort, page],
   );
 
   const { data, isPending, isError, error, refetch, isPlaceholderData } = useInvoices(params);
   const chips = [
     ...(query ? [{ key: "q", label: `“${query}”`, onRemove: () => setSearchInput("") }] : []),
     ...(statusFilter !== "ALL" ? [{ key: "status", label: STATUS_FILTERS.find((s) => s.value === statusFilter)?.label ?? statusFilter, onRemove: () => setStatusFilter("ALL") }] : []),
+    ...(storeFilter !== "ALL" ? [{ key: "store", label: storeLabel, onRemove: () => setStoreFilter("ALL") }] : []),
   ];
   const clearAll = () => {
     setSearchInput("");
     setStatusFilter("ALL");
+    setStoreFilter("ALL");
   };
 
   return (
@@ -112,6 +126,16 @@ export function HistoryPage() {
           </SelectTrigger>
           <SelectContent>
             {STATUS_FILTERS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={storeFilter} onValueChange={setStoreFilter}>
+          <SelectTrigger className={cn("h-8 w-52 text-[0.8rem]", storeFilter !== "ALL" && "border-primary/40 bg-accent/40")} aria-label="Store filter">
+            <Store className="size-3.5 text-muted-foreground" />
+            <SelectValue placeholder="All stores" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All stores</SelectItem>
+            {storeOptions.map((s) => <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={sortKey} onValueChange={setSortKey}>
@@ -134,7 +158,7 @@ export function HistoryPage() {
         <EmptyState
           icon={FileClock}
           title={chips.length ? "No invoices match" : "No invoices yet"}
-          description={chips.length ? "Clear the search or the status filter." : "Process the first invoice and it will appear here."}
+          description={chips.length ? "Clear the search or the filters." : "Process the first invoice and it will appear here."}
           action={chips.length ? <Button variant="outline" size="sm" onClick={clearAll}>Clear filters</Button> : <Button asChild><Link to="/process">Process an invoice</Link></Button>}
         />
       ) : (

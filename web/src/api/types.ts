@@ -988,6 +988,8 @@ export interface DashboardData {
 export interface InvoiceListParams {
   search?: string;
   status?: DocumentStatus;
+  /** The store shown on the row: the invoice's, else the document's. */
+  store_id?: string;
   sort_by?: string;
   descending?: boolean;
   page?: number;
@@ -1251,9 +1253,22 @@ export interface InventoryItemRow {
   last_movement: string | null;
 }
 
+export type InventoryItemSort = "code" | "name" | "on_hand_desc" | "on_hand_asc" | "received_desc" | "recent";
+
 export interface InventoryItemParams {
   search?: string;
   status?: InventoryItemStatus;
+  sort?: InventoryItemSort;
+  page: number;
+  page_size: number;
+}
+
+/** awaiting: submitted, waiting for approval. received: posted. not_received: neither (never submitted, rejected, withdrawn or reversed). */
+export type StoreInvoiceReceiptFilter = "awaiting" | "received" | "not_received";
+
+export interface StoreInvoiceParams {
+  search?: string;
+  receipt?: StoreInvoiceReceiptFilter;
   page: number;
   page_size: number;
 }

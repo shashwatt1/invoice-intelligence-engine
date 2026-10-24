@@ -237,6 +237,32 @@ class TestHistoryAndDashboard:
         ).json()
         assert paged["total"] == 2 and len(paged["items"]) == 1
 
+    async def test_history_filters_by_store(self, api_client, app):
+        from app.api.v1.invoices import get_pipeline
+
+        await process_file(api_client, filename="acme-fixture-store.pdf")             # AF Fixture Store
+        rcm = InvoiceProcessingPipeline(structuring_service=FakeStructuring(
+            extracted_invoice(vendor={"name": "Globex GmbH", "tax_id": "DE999"}, invoice_number="GLX-77")))
+        app.dependency_overrides[get_pipeline] = lambda: rcm
+        await process_file(api_client, content=build_pdf(["Globex invoice " + "pad " * 300]),
+                           filename="globex-rcm.pdf", store="86357232")                # LG - RCM
+
+        def numbers(body):
+            return {row["invoice_number"] for row in body["items"]}
+
+        at_rcm = (await api_client.get("/api/v1/invoices", params={"store_id": str(store_id("86357232"))})).json()
+        assert (at_rcm["total"], numbers(at_rcm)) == (1, {"GLX-77"})
+        assert at_rcm["items"][0]["store"]["label"] == "LG - RCM"
+        at_fixture = (await api_client.get("/api/v1/invoices", params={"store_id": str(store_id(STORE))})).json()
+        assert (at_fixture["total"], numbers(at_fixture)) == (1, {"INV-001"})
+        # Combined with the other filters, and a store with nothing is simply empty.
+        combined = (await api_client.get("/api/v1/invoices", params={
+            "store_id": str(store_id("86357232")), "search": "acme"})).json()
+        assert combined["total"] == 0
+        empty = (await api_client.get("/api/v1/invoices", params={"store_id": str(store_id("47708760"))})).json()
+        assert empty["total"] == 0
+        assert (await api_client.get("/api/v1/invoices", params={"store_id": "not-a-uuid"})).status_code == 422
+
     async def test_dashboard_summary_aggregates(self, api_client, app):
         from app.api.v1.invoices import get_pipeline
 

@@ -6,7 +6,7 @@
  * state. That single hook is what drives the live processing timeline.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiClient } from "@/api/client";
 
@@ -89,6 +89,7 @@ import type {
   CommercialReviewRequest,
   DuplicateDecision,
   InventoryItemParams,
+  StoreInvoiceParams,
   InvoiceDateCorrection,
   InvoiceListParams,
   InvoiceTotalsCorrection,
@@ -762,6 +763,20 @@ export function useInventoryOverview(storeId: string | null) {
   });
 }
 
+/**
+ * One overview per store, for the store cards. Same query key as useInventoryOverview, so
+ * opening a store reuses what its card already loaded. Each request is checked against the
+ * account's grant on the server, like every inventory route.
+ */
+export function useInventoryOverviews(storeIds: string[]) {
+  return useQueries({
+    queries: storeIds.map((storeId) => ({
+      queryKey: ["inventory", storeId, "overview"],
+      queryFn: () => getInventoryOverview(storeId),
+    })),
+  });
+}
+
 export function useInventoryItems(storeId: string | null, params: InventoryItemParams) {
   return useQuery({
     queryKey: ["inventory", storeId, "items", params],
@@ -778,7 +793,7 @@ export function useInventoryMovements(storeId: string | null, itemCode: string |
   });
 }
 
-export function useStoreInvoices(storeId: string | null, params: { page: number; page_size: number }) {
+export function useStoreInvoices(storeId: string | null, params: StoreInvoiceParams) {
   return useQuery({
     queryKey: ["inventory", storeId, "invoices", params],
     queryFn: () => listStoreInvoices(storeId!, params),

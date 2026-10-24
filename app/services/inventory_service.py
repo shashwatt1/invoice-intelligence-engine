@@ -45,7 +45,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import exists, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -562,15 +562,40 @@ async def last_recorded(session: AsyncSession, store_id: uuid.UUID) -> datetime 
     )).scalar()
 
 
-async def store_invoices(session: AsyncSession, store_id: uuid.UUID, *, page: int, page_size: int):
-    """The store's invoices, newest first, with each one's receipt (the active one, else the latest)."""
+RECEIPT_FILTER_AWAITING = "awaiting"          # a submission waits for approval
+RECEIPT_FILTER_RECEIVED = "received"          # a posted receipt
+RECEIPT_FILTER_NOT_RECEIVED = "not_received"  # neither: never submitted, or rejected, withdrawn or reversed
+RECEIPT_FILTERS = (RECEIPT_FILTER_AWAITING, RECEIPT_FILTER_RECEIVED, RECEIPT_FILTER_NOT_RECEIVED)
+
+
+def _receipt_in(statuses) -> Any:
+    return exists().where(InventoryReceipt.invoice_id == Invoice.id, InventoryReceipt.status.in_(statuses))
+
+
+async def store_invoices(session: AsyncSession, store_id: uuid.UUID, *, page: int, page_size: int,
+                         search: str | None = None, receipt: str | None = None):
+    """
+    The store's invoices, newest first, with each one's receipt (the active one, else the latest).
+    `search` matches the invoice number or vendor name; `receipt` is one of RECEIPT_FILTERS.
+    """
+    conditions = [Invoice.store_id == store_id]
+    term = (search or "").strip()
+    if term:
+        pattern = f"%{term}%"
+        conditions.append(or_(Invoice.invoice_number.ilike(pattern), Invoice.vendor_name.ilike(pattern)))
+    if receipt == RECEIPT_FILTER_AWAITING:
+        conditions.append(_receipt_in([RECEIPT_SUBMITTED]))
+    elif receipt == RECEIPT_FILTER_RECEIVED:
+        conditions.append(_receipt_in([RECEIPT_POSTED]))
+    elif receipt == RECEIPT_FILTER_NOT_RECEIVED:
+        conditions.append(~_receipt_in(RECEIPT_ACTIVE))
     total = (await session.execute(
-        select(func.count()).select_from(Invoice).where(Invoice.store_id == store_id)
+        select(func.count()).select_from(Invoice).where(*conditions)
     )).scalar() or 0
     invoices = (await session.execute(
         select(Invoice).options(selectinload(Invoice.items), selectinload(Invoice.vendor),
                                 selectinload(Invoice.document))
-        .where(Invoice.store_id == store_id)
+        .where(*conditions)
         .order_by(Invoice.invoice_date.desc().nulls_last(), Invoice.created_at.desc())
         .offset((page - 1) * page_size).limit(page_size)
     )).scalars().all()

@@ -136,6 +136,7 @@ class DocumentRepository:
         page: int = 1,
         page_size: int = 20,
         uploaded_by_user_id: uuid.UUID | None = None,
+        store_id: uuid.UUID | None = None,
     ) -> tuple[list[tuple[Document, Invoice | None]], int]:
         """
         Processing history: documents LEFT JOINed to their invoice, so
@@ -144,6 +145,10 @@ class DocumentRepository:
         `uploaded_by_user_id`, when given, restricts the results to that
         user's own uploads — the USER-role visibility boundary. Omitted
         entirely for MANAGER/ADMIN, who see every document.
+
+        `store_id` narrows to one store: the invoice's store, or the
+        document's when no invoice exists yet (failed or waiting runs) —
+        the same store the list shows on each row. A filter, not access.
 
         Invoice.items is eager-loaded (bounded by page_size) so a caller
         can compute per-row mapping/EDI status without a lazy load per
@@ -172,6 +177,8 @@ class DocumentRepository:
             query = query.where(Document.status != DocumentStatus.BINNED)
         if uploaded_by_user_id is not None:
             query = query.where(Document.uploaded_by_user_id == uploaded_by_user_id)
+        if store_id is not None:
+            query = query.where(func.coalesce(Invoice.store_id, Document.store_id) == store_id)
 
         count_query = select(func.count()).select_from(query.subquery())
         total = (await self._session.execute(count_query)).scalar_one()

@@ -163,16 +163,52 @@ describe("Inventory page", () => {
     expect(listInventoryStores).not.toHaveBeenCalled();
   });
 
-  it("offers only the stores the server says this account may use, never the whole directory", async () => {
+  it("shows a card for each store the server says this account may use, never the whole directory", async () => {
     const other = store("other", "AF Other Street", "physical");
     listStores.mockResolvedValue([MIDLER, other, SOURCE]);
-    const user = userEvent.setup();
     renderPage("/inventory");
-    await user.click(await screen.findByRole("combobox", { name: "Store" }));
-    const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
-    expect(options).toEqual(["AF NV Midler"]);
+    const cards = await screen.findAllByTestId("store-card");
+    expect(cards.map((c) => within(c).getByText(/AF/).textContent)).toEqual(["AF NV Midler"]);
+    expect(await within(cards[0]).findByText("1 awaiting approval")).toBeInTheDocument();
+    expect(within(cards[0]).getByText("Need opening count")).toBeInTheDocument();
     expect(listInventoryStores).toHaveBeenCalled();
     expect(listStores).not.toHaveBeenCalled();
+    expect(getInventoryOverview.mock.calls.map((c) => c[0])).toEqual(["midler"]);
+  });
+
+  it("opens a store from its card, and goes back to all stores", async () => {
+    const user = userEvent.setup();
+    renderPage("/inventory");
+    await user.click(await screen.findByRole("button", { name: "Open AF NV Midler inventory" }));
+    expect(await screen.findAllByTestId("inventory-row")).toHaveLength(2);
+    expect(within(screen.getByTestId("store-header")).getByText("AF NV Midler")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /All stores/ }));
+    expect(await screen.findByTestId("store-grid")).toBeInTheDocument();
+  });
+
+  it("filters the store cards by search and by what needs attention", async () => {
+    const quiet = store("quiet", "PB Wolf", "physical");
+    listInventoryStores.mockResolvedValue([MIDLER, quiet]);
+    getInventoryOverview.mockImplementation(async (id: string) => ({
+      store: id === "quiet" ? quiet : MIDLER, tracked_products: id === "quiet" ? 0 : 2, opening_required: id === "quiet" ? 0 : 1,
+      out_of_stock: 0, in_stock: id === "quiet" ? 0 : 1, last_recorded_at: null, recent_receipts: [],
+      pending_approvals: id === "quiet" ? 0 : 1,
+    }));
+    const user = userEvent.setup();
+    renderPage("/inventory");
+    expect(await screen.findAllByTestId("store-card")).toHaveLength(2);
+    await user.click(screen.getByRole("combobox", { name: "Show stores" }));
+    await user.click(await screen.findByRole("option", { name: "Awaiting approval" }));
+    await waitFor(() => expect(screen.getAllByTestId("store-card")).toHaveLength(1));
+    expect(screen.getByText("AF NV Midler")).toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Show stores" }));
+    await user.click(await screen.findByRole("option", { name: "No activity yet" }));
+    await waitFor(() => expect(screen.getByText("PB Wolf")).toBeInTheDocument());
+    expect(screen.getAllByTestId("store-card")).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Clear all" }));
+    await user.type(screen.getByRole("textbox", { name: "Search store name or address" }), "midler");
+    await waitFor(() => expect(screen.getAllByTestId("store-card")).toHaveLength(1));
+    expect(screen.getByText("AF NV Midler")).toBeInTheDocument();
   });
 
   it("says no stores are assigned when the account has no grants, and loads no inventory", async () => {
@@ -185,14 +221,37 @@ describe("Inventory page", () => {
 
   it("does not open a store the account cannot use, even when the URL names it", async () => {
     renderPage("/inventory?store=other");
-    expect(await screen.findByText("Choose a store")).toBeInTheDocument();
-    expect(getInventoryOverview).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("store-grid")).toBeInTheDocument();
+    expect(screen.queryByTestId("store-header")).not.toBeInTheDocument();
+    await waitFor(() => expect(getInventoryOverview).toHaveBeenCalled());
+    expect(getInventoryOverview.mock.calls.map((c) => c[0])).toEqual(["midler"]);
+    expect(listInventoryItems).not.toHaveBeenCalled();
   });
 
   it("never treats a source identity as a store, even when the URL names one", async () => {
     renderPage("/inventory?store=src-47708760");
-    expect(await screen.findByText("Choose a store")).toBeInTheDocument();
-    expect(getInventoryOverview).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("store-grid")).toBeInTheDocument();
+    await waitFor(() => expect(getInventoryOverview).toHaveBeenCalled());
+    expect(getInventoryOverview.mock.calls.map((c) => c[0])).toEqual(["midler"]);
+    expect(listInventoryItems).not.toHaveBeenCalled();
+  });
+
+  it("sorts products on the server, and filters invoices by search and receipt state", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findAllByTestId("inventory-row");
+    await user.click(screen.getByRole("combobox", { name: "Sort products" }));
+    await user.click(await screen.findByRole("option", { name: "Lowest on hand" }));
+    await waitFor(() => expect(listInventoryItems).toHaveBeenLastCalledWith("midler", expect.objectContaining({ sort: "on_hand_asc", page: 1 })));
+
+    await user.click(screen.getByRole("tab", { name: /invoices/i }));
+    await screen.findByTestId("store-invoice-row");
+    await user.click(screen.getByRole("combobox", { name: "Receipt state" }));
+    await user.click(await screen.findByRole("option", { name: "Awaiting approval" }));
+    await waitFor(() => expect(listStoreInvoices).toHaveBeenLastCalledWith("midler", expect.objectContaining({ receipt: "awaiting" })));
+    await user.type(screen.getByRole("textbox", { name: "Search invoice number or vendor" }), "5086");
+    await waitFor(() => expect(listStoreInvoices).toHaveBeenLastCalledWith(
+      "midler", expect.objectContaining({ search: "5086", receipt: "awaiting", page: 1 })));
   });
 
   it("shows no on-hand figure until an opening count exists, and marks on-hand provisional", async () => {

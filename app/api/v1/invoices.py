@@ -297,12 +297,14 @@ async def process_invoice(
     description=(
         "Documents with their extracted invoice (failed documents included). "
         "Supports search over filename / invoice number / vendor, status "
-        "filtering, sorting, and pagination."
+        "and store filtering, sorting, and pagination. `store_id` matches the "
+        "store shown on the row (the invoice's, else the document's)."
     ),
 )
 async def list_invoices(
     search: str | None = Query(default=None, max_length=200),
     document_status: DocumentStatus | None = Query(default=None, alias="status"),
+    store_id: uuid.UUID | None = Query(default=None),
     sort_by: str = Query(default="created_at"),
     descending: bool = Query(default=True),
     page: int = Query(default=1, ge=1),
@@ -319,6 +321,7 @@ async def list_invoices(
         page=page,
         page_size=page_size,
         uploaded_by_user_id=own_only,
+        store_id=store_id,
     )
     stores = await StoreRepository(db).labels(
         [i.store_id if i else d.store_id for d, i in rows])

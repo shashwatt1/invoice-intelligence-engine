@@ -150,6 +150,7 @@ async def items(
     store_id: uuid.UUID,
     search: str | None = Query(default=None, max_length=64),
     status: Literal["OPENING_STOCK_REQUIRED", "OUT_OF_STOCK", "IN_STOCK"] | None = Query(default=None),
+    sort: Literal["code", "name", "on_hand_desc", "on_hand_asc", "received_desc", "recent"] = Query(default="code"),
     page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db), user: User = Depends(require_manager),
 ) -> PaginatedResponse[InventoryItemRow]:
@@ -160,9 +161,25 @@ async def items(
         rows = [b for b in rows if term in b.item_code or term in (b.description or "").lower()]
     if status:
         rows = [b for b in rows if b.status == status]
+    rows = _sorted_items(rows, sort)
     start = (page - 1) * page_size
     return PaginatedResponse(items=[InventoryItemRow(**vars(b)) for b in rows[start:start + page_size]],
                              total=len(rows), page=page, page_size=page_size)
+
+
+def _sorted_items(rows: list, sort: str) -> list:
+    """Balances arrive sorted by item code. Products without an on-hand figure (no opening
+    count yet) sort after those with one, either way; ties keep item-code order."""
+    if sort == "name":
+        return sorted(rows, key=lambda b: ((b.description or "").lower() or "\uffff", b.item_code))
+    if sort in ("on_hand_desc", "on_hand_asc"):
+        sign = -1 if sort == "on_hand_desc" else 1
+        return sorted(rows, key=lambda b: (b.on_hand is None, sign * (b.on_hand or 0)))
+    if sort == "received_desc":
+        return sorted(rows, key=lambda b: -b.received)
+    if sort == "recent":
+        return sorted(rows, key=lambda b: (b.last_movement is None, -(b.last_movement.toordinal() if b.last_movement else 0)))
+    return rows
 
 
 @router.get("/inventory/stores/{store_id}/items/{item_code}/movements",
@@ -186,10 +203,14 @@ async def movements(store_id: uuid.UUID, item_code: str, db: AsyncSession = Depe
 @router.get("/inventory/stores/{store_id}/invoices", response_model=PaginatedResponse[StoreInvoiceRow],
             summary="A physical store's invoices and their receipts")
 async def invoices(store_id: uuid.UUID, page: int = Query(default=1, ge=1),
-                   page_size: int = Query(default=25, ge=1, le=100), db: AsyncSession = Depends(get_db),
+                   page_size: int = Query(default=25, ge=1, le=100),
+                   search: str | None = Query(default=None, max_length=64),
+                   receipt: Literal["awaiting", "received", "not_received"] | None = Query(default=None),
+                   db: AsyncSession = Depends(get_db),
                    user: User = Depends(require_manager)) -> PaginatedResponse[StoreInvoiceRow]:
     store = await store_access.ensure_store_access(db, user, store_id)
-    rows, receipts, total = await inventory.store_invoices(db, store.id, page=page, page_size=page_size)
+    rows, receipts, total = await inventory.store_invoices(db, store.id, page=page, page_size=page_size,
+                                                          search=search, receipt=receipt)
     return PaginatedResponse(items=[
         StoreInvoiceRow(
             invoice_id=i.id, invoice_number=i.invoice_number, invoice_date=i.invoice_date,

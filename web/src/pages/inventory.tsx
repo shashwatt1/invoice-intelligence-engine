@@ -1,25 +1,34 @@
-import { Boxes, ClipboardCheck, ClipboardList, PackageCheck } from "lucide-react";
+import { ArrowDownUp, ArrowLeft, Boxes, ChevronRight, ClipboardCheck, ClipboardList, PackageCheck, Store } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
-import type { InventoryItemRow, InventoryItemStatus, StoreInvoiceRow } from "@/api/types";
+import type {
+  InventoryItemRow,
+  InventoryItemSort,
+  InventoryItemStatus,
+  InventoryOverview,
+  StoreInvoiceReceiptFilter,
+  StoreInvoiceRow,
+  StoreRef,
+} from "@/api/types";
 import { MovementHistory } from "@/components/inventory/movement-history";
 import { OpeningCountDialog } from "@/components/inventory/opening-count-dialog";
 import { ReceiptDialog } from "@/components/inventory/receipt-dialog";
 import { PageHeader } from "@/components/layout/page-header";
-import { FilterBar } from "@/components/shared/filter-bar";
+import { ActiveFilters, FilterBar, SearchInput } from "@/components/shared/filter-bar";
 import { MetricStrip, MetricStripSkeleton } from "@/components/shared/metric-strip";
 import { Pagination } from "@/components/shared/pagination";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { StatusPill } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   useInventoryItems,
   useInventoryOverview,
+  useInventoryOverviews,
   useInventoryStatus,
   usePendingApprovals,
   useStoreInvoices,
@@ -27,6 +36,7 @@ import {
 } from "@/hooks/use-api";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { formatUnits, ITEM_STATUS, RECEIPT_STATUS, receivableReason, staleReason } from "@/lib/inventory";
+import { cn } from "@/lib/utils";
 
 const ITEM_PAGE_SIZE = 50;
 
@@ -59,9 +69,13 @@ export function InventoryPage() {
   const physical = useMemo(() => stores.data ?? [], [stores.data]);
   const [params, setParams] = useSearchParams();
   const requested = params.get("store");
-  const storeId = physical.some((s) => s.id === requested) ? requested : null;
-  const store = physical.find((s) => s.id === storeId) ?? null;
-  const chooseStore = (id: string) => setParams((prev) => { const next = new URLSearchParams(prev); next.set("store", id); return next; });
+  const store = physical.find((s) => s.id === requested) ?? null;
+  const chooseStore = (id: string | null) => setParams((prev) => {
+    const next = new URLSearchParams(prev);
+    if (id) next.set("store", id); else next.delete("store");
+    next.delete("tab");
+    return next;
+  });
 
   if (status.isLoading || (status.data?.enabled && stores.isLoading)) return <><Header /><TableSkeleton rows={6} /></>;
   if (status.isError) return <><Header /><ErrorState error={status.error} onRetry={() => void status.refetch()} /></>;
@@ -76,26 +90,30 @@ export function InventoryPage() {
   }
   if (stores.isError) return <><Header /><ErrorState error={stores.error} onRetry={() => void stores.refetch()} /></>;
 
+  if (!physical.length) {
+    return (
+      <>
+        <Header />
+        <EmptyState icon={Boxes} title="No stores assigned to you"
+                    description="Inventory access is granted per store. Ask an administrator to grant you access to a store." />
+      </>
+    );
+  }
+  if (!store) return <><Header /><StoreGrid stores={physical} onOpen={chooseStore} /></>;
   return (
     <>
       <Header />
-      <FilterBar>
-        <Select value={storeId ?? ""} onValueChange={chooseStore}>
-          <SelectTrigger className="w-[280px]" aria-label="Store"><SelectValue placeholder="Choose a physical store" /></SelectTrigger>
-          <SelectContent>
-            {physical.map((s) => <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </FilterBar>
-      {!physical.length ? (
-        <EmptyState icon={Boxes} title="No stores assigned to you"
-                    description="Inventory access is granted per store. Ask an administrator to grant you access to a store." />
-      ) : !store ? (
-        <EmptyState icon={Boxes} title="Choose a store" description="Inventory is kept per physical store." />
-      ) : (
-        <StoreInventory key={store.id} storeId={store.id} storeLabel={store.label}
-                        initialTab={TABS.find((t) => t === params.get("tab")) ?? "products"} />
-      )}
+      <div className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-1" data-testid="store-header">
+        <Button variant="ghost" size="sm" onClick={() => chooseStore(null)} className="-ml-2">
+          <ArrowLeft className="size-4" aria-hidden /> All stores
+        </Button>
+        <div className="min-w-0">
+          <h2 className="text-[1.05rem] font-semibold tracking-tight">{store.label}</h2>
+          {store.address ? <div className="t-meta">{store.address}</div> : null}
+        </div>
+      </div>
+      <StoreInventory key={store.id} storeId={store.id} storeLabel={store.label}
+                      initialTab={TABS.find((t) => t === params.get("tab")) ?? "products"} />
     </>
   );
 }
@@ -106,6 +124,160 @@ function Header() {
       title="Inventory"
       description="Per physical store, in sellable units: audited opening counts and approved receipts. Sales are not imported yet."
     />
+  );
+}
+
+const STORE_SHOW = [
+  { value: "all", label: "All stores" },
+  { value: "awaiting", label: "Awaiting approval" },
+  { value: "opening", label: "Opening count needed" },
+  { value: "no_activity", label: "No activity yet" },
+] as const;
+type StoreShow = (typeof STORE_SHOW)[number]["value"];
+
+const STORE_SORT = [
+  { value: "name", label: "Name A–Z" },
+  { value: "awaiting", label: "Most awaiting approval" },
+  { value: "products", label: "Most products" },
+  { value: "recent", label: "Recently received" },
+] as const;
+type StoreSort = (typeof STORE_SORT)[number]["value"];
+
+function lastReceipt(o: InventoryOverview | undefined): string | null {
+  return o?.recent_receipts[0]?.received_on ?? null;
+}
+
+function matchesShow(show: StoreShow, o: InventoryOverview | undefined): boolean {
+  if (show === "all") return true;
+  if (!o) return false;                      // figures not loaded: shown only under "All stores"
+  if (show === "awaiting") return o.pending_approvals > 0;
+  if (show === "opening") return o.opening_required > 0;
+  return o.tracked_products === 0 && o.pending_approvals === 0;
+}
+
+/**
+ * One card per store this account holds a grant for (the server's list), each with the
+ * store's figures at a glance. Opening a card opens that store's inventory. Filters and
+ * sort live in the URL, so going back to "All stores" keeps them.
+ */
+function StoreGrid({ stores, onOpen }: { stores: StoreRef[]; onOpen: (id: string) => void }) {
+  const [params, setParams] = useSearchParams();
+  const search = params.get("q") ?? "";
+  const show = (STORE_SHOW.find((o) => o.value === params.get("show"))?.value ?? "all") as StoreShow;
+  const sort = (STORE_SORT.find((o) => o.value === params.get("sort"))?.value ?? "name") as StoreSort;
+  const setParam = (key: string, value: string, fallback: string) => setParams((prev) => {
+    const next = new URLSearchParams(prev);
+    if (value && value !== fallback) next.set(key, value); else next.delete(key);
+    return next;
+  }, { replace: true });
+
+  const overviews = useInventoryOverviews(stores.map((s) => s.id));
+  const byId = new Map(stores.map((s, i) => [s.id, overviews[i]]));
+  const term = search.trim().toLowerCase();
+  const visible = stores
+    .filter((s) => !term || s.label.toLowerCase().includes(term) || (s.address ?? "").toLowerCase().includes(term))
+    .filter((s) => matchesShow(show, byId.get(s.id)?.data))
+    .sort((a, b) => {
+      const oa = byId.get(a.id)?.data;
+      const ob = byId.get(b.id)?.data;
+      const byName = a.label.localeCompare(b.label);
+      if (sort === "awaiting") return (ob?.pending_approvals ?? -1) - (oa?.pending_approvals ?? -1) || byName;
+      if (sort === "products") return (ob?.tracked_products ?? -1) - (oa?.tracked_products ?? -1) || byName;
+      if (sort === "recent") return (lastReceipt(ob) ?? "").localeCompare(lastReceipt(oa) ?? "") || byName;
+      return byName;
+    });
+  const chips = [
+    ...(term ? [{ key: "q", label: `“${search.trim()}”`, onRemove: () => setParam("q", "", "") }] : []),
+    ...(show !== "all" ? [{ key: "show", label: STORE_SHOW.find((o) => o.value === show)!.label, onRemove: () => setParam("show", "all", "all") }] : []),
+  ];
+
+  return (
+    <>
+      <FilterBar summary={`${visible.length} of ${stores.length} store${stores.length === 1 ? "" : "s"}`}>
+        <SearchInput value={search} onChange={(v) => setParam("q", v, "")} placeholder="Search store name or address"
+                     className="w-72 max-md:w-full" />
+        <Select value={show} onValueChange={(v) => setParam("show", v, "all")}>
+          <SelectTrigger className={cn("h-8 w-52 text-[0.8rem]", show !== "all" && "border-primary/40 bg-accent/40")} aria-label="Show stores">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {STORE_SHOW.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={sort} onValueChange={(v) => setParam("sort", v, "name")}>
+          <SelectTrigger className="h-8 w-52 text-[0.8rem]" aria-label="Sort stores">
+            <ArrowDownUp className="size-3.5 text-muted-foreground" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {STORE_SORT.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <ActiveFilters chips={chips} onClear={() => setParams((prev) => {
+          const next = new URLSearchParams(prev); next.delete("q"); next.delete("show"); return next;
+        }, { replace: true })} />
+      </FilterBar>
+      {!visible.length ? (
+        <EmptyState icon={Store} title="No store matches" description="Clear the search or the filter." />
+      ) : (
+        <div className="grid grid-cols-3 gap-4 max-xl:grid-cols-2 max-md:grid-cols-1" data-testid="store-grid">
+          {visible.map((s) => {
+            const q = byId.get(s.id);
+            return <StoreCard key={s.id} store={s} overview={q?.data} loading={Boolean(q?.isLoading)}
+                              failed={Boolean(q?.isError)} onOpen={() => onOpen(s.id)} />;
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+function StoreCard({ store, overview: o, loading, failed, onOpen }: {
+  store: StoreRef; overview: InventoryOverview | undefined; loading: boolean; failed: boolean; onOpen: () => void;
+}) {
+  const received = lastReceipt(o);
+  return (
+    <button type="button" onClick={onOpen} data-testid="store-card" aria-label={`Open ${store.label} inventory`}
+            className="surface surface-hover group flex flex-col gap-4 p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-[0.98rem] font-semibold tracking-tight">{store.label}</div>
+          <div className="t-meta mt-0.5 truncate">{store.address ?? "No address recorded"}</div>
+        </div>
+        <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
+      </div>
+      {loading ? (
+        <Skeleton className="h-12 w-full" />
+      ) : failed || !o ? (
+        <p className="t-meta">Figures could not be loaded. Open the store to retry.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-2 border-y border-border py-3">
+            <CardStat label="Products" value={o.tracked_products} />
+            <CardStat label="In stock" value={o.in_stock} />
+            <CardStat label="Need opening count" value={o.opening_required} warn={o.opening_required > 0} />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {o.pending_approvals ? (
+              <StatusPill size="xs" tone="warning" label={`${o.pending_approvals} awaiting approval`}
+                          meaning="Receipts submitted by marking invoices Retailed; no stock moves until approved." />
+            ) : (
+              <StatusPill size="xs" tone="neutral" label="Nothing awaiting approval" />
+            )}
+            <span className="t-meta">{received ? `Last receipt ${formatDate(received)}` : "No receipts yet"}</span>
+          </div>
+        </>
+      )}
+    </button>
+  );
+}
+
+function CardStat({ label, value, warn = false }: { label: string; value: number; warn?: boolean }) {
+  return (
+    <div>
+      <div className={cn("text-[1.15rem] font-semibold tabular-nums", warn && "text-warning")}>{value}</div>
+      <div className="t-meta">{label}</div>
+    </div>
   );
 }
 
@@ -164,28 +336,60 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
   );
 }
 
+const ITEM_SORTS: { value: InventoryItemSort; label: string }[] = [
+  { value: "code", label: "Item code" },
+  { value: "name", label: "Name A–Z" },
+  { value: "on_hand_asc", label: "Lowest on hand" },
+  { value: "on_hand_desc", label: "Highest on hand" },
+  { value: "received_desc", label: "Most received" },
+  { value: "recent", label: "Latest movement" },
+];
+
+function useDebounced<T>(value: T, delayMs = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
 function ProductsTab({ storeId }: { storeId: string }) {
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const search = useDebounced(searchInput.trim());
   const [status, setStatus] = useState<"ALL" | InventoryItemStatus>("ALL");
+  const [sort, setSort] = useState<InventoryItemSort>("code");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<InventoryItemRow | null>(null);
-  useEffect(() => setPage(1), [search, status]);
+  useEffect(() => setPage(1), [search, status, sort]);
   const params = useMemo(() => ({
-    search: search.trim() || undefined, status: status === "ALL" ? undefined : status, page, page_size: ITEM_PAGE_SIZE,
-  }), [search, status, page]);
+    search: search || undefined, status: status === "ALL" ? undefined : status,
+    sort: sort === "code" ? undefined : sort, page, page_size: ITEM_PAGE_SIZE,
+  }), [search, status, sort, page]);
   const query = useInventoryItems(storeId, params);
 
   return (
     <div className="space-y-3">
-      <FilterBar>
-        <Input placeholder="Search product or item code" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-[300px]" />
+      <FilterBar summary={query.data ? `${query.data.total} product${query.data.total === 1 ? "" : "s"}` : null}>
+        <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search product or item code" className="w-72 max-md:w-full" />
         <Select value={status} onValueChange={(v) => setStatus(v as typeof status)}>
-          <SelectTrigger className="w-[220px]" aria-label="Stock status"><SelectValue /></SelectTrigger>
+          <SelectTrigger className={cn("h-8 w-52 text-[0.8rem]", status !== "ALL" && "border-primary/40 bg-accent/40")} aria-label="Stock status">
+            <SelectValue />
+          </SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All products</SelectItem>
             <SelectItem value="OPENING_STOCK_REQUIRED">Opening stock required</SelectItem>
             <SelectItem value="OUT_OF_STOCK">Out of stock</SelectItem>
             <SelectItem value="IN_STOCK">In stock</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={sort} onValueChange={(v) => setSort(v as InventoryItemSort)}>
+          <SelectTrigger className="h-8 w-48 text-[0.8rem]" aria-label="Sort products">
+            <ArrowDownUp className="size-3.5 text-muted-foreground" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ITEM_SORTS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
           </SelectContent>
         </Select>
       </FilterBar>
@@ -251,16 +455,57 @@ function ProductsTab({ storeId }: { storeId: string }) {
   );
 }
 
+const RECEIPT_FILTERS: { value: "ALL" | StoreInvoiceReceiptFilter; label: string }[] = [
+  { value: "ALL", label: "All invoices" },
+  { value: "awaiting", label: "Awaiting approval" },
+  { value: "received", label: "Received" },
+  { value: "not_received", label: "Not received" },
+];
+
 function InvoicesTab({ storeId }: { storeId: string }) {
   const [page, setPage] = useState(1);
   const [receiving, setReceiving] = useState<string | null>(null);
-  const query = useStoreInvoices(storeId, { page, page_size: INVOICE_PAGE_SIZE });
+  const [searchInput, setSearchInput] = useState("");
+  const search = useDebounced(searchInput.trim());
+  const [receipt, setReceipt] = useState<"ALL" | StoreInvoiceReceiptFilter>("ALL");
+  useEffect(() => setPage(1), [search, receipt]);
+  const query = useStoreInvoices(storeId, {
+    search: search || undefined, receipt: receipt === "ALL" ? undefined : receipt, page, page_size: INVOICE_PAGE_SIZE,
+  });
+  const filtered = Boolean(search) || receipt !== "ALL";
 
-  if (query.isLoading) return <TableSkeleton rows={6} />;
-  if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
-  if (!query.data?.items.length) {
-    return <EmptyState icon={PackageCheck} title="No invoices" description="No invoice has been processed for this store." />;
-  }
+  return (
+    <div className="space-y-3">
+      <FilterBar summary={query.data ? `${query.data.total} invoice${query.data.total === 1 ? "" : "s"}` : null}>
+        <SearchInput value={searchInput} onChange={setSearchInput} placeholder="Search invoice number or vendor" className="w-72 max-md:w-full" />
+        <Select value={receipt} onValueChange={(v) => setReceipt(v as typeof receipt)}>
+          <SelectTrigger className={cn("h-8 w-52 text-[0.8rem]", receipt !== "ALL" && "border-primary/40 bg-accent/40")} aria-label="Receipt state">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {RECEIPT_FILTERS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </FilterBar>
+      {query.isLoading ? (
+        <TableSkeleton rows={6} />
+      ) : query.isError ? (
+        <ErrorState error={query.error} onRetry={() => void query.refetch()} />
+      ) : !query.data?.items.length ? (
+        <EmptyState icon={PackageCheck} title={filtered ? "No invoice matches" : "No invoices"}
+                    description={filtered ? "No invoice matches these filters." : "No invoice has been processed for this store."} />
+      ) : (
+        <StoreInvoiceTable rows={query.data.items} page={page} total={query.data.total} onPageChange={setPage}
+                           onReceive={setReceiving} />
+      )}
+      {receiving && <ReceiptDialog invoiceId={receiving} onClose={() => setReceiving(null)} />}
+    </div>
+  );
+}
+
+function StoreInvoiceTable({ rows, page, total, onPageChange, onReceive }: {
+  rows: StoreInvoiceRow[]; page: number; total: number; onPageChange: (page: number) => void; onReceive: (id: string) => void;
+}) {
   return (
     <>
       <Table>
@@ -275,7 +520,7 @@ function InvoicesTab({ storeId }: { storeId: string }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {query.data.items.map((row) => (
+          {rows.map((row) => (
             <TableRow key={row.invoice_id} data-testid="store-invoice-row">
               <TableCell>
                 <Link className="font-medium underline-offset-2 hover:underline" to={`/invoices/${row.invoice_id}`}>
@@ -304,7 +549,7 @@ function InvoicesTab({ storeId }: { storeId: string }) {
               </TableCell>
               <TableCell className="text-right">
                 <Button variant={receiptAction(row).emphasis ? "outline" : "ghost"} size="sm"
-                        onClick={() => setReceiving(row.invoice_id)}>
+                        onClick={() => onReceive(row.invoice_id)}>
                   {receiptAction(row).label}
                 </Button>
               </TableCell>
@@ -312,8 +557,7 @@ function InvoicesTab({ storeId }: { storeId: string }) {
           ))}
         </TableBody>
       </Table>
-      <Pagination page={page} pageSize={INVOICE_PAGE_SIZE} total={query.data.total} onPageChange={setPage} />
-      {receiving && <ReceiptDialog invoiceId={receiving} onClose={() => setReceiving(null)} />}
+      <Pagination page={page} pageSize={INVOICE_PAGE_SIZE} total={total} onPageChange={onPageChange} />
     </>
   );
 }
