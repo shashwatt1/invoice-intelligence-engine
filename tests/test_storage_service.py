@@ -315,3 +315,73 @@ class TestStorageBackendFactory:
                 get_storage_service()
         finally:
             get_settings.cache_clear()
+
+
+class TestS3StorageService:
+    """
+    The S3 backend (AWS) keeps the shared object keys, so a file copied from
+    Supabase Storage under its key is found again with no database change.
+    Runs against moto's in-memory S3: no network, no AWS account.
+    """
+
+    @pytest.fixture
+    def s3(self, monkeypatch):
+        moto = pytest.importorskip("moto")
+        import boto3
+
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            monkeypatch.setenv(name, "testing")
+        with moto.mock_aws():
+            client = boto3.client("s3", region_name="us-east-1")
+            client.create_bucket(Bucket="invoices")
+            yield client
+
+    async def test_save_read_delete_round_trip_under_the_shared_key(self, s3):
+        from app.services.storage_service import S3StorageService
+
+        storage = S3StorageService(bucket="invoices", client=s3)
+        key = await storage.save(b"%PDF-1.4 x", "doc-uuid", "Invoice.PDF", content_type="application/pdf")
+        now = datetime.now(UTC)
+        assert key == f"default/{now.year}/{now.month:02d}/doc-uuid.pdf"
+        assert await storage.read(key) == b"%PDF-1.4 x"
+        assert s3.head_object(Bucket="invoices", Key=key)["ContentType"] == "application/pdf"
+        await storage.delete(key)
+        await storage.delete(key)                       # already gone: still succeeds
+        with pytest.raises(StorageError):
+            await storage.read(key)
+
+    async def test_a_file_copied_from_supabase_is_read_by_its_existing_key(self, s3):
+        from app.services.storage_service import S3StorageService
+
+        s3.put_object(Bucket="invoices", Key="default/2026/09/abc.jpg", Body=b"photo")
+        assert await S3StorageService(bucket="invoices", client=s3).read("default/2026/09/abc.jpg") == b"photo"
+
+    async def test_a_failed_write_raises_storage_error(self, s3):
+        from app.services.storage_service import S3StorageService
+
+        with pytest.raises(StorageError):
+            await S3StorageService(bucket="no-such-bucket", client=s3).save(b"x", "u", "a.pdf")
+
+    def test_missing_bucket_name_raises_immediately(self, monkeypatch):
+        from app.core.config import get_settings
+        from app.services.storage_service import S3StorageService
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("S3_BUCKET_NAME", "")
+        try:
+            with pytest.raises(StorageError):
+                S3StorageService()
+        finally:
+            get_settings.cache_clear()
+
+    def test_the_factory_selects_s3_when_configured(self, monkeypatch, s3):
+        from app.core.config import get_settings
+        from app.services.storage_service import S3StorageService
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("STORAGE_BACKEND", "s3")
+        monkeypatch.setenv("S3_BUCKET_NAME", "invoices")
+        try:
+            assert isinstance(get_storage_service(), S3StorageService)
+        finally:
+            get_settings.cache_clear()

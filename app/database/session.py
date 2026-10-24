@@ -108,7 +108,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         async def example(db: AsyncSession = Depends(get_db)):
             ...
     """
-    AsyncSessionLocal = get_session_factory()
+    AsyncSessionLocal = get_session_factory()  # noqa: N806 — long-standing public name
     async with AsyncSessionLocal() as session:
         try:
             yield session

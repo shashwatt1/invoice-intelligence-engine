@@ -24,6 +24,11 @@ Design decisions:
   which would pull in postgrest/gotrue/realtime clients this application
   has no other use for — the same "no unnecessary dependency" call
   google_vision.py already made for OCR.
+- S3StorageService (STORAGE_BACKEND=s3) keeps the same object keys, so
+  files copied from Supabase Storage to S3 under their existing keys are
+  found again with no change to any database row. On AWS it uses the
+  task's IAM role (boto3's default credential chain); explicit keys are
+  only for local use.
 - The bucket is PRIVATE. save()/read()/delete() use the service-role key
   server-side only; the object key returned by save() and persisted on
   the document is never a public URL, since nothing in this application
@@ -33,6 +38,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from datetime import UTC
 from pathlib import Path
@@ -332,6 +338,74 @@ class SupabaseStorageService(StorageService):
         logger.info("file_deleted", path=file_path)
 
 
+class S3StorageService(StorageService):
+    """
+    Stores files in a private S3 bucket under the same object keys as every
+    other backend ("default/2026/09/<uuid>.pdf"); the key, never a URL, is
+    what save() returns and read()/delete() receive back.
+
+    Credentials come from boto3's default chain: on ECS that is the task's
+    IAM role, so no secret is configured at all. AWS_ACCESS_KEY_ID /
+    AWS_SECRET_ACCESS_KEY are used only when both are set (local runs).
+    Encryption at rest is the bucket's default (set by the infrastructure).
+    boto3 is synchronous, so each call runs in a worker thread and never
+    blocks the event loop.
+    """
+
+    def __init__(self, bucket: str | None = None, region: str | None = None, client: object | None = None) -> None:
+        settings = get_settings()
+        self._bucket = bucket or settings.s3_bucket_name
+        if not self._bucket:
+            raise StorageError(message="S3 storage is not configured — S3_BUCKET_NAME is required when STORAGE_BACKEND=s3.")
+        if client is None:
+            import boto3  # imported here: only the s3 backend needs it
+
+            explicit = {}
+            if settings.aws_access_key_id and settings.aws_secret_access_key:
+                explicit = {"aws_access_key_id": settings.aws_access_key_id,
+                            "aws_secret_access_key": settings.aws_secret_access_key}
+            client = boto3.client("s3", region_name=region or settings.aws_region, **explicit)
+        self._client = client
+        logger.info("s3_storage_initialized", bucket=self._bucket)
+
+    async def save(
+        self,
+        content: bytes,
+        document_uuid: str,
+        original_filename: str,
+        organization_id: str = "default",
+        content_type: str | None = None,
+    ) -> str:
+        """Upload file bytes to the bucket and return the object key."""
+        key = _object_key(document_uuid, original_filename, organization_id)
+        try:
+            await asyncio.to_thread(self._client.put_object, Bucket=self._bucket, Key=key, Body=content,
+                                    ContentType=content_type or "application/octet-stream")
+        except Exception as exc:  # botocore raises ClientError / BotoCoreError subclasses
+            logger.error("s3_storage_write_failed", key=key, error=str(exc))
+            raise StorageError(message="Failed to write file to S3 storage.", detail={"key": key, "error": str(exc)}) from exc
+        logger.info("file_saved", document_uuid=document_uuid, path=key, size_bytes=len(content))
+        return key
+
+    async def read(self, file_path: str) -> bytes:
+        """Download the bytes save() wrote, for a document processed again."""
+        try:
+            response = await asyncio.to_thread(self._client.get_object, Bucket=self._bucket, Key=file_path)
+            return await asyncio.to_thread(response["Body"].read)
+        except Exception as exc:
+            logger.error("s3_storage_read_failed", path=file_path, error=str(exc))
+            raise StorageError(message="Failed to read the stored file.", detail={"path": file_path, "error": str(exc)}) from exc
+
+    async def delete(self, file_path: str) -> None:
+        """Remove a file from the bucket. Deleting a missing key succeeds, as on the other backends."""
+        try:
+            await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=file_path)
+        except Exception as exc:
+            logger.error("s3_storage_delete_failed", path=file_path, error=str(exc))
+            raise StorageError(message="Failed to delete file from S3 storage.", detail={"path": file_path, "error": str(exc)}) from exc
+        logger.info("file_deleted", path=file_path)
+
+
 def get_storage_service() -> StorageService:
     """Factory function that returns the configured storage backend."""
     settings = get_settings()
@@ -339,5 +413,6 @@ def get_storage_service() -> StorageService:
         return LocalStorageService()
     if settings.storage_backend == "supabase":
         return SupabaseStorageService()
-    # Future: if settings.storage_backend == "s3": return S3StorageService()
+    if settings.storage_backend == "s3":
+        return S3StorageService()
     raise ValueError(f"Unknown storage backend: {settings.storage_backend}")

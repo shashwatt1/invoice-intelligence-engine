@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 
-class InvoiceBaseException(Exception):
+class InvoiceBaseException(Exception):  # noqa: N818 — long-standing public name
     """
     Base exception for all platform-specific errors.
 
