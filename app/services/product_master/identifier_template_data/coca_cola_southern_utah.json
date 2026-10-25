@@ -1,0 +1,60 @@
+{
+  "template_id": "coca_cola_southern_utah",
+  "version": 2,
+  "lifecycle": "SHADOW",
+  "document_class": "merchandise",
+  "vendor_aliases": [
+    "COCA-COLA",
+    "COCA COLA"
+  ],
+  "ocr_vendor_markers": [
+    "COCA-COLA OF SOUTHERN UTAH"
+  ],
+  "layout_signature": [
+    "PRODUCT",
+    "UPC CODE"
+  ],
+  "fields": [
+    {
+      "name": "PRODUCT CODE",
+      "role": "SUPPLIER_ID",
+      "labels": [
+        "PRODUCT CODE",
+        "PROD. CODE"
+      ],
+      "grammar": "\\d{5,6}",
+      "position": "main_line",
+      "per_row": "exactly_one",
+      "ocr_relation": "unknown",
+      "allowed_lengths": [
+        5,
+        6
+      ],
+      "letters_allowed": false
+    },
+    {
+      "name": "UPC CODE",
+      "role": "BARCODE",
+      "labels": [
+        "UPC CODE"
+      ],
+      "grammar": "\\d-\\d{10}-\\d|\\d{12}",
+      "position": "sub_row",
+      "per_row": "exactly_one",
+      "ocr_relation": "unknown",
+      "barcode_convention": "FULL_BARCODE",
+      "separators": "-",
+      "allowed_lengths": [
+        12
+      ],
+      "letters_allowed": false
+    }
+  ],
+  "fixtures": [
+    "tests/fixtures/identifier/invoices/coca_cola_1000007174.json",
+    "tests/fixtures/identifier/invoices/coca_cola_1000006716_bib.json"
+  ],
+  "notes": "UPC CODE is a sub-row attached to the preceding PRODUCT CODE row, printed with dashes. The OCR emits these columns as blocks, so no OCR-order check applies.",
+  "supplier_scope": "coca_cola_southern_utah",
+  "noise_patterns": []
+}

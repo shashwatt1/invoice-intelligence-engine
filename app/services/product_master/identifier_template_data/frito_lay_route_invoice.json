@@ -1,0 +1,94 @@
+{
+  "template_id": "frito_lay_route_invoice",
+  "version": 2,
+  "lifecycle": "SHADOW",
+  "document_class": "merchandise",
+  "vendor_aliases": [
+    "FRITO-LAY",
+    "FRITO LAY",
+    "FRITOLAY"
+  ],
+  "ocr_vendor_markers": [
+    "FRITOLAY",
+    "FRITO-LAY",
+    "FRITO LAY"
+  ],
+  "layout_signature": [
+    "MANUFACTURER",
+    "UPC"
+  ],
+  "fields": [
+    {
+      "name": "UPC",
+      "role": "FRAGMENT",
+      "labels": [
+        "UPC"
+      ],
+      "grammar": "\\d{4,5}",
+      "position": "main_line",
+      "per_row": "exactly_one",
+      "ocr_relation": "before_description",
+      "allowed_lengths": [
+        4,
+        5
+      ],
+      "letters_allowed": false
+    },
+    {
+      "name": "ITEM",
+      "role": "SUPPLIER_ID",
+      "labels": [
+        "ITEM"
+      ],
+      "grammar": "\\d{8}",
+      "position": "main_line",
+      "per_row": "exactly_one",
+      "ocr_relation": "unknown",
+      "allowed_lengths": [
+        8
+      ],
+      "letters_allowed": false
+    },
+    {
+      "name": "MANUFACTURER",
+      "role": "MANUFACTURER",
+      "labels": [
+        "MANUFACTURER"
+      ],
+      "grammar": "(\\d{5})(?:\\s+\\S.*)?",
+      "scope": "section",
+      "capture_group": 1,
+      "letters_allowed": false
+    }
+  ],
+  "derivation_rules": [
+    {
+      "name": "manufacturer_plus_fragment_upc_a",
+      "kind": "MANUFACTURER_FRAGMENT_UPC_A",
+      "state": "DRAFT",
+      "manufacturer_field": "MANUFACTURER",
+      "fragment_field": "UPC",
+      "number_system": "0",
+      "manufacturer_digits": 5,
+      "fragment_digits": 5,
+      "manufacturer_scope": "section",
+      "decisions": [
+        "D1",
+        "D12",
+        "D5",
+        "D10"
+      ]
+    }
+  ],
+  "pending_decisions": [
+    "D1",
+    "D12",
+    "D10"
+  ],
+  "fixtures": [
+    "tests/fixtures/identifier/invoices/frito_lay_rcm.json"
+  ],
+  "notes": "The printed UPC column holds 4-5 digit item-reference fragments, not barcodes; ITEM is Frito-Lay's own 8-digit item number. The composition rule is DRAFT: it records a hypothesis and can never make a line eligible. 4-digit fragments (e.g. 8404) are outside the rule and are never padded. The OCR prints ITEM values out of row order, so its relation is unknown.",
+  "supplier_scope": "frito_lay_route_invoice",
+  "noise_patterns": []
+}

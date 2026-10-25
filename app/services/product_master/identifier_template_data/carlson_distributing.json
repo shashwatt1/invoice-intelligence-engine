@@ -1,0 +1,56 @@
+{
+  "template_id": "carlson_distributing",
+  "version": 2,
+  "lifecycle": "SHADOW",
+  "document_class": "merchandise",
+  "vendor_aliases": [
+    "CARLSON"
+  ],
+  "ocr_vendor_markers": [
+    "CARLSON DISTRIBUTING"
+  ],
+  "layout_signature": [
+    "ITEM",
+    "UPC"
+  ],
+  "fields": [
+    {
+      "name": "ITEM#",
+      "role": "SUPPLIER_ID",
+      "labels": [
+        "ITEM#",
+        "ITEM"
+      ],
+      "grammar": "\\d{5}",
+      "position": "main_line",
+      "per_row": "exactly_one",
+      "ocr_relation": "before_description",
+      "allowed_lengths": [
+        5
+      ],
+      "letters_allowed": false
+    },
+    {
+      "name": "UPC",
+      "role": "BARCODE",
+      "labels": [
+        "UPC"
+      ],
+      "grammar": "\\d{12}",
+      "position": "main_line",
+      "per_row": "exactly_one",
+      "ocr_relation": "after_description",
+      "barcode_convention": "FULL_BARCODE",
+      "allowed_lengths": [
+        12
+      ],
+      "letters_allowed": false
+    }
+  ],
+  "fixtures": [
+    "tests/fixtures/identifier/invoices/carlson_80120531.json"
+  ],
+  "notes": "Single table: ITEM# (supplier item number) and UPC columns on each row.",
+  "supplier_scope": "carlson_distributing",
+  "noise_patterns": []
+}

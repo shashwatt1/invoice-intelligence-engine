@@ -47,6 +47,7 @@ from app.models.product_case_mapping import SOURCE_APPROVED
 from app.models.product_data_proposal import (
     ENTITY_CASE_MAPPING,
     FIELD_UNITS_PER_CASE,
+    IDENTITY_ENTITY_TYPES,
     SOURCE_BEER_INVENTORY_EXPLICIT,
     SOURCE_BEER_INVENTORY_PACKAGE,
     SOURCE_DOCUMENT_AMBIGUOUS,
@@ -197,6 +198,13 @@ async def approve(
             applied_to=f"product_case_mappings:{proposal.store_id}:{proposal.entity_key}",
             previous_value=previous_value,
         )
+
+    if proposal.entity_type in IDENTITY_ENTITY_TYPES:
+        # Identifier resolution (shadow): applied only here, after a person approved.
+        from app.services import identity_review_service
+
+        applied_to = await identity_review_service.apply_approved(session, proposal, reviewed_by=reviewed_by)
+        return ApprovalResult(proposal=proposal, applied_to=applied_to, previous_value=None)
 
     raise ValueError(
         f"No approval handler for {proposal.entity_type}.{proposal.field}; "

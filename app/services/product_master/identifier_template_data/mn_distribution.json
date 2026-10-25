@@ -1,0 +1,49 @@
+{
+  "template_id": "mn_distribution",
+  "version": 2,
+  "lifecycle": "SHADOW",
+  "document_class": "merchandise",
+  "vendor_aliases": [
+    "M&N"
+  ],
+  "ocr_vendor_markers": [
+    "M&N DISTRIBUTION"
+  ],
+  "layout_signature": [
+    "SKU"
+  ],
+  "fields": [
+    {
+      "name": "SKU",
+      "role": "BARCODE",
+      "labels": [
+        "SKU"
+      ],
+      "grammar": "\\d{8,14}(?:,\\d{8,14})*",
+      "position": "main_line",
+      "per_row": "at_most_one",
+      "ocr_relation": "before_description",
+      "barcode_convention": "FULL_BARCODE",
+      "multi_value_separator": ",",
+      "allowed_lengths": [
+        8,
+        12,
+        13,
+        14
+      ],
+      "letters_allowed": false
+    }
+  ],
+  "pending_decisions": [
+    "D4",
+    "D7",
+    "D8",
+    "D21"
+  ],
+  "fixtures": [
+    "tests/fixtures/identifier/invoices/mn_9452.json"
+  ],
+  "notes": "The SKU column holds GTINs (12/13/14 digits), sometimes several comma-separated in one cell; many rows print none. Codes in parentheses inside product names are pending classification (D21) and are not a field.",
+  "supplier_scope": "mn_distribution",
+  "noise_patterns": []
+}

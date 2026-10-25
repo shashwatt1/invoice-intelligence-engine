@@ -275,3 +275,110 @@ def canonical_key_for(derived: DerivedIdentifier, *, fallback: str) -> str:
     if derived.identity_basis == BASIS_SUPPLIER_ID and derived.normalized_value:
         return f"supplier:{derived.derivation_detail.get('source_profile', 'unknown')}:{derived.normalized_value}"
     return f"unresolved:{fallback}"
+
+
+# ---------------------------------------------------------------------------
+# Invoice-identifier extensions (Phase 3A, shadow resolver)
+#
+# Additive only: derive_identifier() and the profiles above behave exactly
+# as before. These helpers serve app/services/product_master/resolution.py,
+# which reads printed invoice identifiers. The same rule holds: nothing is
+# padded to a length, no check digit is computed to make a value valid, and
+# a value that fails its check stays invalid with its raw form intact.
+# ---------------------------------------------------------------------------
+
+# A source whose 11-digit barcodes are not known to omit the leading zero or
+# the check digit. derive_identifier() treats it like any text source (no
+# 11-digit rule applies); eleven_digit_readings() lists both readings.
+BARCODE_CONVENTION_UNKNOWN = "UNKNOWN"
+
+GTIN_LENGTHS = (8, 12, 13, 14)
+
+# Kinds of complete GTIN. Only GTIN_12 (UPC-A) has a PDI representation
+# today; the others are validated but never given an EDI form (D8).
+GTIN_8 = "GTIN_8"
+GTIN_12 = "GTIN_12"
+GTIN_13 = "GTIN_13"
+GTIN_14 = "GTIN_14"
+GTIN_KIND_BY_LENGTH = {8: GTIN_8, 12: GTIN_12, 13: GTIN_13, 14: GTIN_14}
+
+# Named hypotheses and derivations recorded by the resolver.
+READING_LEADING_ZERO_OMITTED = "LEADING_ZERO_OMITTED"
+READING_CHECK_DIGIT_OMITTED = "CHECK_DIGIT_OMITTED"
+DERIVE_SPLIT_MULTI_VALUE = "SPLIT_MULTI_VALUE"
+DERIVE_COMPOSE_MANUFACTURER_FRAGMENT = "COMPOSE_MANUFACTURER_FRAGMENT"
+
+
+def gtin_check_digit(body: str) -> str:
+    """
+    The GS1 mod-10 check digit for any GTIN body (7, 11, 12 or 13 digits).
+
+    Weights 3,1,3,... from the rightmost body digit, so one function serves
+    GTIN-8/12/13/14. For an 11-digit body it equals upc_a_check_digit().
+    """
+    total = sum(int(d) * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(body)))
+    return str((10 - total % 10) % 10)
+
+
+def has_valid_gtin_check(digits: str) -> bool:
+    """True only for an all-digit GTIN-8/12/13/14 whose last digit validates."""
+    return (digits.isdigit() and len(digits) in GTIN_LENGTHS
+            and gtin_check_digit(digits[:-1]) == digits[-1])
+
+
+def split_multi_value(raw: str, separator: str) -> list[str]:
+    """
+    The pieces of one printed multi-value cell, exactly as printed.
+
+    Only the separator is removed; each piece keeps every other character
+    and empty pieces are dropped. The raw cell itself is never replaced —
+    callers keep it beside the pieces.
+    """
+    return [piece for piece in raw.split(separator) if piece.strip()]
+
+
+def eleven_digit_readings(digits11: str) -> list[dict]:
+    """
+    Both ways an 11-digit printed barcode can be read. Never a choice.
+
+    LEADING_ZERO_OMITTED   "0" + digits is a GTIN-12 whose printed check digit
+                           either validates or does not — a real test.
+    CHECK_DIGIT_OMITTED    digits + a computed check digit — always "valid" by
+                           construction, so it carries no validating power.
+
+    Which reading a vendor prints is a template/business fact (D19); the
+    resolver may only pick one when trusted evidence matches exactly one.
+    """
+    if len(digits11) != 11 or not digits11.isdigit():
+        return []
+    leading = "0" + digits11
+    return [
+        {"reading": READING_LEADING_ZERO_OMITTED, "gtin": leading,
+         "check_valid": has_valid_upc_check(leading), "validating": True},
+        {"reading": READING_CHECK_DIGIT_OMITTED, "gtin": digits11 + upc_a_check_digit(digits11),
+         "check_valid": True, "validating": False},
+    ]
+
+
+def compose_manufacturer_fragment(
+    manufacturer: str, fragment: str, *, number_system: str, manufacturer_digits: int,
+    fragment_digits: int,
+) -> dict | None:
+    """
+    A GTIN-12 hypothesis from a printed manufacturer number and item fragment.
+
+    number_system + manufacturer + fragment must be exactly eleven digits
+    with each part exactly its declared width; anything else returns None.
+    Nothing is padded to fit. The check digit is computed, so the result is
+    a hypothesis whose trust comes only from the approval state of the rule
+    that asked for it and from matching evidence — never from its validity.
+    """
+    if not (number_system.isdigit() and manufacturer.isdigit() and fragment.isdigit()):
+        return None
+    if len(manufacturer) != manufacturer_digits or len(fragment) != fragment_digits:
+        return None
+    body = number_system + manufacturer + fragment
+    if len(body) != 11:
+        return None
+    return {"gtin": body + upc_a_check_digit(body), "body": body,
+            "derivation": DERIVE_COMPOSE_MANUFACTURER_FRAGMENT, "check_digit_computed": True}

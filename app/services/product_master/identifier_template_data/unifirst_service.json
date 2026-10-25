@@ -1,0 +1,43 @@
+{
+  "template_id": "unifirst_service",
+  "version": 2,
+  "lifecycle": "SHADOW",
+  "document_class": "service",
+  "vendor_aliases": [
+    "UNIFIRST"
+  ],
+  "ocr_vendor_markers": [
+    "UNIFIRST"
+  ],
+  "layout_signature": [
+    "DESCRIPTION OF SERVICE"
+  ],
+  "fields": [
+    {
+      "name": "ITEM",
+      "role": "SUPPLIER_ID",
+      "labels": [
+        "ITEM"
+      ],
+      "grammar": "[0-9A-Z]{4,6}",
+      "position": "main_line",
+      "per_row": "at_most_one",
+      "ocr_relation": "unknown",
+      "allowed_lengths": [
+        4,
+        5,
+        6
+      ],
+      "letters_allowed": true
+    }
+  ],
+  "pending_decisions": [
+    "D11"
+  ],
+  "fixtures": [
+    "tests/fixtures/identifier/invoices/unifirst_2310090549.json"
+  ],
+  "notes": "A uniform/supply service invoice. Its rows are not merchandise identifiers; how they export is D11.",
+  "supplier_scope": "unifirst_service",
+  "noise_patterns": []
+}

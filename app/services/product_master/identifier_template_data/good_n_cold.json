@@ -1,0 +1,60 @@
+{
+  "template_id": "good_n_cold",
+  "version": 2,
+  "lifecycle": "SHADOW",
+  "document_class": "merchandise",
+  "vendor_aliases": [
+    "GOOD N COLD"
+  ],
+  "ocr_vendor_markers": [
+    "GOOD 'N COLD",
+    "GOOD N COLD"
+  ],
+  "layout_signature": [
+    "STOCK"
+  ],
+  "fields": [
+    {
+      "name": "Stock #",
+      "role": "SUPPLIER_ID",
+      "labels": [
+        "Stock #"
+      ],
+      "grammar": "\\d{6}",
+      "position": "main_line",
+      "per_row": "exactly_one",
+      "ocr_relation": "before_description",
+      "allowed_lengths": [
+        6
+      ],
+      "letters_allowed": false
+    },
+    {
+      "name": "UPC",
+      "role": "BARCODE",
+      "labels": [
+        "UPC:",
+        "UPC"
+      ],
+      "grammar": "\\d{11,12}",
+      "position": "sub_row",
+      "per_row": "exactly_one",
+      "ocr_relation": "after_description",
+      "barcode_convention": "UNKNOWN",
+      "allowed_lengths": [
+        11,
+        12
+      ],
+      "letters_allowed": false
+    }
+  ],
+  "pending_decisions": [
+    "D19"
+  ],
+  "fixtures": [
+    "tests/fixtures/identifier/invoices/good_n_cold_RT0119-6596.json"
+  ],
+  "notes": "UPC sub-rows print 11 or 12 digits. Whether an 11-digit value omits the leading zero or the check digit is undecided (D19), so the convention is UNKNOWN and both readings are only hypotheses.",
+  "supplier_scope": "good_n_cold",
+  "noise_patterns": []
+}

@@ -59,6 +59,14 @@ VALID_STATUSES = frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED})
 
 ENTITY_CASE_MAPPING = "case_mapping"
 FIELD_UNITS_PER_CASE = "units_per_case"
+# Identifier resolution (shadow, Phase 3C). Created only by explicit tooling,
+# never automatically; applied only by app/services/identity_review_service.py
+# after a person approves. entity_key is the invoice item id for a line
+# identity, "<template scope>:<supplier item id>" for a supplier crosswalk.
+ENTITY_LINE_IDENTITY = "line_identity"
+ENTITY_SUPPLIER_CROSSWALK = "supplier_crosswalk"
+IDENTITY_ENTITY_TYPES = frozenset({ENTITY_LINE_IDENTITY, ENTITY_SUPPLIER_CROSSWALK})
+FIELD_CANONICAL_GTIN = "canonical_gtin"
 
 # How a proposed value was arrived at. A reviewer weighs these very
 # differently, so the vocabulary is deliberately specific.
@@ -69,10 +77,18 @@ SOURCE_BEER_INVENTORY_EXPLICIT = "beer_inventory_explicit"   # a typed items/cas
 SOURCE_BEER_INVENTORY_PACKAGE = "beer_inventory_package"     # decoded from a package string
 SOURCE_OPERATOR_ENTERED = "operator_entered"          # typed with no supporting suggestion
 SOURCE_LEGACY_MIGRATED = "legacy_migrated"            # predates this table; grandfathered
+SOURCE_RESOLVER_VERIFIED = "resolver_verified"        # the resolver's VERIFIED rule was met
+SOURCE_RESOLVER_DERIVED = "resolver_derived"          # CORROBORATED / VALID_UNMATCHED: needs a person
+SOURCE_TEMPLATE_COMPOSITION = "template_composition"  # a template derivation-rule hypothesis
+SOURCE_ASSOCIATION_PROPOSAL = "association_proposal"  # OCR order suggests another row (D20: never applied)
+IDENTITY_SOURCES = frozenset({SOURCE_RESOLVER_VERIFIED, SOURCE_RESOLVER_DERIVED, SOURCE_TEMPLATE_COMPOSITION,
+                              SOURCE_ASSOCIATION_PROPOSAL, SOURCE_OPERATOR_ENTERED})
 VALID_SOURCES = frozenset({
     SOURCE_REFERENCE_DERIVED, SOURCE_DOCUMENT_DERIVED, SOURCE_DOCUMENT_AMBIGUOUS,
     SOURCE_BEER_INVENTORY_EXPLICIT, SOURCE_BEER_INVENTORY_PACKAGE,
     SOURCE_OPERATOR_ENTERED, SOURCE_LEGACY_MIGRATED,
+    SOURCE_RESOLVER_VERIFIED, SOURCE_RESOLVER_DERIVED, SOURCE_TEMPLATE_COMPOSITION,
+    SOURCE_ASSOCIATION_PROPOSAL,
 })
 
 LEGACY_REVIEWER = "system:legacy-migration"

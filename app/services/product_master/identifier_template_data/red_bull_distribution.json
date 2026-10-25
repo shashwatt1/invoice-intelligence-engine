@@ -1,0 +1,56 @@
+{
+  "template_id": "red_bull_distribution",
+  "version": 2,
+  "lifecycle": "SHADOW",
+  "document_class": "merchandise",
+  "vendor_aliases": [
+    "RED BULL"
+  ],
+  "ocr_vendor_markers": [
+    "RED BULL"
+  ],
+  "layout_signature": [
+    "ID",
+    "UNITS",
+    "DESCRIPTION"
+  ],
+  "fields": [
+    {
+      "name": "ID",
+      "role": "SUPPLIER_ID",
+      "labels": [
+        "ID"
+      ],
+      "grammar": "RB\\d{4,6}",
+      "position": "main_line",
+      "per_row": "exactly_one",
+      "ocr_relation": "before_description",
+      "allowed_lengths": [
+        6,
+        7,
+        8
+      ],
+      "letters_allowed": true
+    },
+    {
+      "name": "GTIN",
+      "role": "BARCODE",
+      "labels": [],
+      "grammar": "\\d{12}",
+      "position": "sub_row",
+      "per_row": "exactly_one",
+      "ocr_relation": "after_description",
+      "barcode_convention": "FULL_BARCODE",
+      "allowed_lengths": [
+        12
+      ],
+      "letters_allowed": false
+    }
+  ],
+  "fixtures": [
+    "tests/fixtures/identifier/invoices/red_bull_2035546957.json"
+  ],
+  "notes": "ID is Red Bull's supplier item id (a crosswalk key, never an item code). The unlabelled barcode sub-row under each item is its GTIN-12.",
+  "supplier_scope": "red_bull_distribution",
+  "noise_patterns": []
+}
