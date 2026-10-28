@@ -234,7 +234,7 @@ class TestEveryInventoryPathIsAuthorized:
 
     def test_every_store_route_checks_access_and_every_invoice_route_passes_the_account(self):
         routes = self._routes()
-        assert len(routes) == 11, [r[1] for r in routes]
+        assert len(routes) == 13, [r[1] for r in routes]
         for _verb, path, name, body in routes:
             if path.endswith("/approvals"):
                 assert "approval.pending_approvals(db, store_id, user)" in body, name   # authorized in the service
@@ -245,6 +245,12 @@ class TestEveryInventoryPathIsAuthorized:
             elif "{invoice_id}" in path:
                 # The service authorizes the invoice's (or receipt's) own store for this account.
                 assert "_preview_out(db, invoice_id, user)" in body or "user=user" in body, name
+            elif path.startswith("/inventory/supply"):
+                # Cross-store supply history: only granted stores, and one requested store is checked
+                # with the same 404 as every store route.
+                assert "store_access.accessible_stores(db, user)" in body, name
+                if path == "/inventory/supply":
+                    assert "store_access.ensure_store_access(db, user, store_id)" in body, name
             else:
                 assert path == "/inventory/stores" and "store_access.accessible_stores(db, user)" in body
 

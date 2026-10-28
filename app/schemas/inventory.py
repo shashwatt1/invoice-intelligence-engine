@@ -99,6 +99,26 @@ class StoreInvoiceRow(BaseModel):
                                           description="Why the invoice cannot be received yet; empty when it can.")
 
 
+class SupplyRow(StoreInvoiceRow):
+    """One recorded supply: an invoice at a store, with its delivery date if a receipt was posted."""
+    store: StoreRef
+    vendor_id: uuid.UUID | None = None
+    delivered_on: date | None = Field(
+        default=None, description="The posted receipt's received_on. None until goods are received; "
+                                  "never the invoice date or processing time.")
+
+
+class SupplyVendorOption(BaseModel):
+    id: uuid.UUID
+    label: str
+    store_ids: list[uuid.UUID] = Field(description="Granted stores this vendor has invoices at.")
+
+
+class SupplyOptions(BaseModel):
+    stores: list[StoreRef]
+    vendors: list[SupplyVendorOption]
+
+
 class ReceiptLineOut(BaseModel):
     invoice_item_id: uuid.UUID
     sort_order: int

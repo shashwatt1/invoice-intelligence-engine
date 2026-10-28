@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, ArrowUpRight } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Store, Truck } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -10,7 +10,8 @@ import { EmptyState, ErrorState, PanelSkeleton, TableSkeleton } from "@/componen
 import { StoreChip } from "@/components/shared/store-chip";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useApiHealth, useDashboard, usePendingProposalCount, useStores } from "@/hooks/use-api";
+import { useApiHealth, useDashboard, useInventoryStatus, usePendingProposalCount, useStores } from "@/hooks/use-api";
+import { useAuth } from "@/hooks/use-auth";
 import { useClock } from "@/hooks/use-clock";
 import { formatDateTime, formatPercent } from "@/lib/format";
 import { reviewHeadline } from "@/lib/review";
@@ -99,6 +100,39 @@ function needsAttention(row: HistoryRow): { reason: string; tone: "warning" | "d
   return null;
 }
 
+/**
+ * The two ways into inventory, right under the overview: per store (the existing store cards)
+ * and per vendor (supply history, filtered by vendor). Shown only where inventory is available.
+ */
+function InventoryEntryPoints() {
+  return (
+    <section aria-labelledby="inventory-entry" data-testid="inventory-entry">
+      <h2 id="inventory-entry" className="t-meta mb-3 font-semibold uppercase tracking-[0.08em]">Start with inventory</h2>
+      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+        <EntryCard to="/inventory" icon={Store} title="Store Inventory"
+                   description="Open a store: products received, opening counts and receipts awaiting approval." />
+        <EntryCard to="/inventory/supply" icon={Truck} title="Vendor Inventory"
+                   description="What each vendor supplied, across your stores or one store, by delivery date." />
+      </div>
+    </section>
+  );
+}
+
+function EntryCard({ to, icon: Icon, title, description }: { to: string; icon: typeof Store; title: string; description: string }) {
+  return (
+    <Link to={to} className="surface surface-hover group flex items-start gap-4 p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-accent text-accent-foreground">
+        <Icon className="size-5" aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[1rem] font-semibold tracking-tight">{title}</span>
+        <span className="t-meta mt-1 block">{description}</span>
+      </span>
+      <ArrowRight className="mt-1 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
+    </Link>
+  );
+}
+
 function BandHeader({ title, count, description, action }: { title: string; count?: number; description?: string; action?: ReactNode }) {
   return (
     <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
@@ -120,6 +154,10 @@ export function DashboardPage() {
   const pending = usePendingProposalCount();
   const stores = useStores();
   const health = useApiHealth();
+  const { hasRole } = useAuth();
+  const canInventory = hasRole("MANAGER");
+  const inventory = useInventoryStatus({ enabled: canInventory });
+  const showInventory = canInventory && inventory.data?.enabled === true;
   const now = useClock();
 
   const unresolvedStores = stores.data?.filter((s) => s.identity_status !== "confirmed") ?? [];
@@ -209,6 +247,7 @@ export function DashboardPage() {
         <ErrorState error={error} onRetry={() => void refetch()} />
       ) : (
         <div className="space-y-8">
+          {showInventory ? <InventoryEntryPoints /> : null}
           {isPending ? (
             <div className="grid grid-cols-[minmax(0,7fr)_minmax(0,5fr)] gap-10 max-lg:grid-cols-1">
               <PanelSkeleton className="h-64" />
@@ -223,9 +262,10 @@ export function DashboardPage() {
           ) : (
             <>
               <div className="grid grid-cols-[minmax(0,7fr)_minmax(0,5fr)] gap-x-12 gap-y-8 max-lg:grid-cols-1">
-                {/* Attention */}
+                {/* Follow-ups: the same rows, presented as work to pick up rather than an alarm */}
                 <section className="band">
-                  <BandHeader title="Needs attention" count={attention.length || undefined} description="From the most recent runs" />
+                  <BandHeader title="Follow-ups" count={attention.length || undefined} description="Recent runs a person can pick up"
+                              action={<Button asChild variant="ghost" size="sm" className="-mr-2"><Link to="/invoices">All invoices <ArrowRight className="size-3.5" /></Link></Button>} />
                   {attention.length === 0 ? (
                     <p className="panel px-4 py-6 text-center text-[0.8rem] text-muted-foreground">Nothing is waiting on a person — every recent run either validated or is still processing.</p>
                   ) : (
@@ -234,7 +274,8 @@ export function DashboardPage() {
                         <li key={row.document_id}>
                           <button type="button" onClick={() => navigate(rowDestination(row))}
                                   className="group flex w-full items-center gap-4 px-5 py-3.5 text-left transition-colors hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-none">
-                            <AlertTriangle className={why!.tone === "danger" ? "size-4 shrink-0 text-danger" : "size-4 shrink-0 text-warning"} aria-hidden />
+                            <span className={cn("size-2 shrink-0 rounded-full", why!.tone === "danger" ? "bg-danger/70" : "bg-warning/70")}
+                                  aria-label={why!.tone === "danger" ? "Failed" : "Needs a person"} role="img" />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-[0.9rem] font-semibold tracking-[-0.01em]">
                                 {row.invoice_number ? `#${row.invoice_number}` : row.filename}

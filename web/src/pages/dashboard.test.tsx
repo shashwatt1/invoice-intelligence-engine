@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -86,6 +86,26 @@ describe("DashboardPage", () => {
 
     const page = document.body.textContent ?? "";
     expect(page).not.toMatch(/15\.8 min|min per invoice|tokens?\b|\$0\.19|AI cost|processing time/i);
+  });
+
+  it("offers Store Inventory and Vendor Inventory under the overview when inventory is on, and keeps follow-ups", async () => {
+    vi.mocked(api.getDashboardSummary).mockResolvedValue(DATA);
+    vi.mocked(api.getInventoryStatus).mockResolvedValueOnce({ enabled: true });
+    mount(<DashboardPage />);
+    const entry = await screen.findByTestId("inventory-entry");
+    expect(within(entry).getByRole("link", { name: /Store Inventory/ })).toHaveAttribute("href", "/inventory");
+    expect(within(entry).getByRole("link", { name: /Vendor Inventory/ })).toHaveAttribute("href", "/inventory/supply");
+    expect(screen.getByTestId("dashboard-hero")).toBeInTheDocument();          // the overview stays
+    expect(screen.getByText("Follow-ups")).toBeInTheDocument();
+    expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/#1012818/).length).toBeGreaterThan(0);        // the same rows, still reachable
+  });
+
+  it("hides the inventory entry points while inventory is switched off", async () => {
+    vi.mocked(api.getDashboardSummary).mockResolvedValue(DATA);
+    mount(<DashboardPage />);
+    await waitFor(() => expect(screen.getByTestId("operational-statement")).toBeInTheDocument());
+    expect(screen.queryByTestId("inventory-entry")).not.toBeInTheDocument();
   });
 
   it("reads as a real empty state, not a placeholder, when nothing has been processed", async () => {

@@ -19,6 +19,7 @@ submits it, and POST .../receipt/approve posts a pending submission
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -27,10 +28,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.dependencies import require_manager
-from app.core.exceptions import RecordNotFoundError
+from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
 from app.models.invoice import Invoice
 from app.models.user import User
+from app.models.vendor import Vendor
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.inventory import (
     InventoryItemRow,
@@ -49,6 +51,9 @@ from app.schemas.inventory import (
     ReceiptSummary,
     StoreInvoiceRow,
     SubmissionOut,
+    SupplyOptions,
+    SupplyRow,
+    SupplyVendorOption,
 )
 from app.schemas.processing import StoreRef
 from app.services import inventory_approval as approval
@@ -221,6 +226,63 @@ async def invoices(store_id: uuid.UUID, page: int = Query(default=1, ge=1),
         )
         for i in rows
     ], total=total, page=page, page_size=page_size)
+
+
+@router.get("/inventory/supply/options", response_model=APIResponse[SupplyOptions],
+            summary="Stores and vendors for supply-history filters (only granted stores)")
+async def supply_options(db: AsyncSession = Depends(get_db),
+                         user: User = Depends(require_manager)) -> APIResponse[SupplyOptions]:
+    stores = await store_access.accessible_stores(db, user)
+    links = await inventory.supply_vendors(db, [s.id for s in stores])
+    vendors = (await db.execute(select(Vendor).where(Vendor.id.in_(links)))).scalars().all() if links else []
+    order = {s.id: i for i, s in enumerate(stores)}
+    return APIResponse(data=SupplyOptions(
+        stores=[StoreRef.from_store(s) for s in stores],
+        vendors=sorted((SupplyVendorOption(id=v.id, label=v.label, store_ids=sorted(links[v.id], key=order.get))
+                        for v in vendors), key=lambda o: o.label.lower()),
+    ))
+
+
+@router.get("/inventory/supply", response_model=PaginatedResponse[SupplyRow],
+            summary="Supply history across granted stores, by vendor, store and delivery date")
+async def supply(
+    vendor_id: uuid.UUID | None = Query(default=None),
+    store_id: uuid.UUID | None = Query(default=None),
+    delivered_from: date | None = Query(default=None, description="Inclusive. With delivered_to equal, one day."),
+    delivered_to: date | None = Query(default=None, description="Inclusive."),
+    delivery: Literal["missing", "recorded"] | None = Query(default=None),
+    page: int = Query(default=1, ge=1), page_size: int = Query(default=25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db), user: User = Depends(require_manager),
+) -> PaginatedResponse[SupplyRow]:
+    """Every filter combines with AND. Supply history records deliveries; it is not stock on hand."""
+    if delivered_from and delivered_to and delivered_from > delivered_to:
+        raise ValidationError(message="The delivery-date range ends before it starts.",
+                              detail={"delivered_from": str(delivered_from), "delivered_to": str(delivered_to)})
+    if delivery == "missing" and (delivered_from or delivered_to):
+        raise ValidationError(message="Invoices without a delivery date cannot also be filtered by delivery date.",
+                              detail={"delivery": delivery})
+    if store_id is not None:
+        stores = [await store_access.ensure_store_access(db, user, store_id)]   # same 404 as other routes
+    else:
+        stores = await store_access.accessible_stores(db, user)
+    if vendor_id is not None and await db.get(Vendor, vendor_id) is None:
+        raise RecordNotFoundError(message="Vendor not found.", detail={"vendor_id": str(vendor_id)})
+    by_id = {s.id: s for s in stores}
+    rows, receipts, total = await inventory.supply_history(
+        db, list(by_id), page=page, page_size=page_size, vendor_id=vendor_id,
+        delivered_from=delivered_from, delivered_to=delivered_to, delivery=delivery)
+    items = []
+    for i in rows:
+        store, receipt = by_id[i.store_id], receipts.get(i.id)
+        items.append(SupplyRow(
+            invoice_id=i.id, invoice_number=i.invoice_number, invoice_date=i.invoice_date,
+            vendor=i.vendor.label if i.vendor else i.vendor_name, vendor_id=i.vendor_id, status=i.status,
+            product_lines=len(pdi_items(i)), receipt=_receipt(receipt) if receipt else None,
+            receivable_reasons=list(receiving_eligibility(i, store, i.document).reasons),
+            store=StoreRef.from_store(store),
+            delivered_on=receipt.received_on if receipt is not None and receipt.status == "POSTED" else None,
+        ))
+    return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.get("/inventory/invoices/{invoice_id}/receipt", response_model=APIResponse[ReceiptPreviewOut],

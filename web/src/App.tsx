@@ -7,6 +7,7 @@ import { DataReviewPage } from "@/pages/data-review";
 import { DocumentStatusPage } from "@/pages/document-status";
 import { HistoryPage } from "@/pages/history";
 import { InventoryPage } from "@/pages/inventory";
+import { SupplyHistoryPage } from "@/pages/supply-history";
 import { InvoiceDetailPage } from "@/pages/invoice-detail";
 import { LoginPage } from "@/pages/login";
 import { NotFoundPage } from "@/pages/not-found";
@@ -53,6 +54,7 @@ export function App() {
         <Route path="/dashboard" element={<RequireRole minimum="MANAGER"><DashboardPage /></RequireRole>} />
         <Route path="/stores" element={<RequireRole minimum="MANAGER"><StoresPage /></RequireRole>} />
         <Route path="/inventory" element={<RequireRole minimum="MANAGER"><InventoryPage /></RequireRole>} />
+        <Route path="/inventory/supply" element={<RequireRole minimum="MANAGER"><SupplyHistoryPage /></RequireRole>} />
         <Route path="/requires-mapping" element={<RequireRole minimum="MANAGER"><RequiresMappingPage /></RequireRole>} />
         <Route path="/product-master" element={<ProductMasterReviewPage />} />
         <Route path="/product-master/approvals" element={<RequireRole minimum="MANAGER"><ProductMasterApprovalsPage /></RequireRole>} />

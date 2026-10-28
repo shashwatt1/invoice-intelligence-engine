@@ -28,6 +28,9 @@ import type {
   IdentityUnresolvedRow,
   InventoryItemParams,
   StoreInvoiceParams,
+  SupplyOptions,
+  SupplyParams,
+  SupplyRow,
   InventoryItemRow,
   InventoryMovementRow,
   InventoryOverview,
@@ -663,5 +666,16 @@ export async function recordOpeningCounts(storeId: string, body: OpeningCountReq
 
 export async function reverseReceipt(invoiceId: string, body: { receipt_id: string; reason: string }): Promise<ReceiptReversalResult> {
   const { data } = await apiClient.post<ApiEnvelope<ReceiptReversalResult>>(`/inventory/invoices/${invoiceId}/receipt/reverse`, body);
+  return data.data!;
+}
+
+/** Supply history across the account's granted stores; every filter combines with AND. */
+export async function listSupply(params: SupplyParams): Promise<Paginated<SupplyRow>> {
+  const { data } = await apiClient.get<Paginated<SupplyRow>>("/inventory/supply", { params });
+  return data;
+}
+
+export async function getSupplyOptions(): Promise<SupplyOptions> {
+  const { data } = await apiClient.get<ApiEnvelope<SupplyOptions>>("/inventory/supply/options");
   return data.data!;
 }

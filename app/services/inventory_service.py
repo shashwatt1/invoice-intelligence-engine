@@ -572,23 +572,21 @@ def _receipt_in(statuses) -> Any:
     return exists().where(InventoryReceipt.invoice_id == Invoice.id, InventoryReceipt.status.in_(statuses))
 
 
-async def store_invoices(session: AsyncSession, store_id: uuid.UUID, *, page: int, page_size: int,
-                         search: str | None = None, receipt: str | None = None):
-    """
-    The store's invoices, newest first, with each one's receipt (the active one, else the latest).
-    `search` matches the invoice number or vendor name; `receipt` is one of RECEIPT_FILTERS.
-    """
-    conditions = [Invoice.store_id == store_id]
-    term = (search or "").strip()
-    if term:
-        pattern = f"%{term}%"
-        conditions.append(or_(Invoice.invoice_number.ilike(pattern), Invoice.vendor_name.ilike(pattern)))
-    if receipt == RECEIPT_FILTER_AWAITING:
-        conditions.append(_receipt_in([RECEIPT_SUBMITTED]))
-    elif receipt == RECEIPT_FILTER_RECEIVED:
-        conditions.append(_receipt_in([RECEIPT_POSTED]))
-    elif receipt == RECEIPT_FILTER_NOT_RECEIVED:
-        conditions.append(~_receipt_in(RECEIPT_ACTIVE))
+DELIVERY_MISSING = "missing"    # no posted receipt, so no delivery date recorded
+DELIVERY_RECORDED = "recorded"  # a posted receipt carries the delivery date
+
+
+def _delivered_between(delivered_from, delivered_to) -> Any:
+    """A POSTED receipt whose received_on (the delivery date) falls in the inclusive range."""
+    cond = [InventoryReceipt.invoice_id == Invoice.id, InventoryReceipt.status == RECEIPT_POSTED]
+    if delivered_from is not None:
+        cond.append(InventoryReceipt.received_on >= delivered_from)
+    if delivered_to is not None:
+        cond.append(InventoryReceipt.received_on <= delivered_to)
+    return exists().where(*cond)
+
+
+async def _invoice_page(session: AsyncSession, conditions: list, *, page: int, page_size: int):
     total = (await session.execute(
         select(func.count()).select_from(Invoice).where(*conditions)
     )).scalar() or 0
@@ -608,3 +606,64 @@ async def store_invoices(session: AsyncSession, store_id: uuid.UUID, *, page: in
             if receipts.get(r.invoice_id) is None or receipts[r.invoice_id].status not in RECEIPT_ACTIVE:
                 receipts[r.invoice_id] = r      # the SUBMITTED or POSTED one, else the latest
     return list(invoices), receipts, total
+
+
+async def store_invoices(session: AsyncSession, store_id: uuid.UUID, *, page: int, page_size: int,
+                         search: str | None = None, receipt: str | None = None):
+    """
+    The store's invoices, newest first, with each one's receipt (the active one, else the latest).
+    `search` matches the invoice number or vendor name; `receipt` is one of RECEIPT_FILTERS.
+    """
+    conditions = [Invoice.store_id == store_id]
+    term = (search or "").strip()
+    if term:
+        pattern = f"%{term}%"
+        conditions.append(or_(Invoice.invoice_number.ilike(pattern), Invoice.vendor_name.ilike(pattern)))
+    if receipt == RECEIPT_FILTER_AWAITING:
+        conditions.append(_receipt_in([RECEIPT_SUBMITTED]))
+    elif receipt == RECEIPT_FILTER_RECEIVED:
+        conditions.append(_receipt_in([RECEIPT_POSTED]))
+    elif receipt == RECEIPT_FILTER_NOT_RECEIVED:
+        conditions.append(~_receipt_in(RECEIPT_ACTIVE))
+    return await _invoice_page(session, conditions, page=page, page_size=page_size)
+
+
+async def supply_history(session: AsyncSession, store_ids: Sequence[uuid.UUID], *, page: int, page_size: int,
+                         vendor_id: uuid.UUID | None = None, delivered_from: date | None = None,
+                         delivered_to: date | None = None, delivery: str | None = None):
+    """
+    Recorded supplies (invoices and their receipts) across `store_ids`, which the caller has
+    already restricted to stores the account may use. All filters combine with AND.
+
+    The delivery date is the POSTED receipt's received_on — never the invoice date or the
+    processing time. A date filter therefore matches only invoices with a posted receipt in the
+    range; invoices without one are found with delivery="missing", never by a date.
+    This is supply history, not stock on hand.
+    """
+    if not store_ids:
+        return [], {}, 0
+    conditions = [Invoice.store_id.in_(list(store_ids))]
+    if vendor_id is not None:
+        conditions.append(Invoice.vendor_id == vendor_id)
+    if delivered_from is not None or delivered_to is not None:
+        conditions.append(_delivered_between(delivered_from, delivered_to))
+    if delivery == DELIVERY_MISSING:
+        conditions.append(~_receipt_in([RECEIPT_POSTED]))
+    elif delivery == DELIVERY_RECORDED:
+        conditions.append(_receipt_in([RECEIPT_POSTED]))
+    return await _invoice_page(session, conditions, page=page, page_size=page_size)
+
+
+async def supply_vendors(session: AsyncSession, store_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, set[uuid.UUID]]:
+    """vendor_id -> the stores (among `store_ids`) it has invoices at, in one grouped query."""
+    if not store_ids:
+        return {}
+    rows = (await session.execute(
+        select(Invoice.vendor_id, Invoice.store_id)
+        .where(Invoice.store_id.in_(list(store_ids)), Invoice.vendor_id.is_not(None))
+        .group_by(Invoice.vendor_id, Invoice.store_id)
+    )).all()
+    out: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for vendor_id, store_id in rows:
+        out.setdefault(vendor_id, set()).add(store_id)
+    return out

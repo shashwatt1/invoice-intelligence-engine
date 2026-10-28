@@ -1,4 +1,4 @@
-import { ArrowDownUp, ArrowLeft, Boxes, ChevronRight, ClipboardCheck, ClipboardList, PackageCheck, Store } from "lucide-react";
+import { ArrowDownUp, ArrowLeft, Boxes, ChevronRight, ClipboardCheck, ClipboardList, PackageCheck, Store, Truck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -123,6 +123,7 @@ function Header() {
     <PageHeader
       title="Inventory"
       description="Per physical store, in sellable units: audited opening counts and approved receipts. Sales are not imported yet."
+      actions={<Button asChild variant="outline" size="sm"><Link to="/inventory/supply"><Truck className="size-3.5" aria-hidden /> Supply history</Link></Button>}
     />
   );
 }

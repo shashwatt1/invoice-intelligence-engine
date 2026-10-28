@@ -54,6 +54,8 @@ import {
   listProposalSourceInvoices,
   listProposals,
   listStoreInvoices,
+  listSupply,
+  getSupplyOptions,
   listStores,
   listUsers,
   listVendors,
@@ -90,6 +92,7 @@ import type {
   DuplicateDecision,
   InventoryItemParams,
   StoreInvoiceParams,
+  SupplyParams,
   InvoiceDateCorrection,
   InvoiceListParams,
   InvoiceTotalsCorrection,
@@ -867,4 +870,14 @@ export function useReverseReceipt() {
       void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
     },
   });
+}
+
+/** Store and vendor choices for supply history (granted stores only, vendors derived from their invoices). */
+export function useSupplyOptions({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ["inventory", "supply", "options"], queryFn: getSupplyOptions, enabled, staleTime: 60_000 });
+}
+
+export function useSupply(params: SupplyParams, { enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ["inventory", "supply", params], queryFn: () => listSupply(params), enabled,
+                    placeholderData: (prev) => prev });
 }

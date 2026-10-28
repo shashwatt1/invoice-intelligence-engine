@@ -1266,6 +1266,34 @@ export interface InventoryItemParams {
 /** awaiting: submitted, waiting for approval. received: posted. not_received: neither (never submitted, rejected, withdrawn or reversed). */
 export type StoreInvoiceReceiptFilter = "awaiting" | "received" | "not_received";
 
+/** One recorded supply. delivered_on is the posted receipt's date, never the invoice date. */
+export interface SupplyRow extends StoreInvoiceRow {
+  store: StoreRef;
+  vendor_id: string | null;
+  delivered_on: string | null;
+}
+
+export interface SupplyVendorOption {
+  id: string;
+  label: string;
+  store_ids: string[];
+}
+
+export interface SupplyOptions {
+  stores: StoreRef[];
+  vendors: SupplyVendorOption[];
+}
+
+export interface SupplyParams {
+  vendor_id?: string;
+  store_id?: string;
+  delivered_from?: string;
+  delivered_to?: string;
+  delivery?: "missing" | "recorded";
+  page: number;
+  page_size: number;
+}
+
 export interface StoreInvoiceParams {
   search?: string;
   receipt?: StoreInvoiceReceiptFilter;
