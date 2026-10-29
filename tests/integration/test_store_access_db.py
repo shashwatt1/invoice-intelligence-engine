@@ -346,7 +346,7 @@ class TestStoreIdentityIsAdministratorOnly:
 
 
 class TestGrantAllPhysicalStores:
-    async def _physical(self, api_client):
+    async def _physical(self, api_client):  # noqa: F811
         return {s["id"] for s in (await api_client.get("/api/v1/stores")).json()["data"] if s["kind"] == "physical"}
 
     async def test_an_administrator_account_gets_every_physical_store_once_and_a_repeat_writes_nothing(
@@ -385,3 +385,115 @@ class TestGrantAllPhysicalStores:
                                       json={"reason": "x"})).status_code == 404
         assert (await db_session.execute(select(func.count()).select_from(UserStoreAccess).where(
             UserStoreAccess.user_id == mid))).scalar() == 0
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.events: list[tuple[str, dict]] = []
+
+    def info(self, event, **fields):
+        self.events.append((event, fields))
+
+    def __getattr__(self, _name):                      # warning/error etc.: accepted, not asserted
+        return lambda *a, **k: None
+
+
+class TestBulkGrant:
+    """POST /users/{id}/store-access/bulk: all or nothing, one audit row and log entry per new grant."""
+
+    def url(self, uid):
+        return f"/api/v1/users/{uid}/store-access/bulk"
+
+    async def _physical(self, api_client):  # noqa: F811
+        return sorted(s["id"] for s in (await api_client.get("/api/v1/stores")).json()["data"] if s["kind"] == "physical")
+
+    async def _rows(self, db_session, uid):
+        db_session.expire_all()
+        return (await db_session.execute(select(UserStoreAccess).where(UserStoreAccess.user_id == uid))).scalars().all()
+
+    async def test_each_new_grant_is_its_own_audit_row_and_log_entry(
+        self, received, api_client, db_session, monkeypatch,  # noqa: F811
+    ):
+        import app.api.v1.users as users_api
+        log = _RecordingLogger()
+        monkeypatch.setattr(users_api, "logger", log)
+        mid, physical = KNOWN_USERS["MANAGER"], await self._physical(api_client)
+        assert len(physical) >= 2
+        r = await api_client.post(self.url(mid), json={"store_ids": physical, "reason": "covers these stores"})
+        assert r.status_code == 200, r.text
+        data = r.json()["data"]
+        assert sorted(g["store_id"] for g in data["created"]) == physical and data["already_granted"] == []
+        rows = await self._rows(db_session, mid)
+        assert sorted(str(g.store_id) for g in rows) == physical
+        assert {(g.granted_by, g.granted_by_role, g.grant_reason, g.revoked_at) for g in rows} == {
+            ("testadmin", "ADMIN", "covers these stores", None)}
+        grants_logged = [f for e, f in log.events if e == "store_access_granted"]
+        assert sorted(f["store_id"] for f in grants_logged) == physical
+        assert all(f["actor_username"] == "testadmin" and f["actor_role"] == "ADMIN" and f["bulk"] for f in grants_logged)
+        assert [e for e, _ in log.events].count("store_access_granted_bulk") == 1
+
+    async def test_an_already_granted_store_is_returned_unchanged(self, received, api_client, db_session):  # noqa: F811
+        mid, a, b = KNOWN_USERS["MANAGER"], store_id(PHYSICAL_STORE), received.store_id
+        first = await grant(db_session, "MANAGER", a, reason="original reason")
+        r = await api_client.post(self.url(mid), json={"store_ids": [str(a), str(b)], "reason": "bulk"})
+        assert r.status_code == 200, r.text
+        data = r.json()["data"]
+        assert [g["store_id"] for g in data["created"]] == [str(b)]
+        assert [(g["id"], g["grant_reason"]) for g in data["already_granted"]] == [(str(first.id), "original reason")]
+        assert await active_grants(db_session, "MANAGER", a) == 1 and await active_grants(db_session, "MANAGER", b) == 1
+
+    async def test_any_invalid_store_refuses_the_whole_request_and_names_them_all(
+        self, received, api_client, db_session,  # noqa: F811
+    ):
+        mid, a = KNOWN_USERS["MANAGER"], store_id(PHYSICAL_STORE)
+        unknown, source = uuid.uuid4(), store_id(SOURCE_ONLY_STORE)
+        r = await api_client.post(self.url(mid), json={"store_ids": [str(a), str(unknown), str(source)], "reason": "x"})
+        assert r.status_code == 422, r.text
+        detail = r.json()["error"]["detail"]
+        assert detail["reason"] == "invalid_stores"
+        assert detail["stores"] == {str(unknown): "unknown", str(source): "source_identity"}
+        assert await self._rows(db_session, mid) == []                       # the valid store was not granted either
+
+    async def test_duplicates_counts_and_reasons_are_refused_and_nothing_is_written(
+        self, received, api_client, db_session,  # noqa: F811
+    ):
+        mid, a = KNOWN_USERS["MANAGER"], str(store_id(PHYSICAL_STORE))
+        r = await api_client.post(self.url(mid), json={"store_ids": [a, a], "reason": "x"})
+        assert r.status_code == 422 and r.json()["error"]["detail"]["reason"] == "duplicate_store_ids"
+        for body in ({"store_ids": [], "reason": "x"},
+                     {"store_ids": [str(uuid.uuid4()) for _ in range(101)], "reason": "x"},
+                     {"store_ids": [a], "reason": "   "}, {"store_ids": [a], "reason": ""}, {"store_ids": [a]}):
+            assert (await api_client.post(self.url(mid), json=body)).status_code == 422, body
+        assert await self._rows(db_session, mid) == []
+
+    async def test_authorization_and_eligibility(self, received, api_client, manager, db_session):  # noqa: F811
+        a = str(store_id(PHYSICAL_STORE))
+        assert (await manager.post(self.url(KNOWN_USERS["MANAGER"]), json={"store_ids": [a], "reason": "x"})).status_code == 403
+        r = await api_client.post(self.url(KNOWN_USERS["USER"]), json={"store_ids": [a], "reason": "x"})
+        assert r.status_code == 422 and r.json()["error"]["detail"]["reason"] == "account_not_eligible"
+        assert (await api_client.post(self.url(uuid.uuid4()), json={"store_ids": [a], "reason": "x"})).status_code == 404
+        assert await self._rows(db_session, KNOWN_USERS["MANAGER"]) == []
+        assert await self._rows(db_session, KNOWN_USERS["USER"]) == []
+
+    async def test_concurrent_overlapping_requests_leave_one_active_grant_per_store(
+        self, received, api_client, db_session,  # noqa: F811
+    ):
+        mid, ids = KNOWN_USERS["MANAGER"], [str(store_id(PHYSICAL_STORE)), str(received.store_id)]
+        responses = await asyncio.gather(*(api_client.post(self.url(mid), json={"store_ids": ids, "reason": "race"})
+                                           for _ in range(4)))
+        assert [r.status_code for r in responses] == [200] * 4
+        assert sum(len(r.json()["data"]["created"]) for r in responses) == 2
+        for sid in ids:
+            assert await active_grants(db_session, "MANAGER", uuid.UUID(sid)) == 1
+
+    async def test_grants_open_inventory_and_leave_invoice_processing_as_it_was(
+        self, received, api_client, manager, db_session,  # noqa: F811
+    ):
+        invoices_before = (await manager.get("/api/v1/invoices")).json()["total"]
+        assert (await manager.get("/api/v1/inventory/stores")).json()["data"] == []
+        ids = [str(store_id(PHYSICAL_STORE)), str(received.store_id)]
+        assert (await api_client.post(self.url(KNOWN_USERS["MANAGER"]),
+                                      json={"store_ids": ids, "reason": "x"})).status_code == 200
+        listed = sorted(s["id"] for s in (await manager.get("/api/v1/inventory/stores")).json()["data"])
+        assert listed == sorted(ids)
+        assert (await manager.get("/api/v1/invoices")).json()["total"] == invoices_before

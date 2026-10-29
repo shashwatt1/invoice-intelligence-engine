@@ -43,6 +43,7 @@ from app.repositories.store_repository import StoreRepository
 # The role that may use inventory at all (matches require_manager on the routes).
 INVENTORY_MINIMUM_ROLE = UserRole.MANAGER
 REASON_MAX_LENGTH = 500
+MAX_BULK_GRANT = 100            # stores per bulk grant request
 
 
 def has_inventory_role(user) -> bool:
@@ -180,6 +181,56 @@ async def grant_store_access(
             raise
         return existing, False
     return grant, True
+
+
+async def grant_stores(
+    session: AsyncSession, *, user_id: uuid.UUID, store_ids: list[uuid.UUID], actor, reason: str | None,
+) -> tuple[list[UserStoreAccess], list[UserStoreAccess]]:
+    """
+    Grant `user_id` several physical stores at once, all or nothing. Returns
+    (created, already_active).
+
+    Everything is checked before anything is written: an active ADMIN actor,
+    the reason, 1 to MAX_BULK_GRANT store ids with no duplicates, an eligible
+    account (locked, as for every grant), and that every store exists and is
+    physical. Any problem refuses the whole request, naming every offending
+    store, and writes nothing. Each store is then granted through
+    grant_store_access, so each new grant is its own audit row with the same
+    rules; an existing active grant is returned unchanged. Flushes; the caller
+    commits once, so an unexpected failure rolls every grant back.
+    """
+    _require_admin_actor(actor)
+    why = _reason(reason, "reason")
+    ids = list(store_ids)
+    if not ids or len(ids) > MAX_BULK_GRANT:
+        raise ValidationError(message=f"Choose between 1 and {MAX_BULK_GRANT} stores.",
+                              detail={"field": "store_ids", "reason": "count", "max": MAX_BULK_GRANT})
+    duplicates = sorted({str(i) for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise ValidationError(message="Each store may be listed only once; nothing was granted.",
+                              detail={"field": "store_ids", "reason": "duplicate_store_ids", "store_ids": duplicates})
+    target = await _locked_account(session, user_id)
+    if not has_inventory_role(target):
+        raise ValidationError(
+            message="Store access can only be granted to an active manager or administrator account.",
+            detail={"field": "user_id", "reason": "account_not_eligible", "role": target.role,
+                    "is_active": target.is_active},
+        )
+    found = {s.id: s for s in (await session.execute(select(Store).where(Store.id.in_(ids)))).scalars().all()}
+    invalid = {str(i): ("unknown" if i not in found else "source_identity")
+               for i in ids if i not in found or found[i].kind != KIND_PHYSICAL}
+    if invalid:
+        raise ValidationError(
+            message=f"{len(invalid)} of the selected stores cannot be granted; nothing was granted.",
+            detail={"field": "store_ids", "reason": "invalid_stores", "stores": invalid},
+        )
+    created: list[UserStoreAccess] = []
+    existing: list[UserStoreAccess] = []
+    for store in sorted(found.values(), key=lambda s: (s.label.lower(), str(s.id))):
+        grant, was_created = await grant_store_access(session, user_id=target.id, store_id=store.id,
+                                                      actor=actor, reason=why)
+        (created if was_created else existing).append(grant)
+    return created, existing
 
 
 async def grant_all_physical_stores(

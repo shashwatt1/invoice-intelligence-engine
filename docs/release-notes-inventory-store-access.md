@@ -40,3 +40,19 @@ Status: **draft; not released.**
   administrator approves or rejects it (a rejection needs a note) or deletes directly with a
   reason. A record of every deletion is kept. **Deleted files cannot be recovered.**
 - Invoices binned **before** this release are not in the Recycle Bin and cannot be restored through it.
+
+## Follow-up: grant several stores at once (not yet released)
+
+This entry belongs to a later change on branch `feat/store-access-bulk-grant`, not to the release above.
+
+- **Administrators can grant several stores in one step** in Users → Store access. Search the
+  physical stores, tick the ones to grant (up to 100 at a time), review the chosen stores listed
+  below (remove any, or clear the selection), enter one reason and confirm once.
+- **All or nothing.** If any chosen store cannot be granted, nothing is granted and the stores at
+  fault are named; the selection is kept so it can be corrected.
+- **Each store is still recorded separately**, with who granted it, their role and the reason, exactly
+  as a single grant.
+- **Stores the account already has** are shown ticked and cannot be chosen again; their original
+  grant and reason are left as they were.
+- Unchanged: granting or revoking one store, "Grant all physical stores" for administrator accounts,
+  and who may manage store access (administrators only).

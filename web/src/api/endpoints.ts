@@ -148,6 +148,17 @@ export async function revokeStoreAccess(userId: string, storeId: string, reason:
   return data.data!;
 }
 
+/**
+ * ADMIN only: grant 1–100 physical stores in one all-or-nothing request. Each new grant is its own audit
+ * record; stores already held come back under already_granted. Any invalid store refuses the whole
+ * request (422, detail.reason "invalid_stores", detail.stores {id: "unknown" | "source_identity"}).
+ */
+export async function grantStoresAccess(userId: string, storeIds: string[], reason: string): Promise<StoreAccessGrantAllResult> {
+  const { data } = await apiClient.post<ApiEnvelope<StoreAccessGrantAllResult>>(
+    `/users/${userId}/store-access/bulk`, { store_ids: storeIds, reason });
+  return data.data!;
+}
+
 /** ADMIN accounts only (the server refuses a manager): one grant per physical store not yet held. */
 export async function grantAllPhysicalStores(userId: string, reason: string): Promise<StoreAccessGrantAllResult> {
   const { data } = await apiClient.post<ApiEnvelope<StoreAccessGrantAllResult>>(
