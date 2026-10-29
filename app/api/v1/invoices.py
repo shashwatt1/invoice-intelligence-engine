@@ -37,7 +37,7 @@ from app.core.exceptions import (
 )
 from app.core.logging import get_logger
 from app.database.session import get_db, get_session_factory
-from app.models.document import DocumentStatus
+from app.models.document import INACTIVE_DOCUMENT_STATUSES, DocumentStatus
 from app.models.processing_log import PipelineStage
 from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
 from app.models.user import User, UserRole
@@ -82,8 +82,13 @@ from app.services.case_mapping_service import (
     invoice_commercial_resolution,
     invoice_units_by_item_code,
 )
-from app.services.document_lifecycle import ensure_document_visible
+from app.services.document_lifecycle import (
+    ensure_document_operable,
+    ensure_document_visible,
+    ensure_invoice_operable,
+)
 from app.services.export_service import (
+    PdiExportEligibility,
     normalize_item_code,
     persisted_pdi_export_eligibility,
     unmapped_item_codes,
@@ -429,6 +434,11 @@ async def get_invoice(
         ]
         proposals = await ProductDataProposalRepository(db).list(invoice_id=invoice.id, store_id=store)
     pdi_eligibility = persisted_pdi_export_eligibility(invoice, pdi_eligibility_units)
+    if document.status in INACTIVE_DOCUMENT_STATUSES:
+        # In the Recycle Bin or a reference copy: never exported (the export route refuses it too).
+        pdi_eligibility = PdiExportEligibility(allowed=False, requires_confirmation=False, blocked_reason=(
+            "This invoice is in the Recycle Bin; restore it to export it." if document.status == DocumentStatus.BINNED
+            else "This is a read-only reference copy; it is never exported."))
     photos = await DocumentRepository(db).pages(document)
     names = await line_product_names(db, invoice, resolution)
     supplier_items = supplier_item_ids(invoice)
@@ -699,6 +709,7 @@ async def confirm_case_mappings(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
     ensure_document_visible(invoice.document, user)
+    ensure_document_operable(invoice.document, "propose_case_mapping")
 
     store = invoice.store_id
     if store is None:
@@ -830,6 +841,7 @@ async def correct_line_item(
     # A POSTED receipt locks the invoice. Every correction (UPC entry included) goes through
     # this lock after its input checks and before anything is read or changed.
     await ensure_invoice_changeable(db, invoice_id, "correct_line_item")
+    await ensure_invoice_operable(db, invoice_id, "correct_line_item")   # not in the bin, not a reference copy
     repository = InvoiceRepository(db)
     if await repository.get(invoice_id) is None:
         raise RecordNotFoundError(
@@ -901,6 +913,7 @@ async def decide_duplicate(
     user: User = Depends(require_manager),
 ) -> APIResponse[DuplicateDecisionResult]:
     await ensure_invoice_changeable(db, invoice_id, "duplicate_decision")   # a POSTED receipt locks the invoice
+    await ensure_invoice_operable(db, invoice_id, "duplicate_decision")   # not in the bin, not a reference copy
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
@@ -981,6 +994,7 @@ async def assign_store(
     user: User = Depends(require_manager),
 ) -> APIResponse[InvoiceDetailData]:
     await ensure_invoice_changeable(db, invoice_id, "assign_store")   # a POSTED receipt locks the invoice
+    await ensure_invoice_operable(db, invoice_id, "assign_store")   # not in the bin, not a reference copy
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
@@ -1068,6 +1082,7 @@ async def add_line_item(
         raise ValidationError(message=f"{', '.join(negative)} must not be negative.",
                               detail={"invoice_id": str(invoice_id), "fields": negative})
     await ensure_invoice_changeable(db, invoice_id, "add_line_item")   # a POSTED receipt locks the invoice
+    await ensure_invoice_operable(db, invoice_id, "add_line_item")   # not in the bin, not a reference copy
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
@@ -1121,6 +1136,7 @@ async def void_line_item(
     user: User = Depends(require_manager),
 ) -> APIResponse[LineItemCorrectionResult]:
     await ensure_invoice_changeable(db, invoice_id, "void_line_item")   # a POSTED receipt locks the invoice
+    await ensure_invoice_operable(db, invoice_id, "void_line_item")   # not in the bin, not a reference copy
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
@@ -1167,6 +1183,7 @@ async def correct_invoice_date(
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    ensure_document_operable(invoice.document, "correct_invoice_date")
     await repository.correct_invoice_date(invoice, payload.invoice_date,
                                           corrected_by=user.username, note=payload.note)
     await _log_correction(db, invoice, "invoice_date_corrected", user.username, payload.note,
@@ -1211,6 +1228,7 @@ async def correct_totals(
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    ensure_document_operable(invoice.document, "correct_totals")
     await repository.correct_totals(invoice, updates, corrected_by=user.username, note=payload.note)
     await _log_correction(db, invoice, "totals_corrected", user.username, payload.note,
                           changes=(invoice.correction_history or [])[-len(updates):])

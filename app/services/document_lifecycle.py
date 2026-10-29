@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import (
     DocumentNotActiveError,
     DocumentWithdrawnError,
+    InvoiceInactiveError,
     PermissionDeniedError,
 )
 from app.core.logging import get_logger
@@ -67,8 +68,27 @@ ACTIVE_DOCUMENT_STATUSES: frozenset[DocumentStatus] = frozenset({
 # for this (see ensure_document_active) so an in-flight OCR/LLM call
 # that finishes late can never advance a withdrawn document further.
 WITHDRAWN_DOCUMENT_STATUSES: frozenset[DocumentStatus] = frozenset(
-    {DocumentStatus.STOPPED, DocumentStatus.BINNED}
+    {DocumentStatus.STOPPED, DocumentStatus.BINNED, DocumentStatus.REFERENCE}
 )
+
+
+def ensure_document_operable(document: Document, action: str) -> None:
+    """
+    Refuse `action` on a document out of the active workflow: in the Recycle
+    Bin (restore it first) or a read-only reference copy (never changeable).
+    Every route that changes, exports, marks Retailed or reprocesses an
+    invoice calls this; reading it is always allowed.
+    """
+    if document.status == DocumentStatus.BINNED:
+        raise InvoiceInactiveError(
+            message="This invoice is in the Recycle Bin. Restore it before changing or exporting it.",
+            detail={"document_id": str(document.id), "reason": "in_recycle_bin", "action": action})
+    if document.status == DocumentStatus.REFERENCE:
+        raise InvoiceInactiveError(
+            message="This is a read-only reference copy; it cannot be changed, exported or received.",
+            detail={"document_id": str(document.id), "reason": "reference_copy", "action": action,
+                    "reference_of_document_id": str(document.reference_of_document_id)
+                    if document.reference_of_document_id else None})
 
 
 def document_status_for(decision: ProcessingDecision | str) -> DocumentStatus:
@@ -227,6 +247,15 @@ def _authorize(document: Document, user: User) -> None:
             message="You may only stop or move to bin documents you uploaded yourself.",
             detail=exc.detail,
         ) from exc
+
+
+async def ensure_invoice_operable(session: AsyncSession, invoice_id: uuid.UUID, action: str) -> None:
+    """ensure_document_operable for the invoice's document (an unknown invoice is left to the caller's 404)."""
+    document = (await session.execute(
+        select(Document).join(Invoice, Invoice.document_id == Document.id).where(Invoice.id == invoice_id)
+    )).scalars().first()
+    if document is not None:
+        ensure_document_operable(document, action)
 
 
 async def ensure_document_active(session: AsyncSession, document: Document) -> None:

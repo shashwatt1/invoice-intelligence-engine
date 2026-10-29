@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice
+from app.repositories.document_repository import document_is_active
 from app.services.export_service import normalize_item_code, pdi_items
 from app.services.product_master.commercial_resolution import resolve_store_codes
 from app.services.proposal_service import pending_by_item_code
@@ -80,7 +81,8 @@ async def list_unresolved_mapping_groups(
     store to scope a mapping check against, matching
     persisted_pdi_export_eligibility's own STORE_PENDING gate.
     """
-    query = select(Invoice).where(Invoice.store_id.isnot(None)).options(selectinload(Invoice.items))
+    query = (select(Invoice).where(Invoice.store_id.isnot(None), document_is_active(Invoice.document_id))
+             .options(selectinload(Invoice.items)))
     if store_id is not None:
         query = query.where(Invoice.store_id == store_id)
     invoices = (await session.execute(query)).scalars().all()

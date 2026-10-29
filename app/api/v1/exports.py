@@ -28,6 +28,7 @@ from app.repositories.invoice_repository import InvoiceRepository
 from app.schemas.base import APIResponse
 from app.schemas.processing import EdiExportRecord
 from app.services.case_mapping_service import invoice_commercial_resolution
+from app.services.document_lifecycle import ensure_document_operable
 from app.services.edi_export_ledger import record_pdi_export
 from app.services.export_service import (
     build_export_payload,
@@ -90,6 +91,10 @@ async def export_invoice(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
 
+    if format in ("pdi", "csv"):
+        # Files for EDI and accounting systems are never produced for an invoice in the Recycle Bin or for a
+        # reference copy, so nothing is imported twice. JSON and the text summary stay readable.
+        ensure_document_operable(invoice.document, f"export_{format}")
     basename = export_basename(invoice)
     headers: dict[str, str] = {}
     if format == "txt":

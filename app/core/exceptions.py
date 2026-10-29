@@ -247,6 +247,18 @@ class DocumentWithdrawnError(InvoiceBaseException):
     message = "This document was withdrawn from the active workflow; processing was halted."
 
 
+class InvoiceInactiveError(InvoiceBaseException):
+    """
+    Raised when a change, export, Retailed mark or reprocess targets a
+    document that is out of the active workflow: in the Recycle Bin, or a
+    read-only reference copy. detail.reason says which.
+    """
+
+    error_code = "ERR_INVOICE_INACTIVE"
+    http_status = 409
+    message = "This invoice is not in the active workflow and cannot be changed."
+
+
 class StaleReviewError(InvoiceBaseException):
     """
     Raised when a review decision was made against a view of a Product Master

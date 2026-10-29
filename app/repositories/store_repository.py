@@ -25,6 +25,7 @@ from app.models.store import (
     StoreIdentifier,
 )
 from app.models.store_product_reference import StoreProductReference
+from app.repositories.document_repository import document_is_active
 
 
 class StoreRepository:
@@ -129,7 +130,7 @@ class StoreRepository:
             for store_id, n in (await self._session.execute(query)).all():
                 out.setdefault(store_id, {})[key] = n
 
-        await tally("invoices", Invoice.store_id)
+        await tally("invoices", Invoice.store_id, document_is_active(Invoice.document_id))
         await tally("pricing_rows", ProductPricing.store_id)
         await tally("identities", ProductIdentity.store_id)
         await tally("identifiers", ProductIdentifier.store_id)

@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.invoice import Invoice
 from app.models.processing_log import ProcessingLog
 from app.models.vendor import VENDOR_CONFIRMED, Vendor, VendorIdentityReview
+from app.repositories.document_repository import document_is_active
 from app.schemas.normalized import NormalizedInvoice
 
 
@@ -135,7 +136,8 @@ class VendorRepository:
             return {}
         query = (select(Invoice.vendor_id, func.count(), func.count(func.distinct(Invoice.vendor_name)),
                         func.max(Invoice.created_at))
-                 .where(Invoice.vendor_id.in_(vendor_ids)).group_by(Invoice.vendor_id))
+                 .where(Invoice.vendor_id.in_(vendor_ids), document_is_active(Invoice.document_id))
+                 .group_by(Invoice.vendor_id))
         return {vid: {"invoices": n, "observed_names": names, "last_seen_at": last}
                 for vid, n, names, last in (await self._session.execute(query)).all()}
 
@@ -154,7 +156,7 @@ class VendorRepository:
         return [{"tax_id": tax_id, "invoices": n} for tax_id, n in (await self._session.execute(query)).all()]
 
     async def recent_invoices(self, vendor_id: uuid.UUID, limit: int = 25) -> Sequence[Invoice]:
-        query = (select(Invoice).where(Invoice.vendor_id == vendor_id)
+        query = (select(Invoice).where(Invoice.vendor_id == vendor_id, document_is_active(Invoice.document_id))
                  .order_by(Invoice.created_at.desc()).limit(limit))
         return (await self._session.execute(query)).scalars().all()
 

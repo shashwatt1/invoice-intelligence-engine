@@ -40,7 +40,7 @@ STORE_NOT_LOADED = "store_record_missing"
 NOT_PHYSICAL_STORE = "store_is_not_physical"
 DOCUMENT_WITHDRAWN = "document_withdrawn"
 
-_WITHDRAWN = frozenset({DocumentStatus.STOPPED.value, DocumentStatus.BINNED.value})
+_WITHDRAWN = frozenset({DocumentStatus.STOPPED.value, DocumentStatus.BINNED.value, DocumentStatus.REFERENCE.value})
 
 
 @dataclass(frozen=True)

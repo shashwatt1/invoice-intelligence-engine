@@ -120,7 +120,8 @@ def endpoint(app, monkeypatch):
             pass
 
         async def get_detail(self, _iid):
-            return SimpleNamespace(**vars(INVOICE), status="VALIDATED", items=[])
+            document = SimpleNamespace(id=INVOICE.document_id, status="COMPLETED", reference_of_document_id=None)
+            return SimpleNamespace(**vars(INVOICE), status="VALIDATED", items=[], document=document)
 
     async def resolve(_db, _invoice):
         return resolution()

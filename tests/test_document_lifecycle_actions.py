@@ -47,8 +47,9 @@ class TestStatusClassification:
     def test_active_and_withdrawn_sets_are_disjoint(self):
         assert not (ACTIVE_DOCUMENT_STATUSES & WITHDRAWN_DOCUMENT_STATUSES)
 
-    def test_withdrawn_set_is_exactly_stopped_and_binned(self):
-        assert {DocumentStatus.STOPPED, DocumentStatus.BINNED} == WITHDRAWN_DOCUMENT_STATUSES
+    def test_withdrawn_set_is_exactly_stopped_binned_and_reference(self):
+        # A read-only reference copy (Recycle Bin restore) is never advanced by the pipeline either.
+        assert {DocumentStatus.STOPPED, DocumentStatus.BINNED, DocumentStatus.REFERENCE} == WITHDRAWN_DOCUMENT_STATUSES
 
     def test_terminal_dispositions_are_not_active(self):
         for status in (DocumentStatus.COMPLETED, DocumentStatus.REVIEW_REQUIRED,

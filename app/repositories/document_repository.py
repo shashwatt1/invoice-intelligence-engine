@@ -13,11 +13,11 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.document import Document, DocumentStatus
+from app.models.document import INACTIVE_DOCUMENT_STATUSES, Document, DocumentStatus
 from app.models.document_page import DocumentPage
 from app.models.invoice import Invoice
 
@@ -33,6 +33,17 @@ _HISTORY_SORT_COLUMNS = {
     "confidence": Invoice.composite_confidence,
 }
 
+
+
+def document_is_active(document_id_column):
+    """
+    SQL condition: the document behind `document_id_column` is in the active
+    workflow — not in the Recycle Bin and not a read-only reference copy.
+    Operational lists and counts (dashboard, supply history, store invoices,
+    mapping queue, vendor statistics) use it so inactive invoices are never
+    counted twice or offered for work.
+    """
+    return ~exists().where(Document.id == document_id_column, Document.status.in_(INACTIVE_DOCUMENT_STATUSES))
 
 class DocumentRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -172,9 +183,9 @@ class DocumentRepository:
         if status is not None:
             query = query.where(Document.status == status)
         else:
-            # A binned document was removed from the active workflow by a
-            # person; it stays recoverable and is listed only when asked for.
-            query = query.where(Document.status != DocumentStatus.BINNED)
+            # Binned documents and reference copies are out of the active workflow;
+            # they are listed only when asked for by status (and in the Recycle Bin).
+            query = query.where(Document.status.notin_(INACTIVE_DOCUMENT_STATUSES))
         if uploaded_by_user_id is not None:
             query = query.where(Document.uploaded_by_user_id == uploaded_by_user_id)
         if store_id is not None:

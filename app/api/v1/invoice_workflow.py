@@ -33,17 +33,19 @@ from app.schemas.processing import (
     ReferenceLinkUpdate,
     RetailReopenRequest,
 )
-from app.services.document_lifecycle import ensure_document_visible
+from app.services.document_lifecycle import ensure_document_operable, ensure_document_visible
 from app.services.invoice_workflow_service import mark_retailed, reopen_retailed, set_reference_link
 
 router = APIRouter(tags=["Invoices"])
 
 
-async def _visible_invoice(db: AsyncSession, invoice_id: uuid.UUID, user: User):
+async def _visible_invoice(db: AsyncSession, invoice_id: uuid.UUID, user: User, action: str):
+    """The invoice, if `user` may see it and it is in the active workflow (every route here changes it)."""
     invoice = await InvoiceRepository(db).get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
     ensure_document_visible(invoice.document, user)
+    ensure_document_operable(invoice.document, action)
     return invoice
 
 
@@ -61,7 +63,7 @@ async def save_reference_link(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[ReferenceLinkData | None]:
-    invoice = await _visible_invoice(db, invoice_id, user)
+    invoice = await _visible_invoice(db, invoice_id, user, "reference_link")
     await set_reference_link(db, invoice, body.url, user)
     await db.commit()
     return APIResponse(data=reference_link_data(invoice))
@@ -82,7 +84,7 @@ async def mark_invoice_retailed(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[CompletionData]:
-    await _visible_invoice(db, invoice_id, user)
+    await _visible_invoice(db, invoice_id, user, "mark_retailed")
     state = await mark_retailed(db, invoice_id, user)
     if state is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
@@ -102,7 +104,7 @@ async def reopen_invoice_retailed(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[CompletionData]:
-    await _visible_invoice(db, invoice_id, user)
+    await _visible_invoice(db, invoice_id, user, "reopen_retailed")
     state = await reopen_retailed(db, invoice_id, user, body.note)
     if state is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})

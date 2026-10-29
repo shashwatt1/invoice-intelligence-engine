@@ -73,6 +73,7 @@ from app.models.inventory import (
 )
 from app.models.invoice import Invoice
 from app.models.store import Store
+from app.repositories.document_repository import document_is_active
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.store_repository import StoreRepository
 from app.services import store_access
@@ -669,7 +670,7 @@ async def store_invoices(session: AsyncSession, store_id: uuid.UUID, *, page: in
     The store's invoices, newest first, with each one's receipt (the active one, else the latest).
     `search` matches the invoice number or vendor name; `receipt` is one of RECEIPT_FILTERS.
     """
-    conditions = [Invoice.store_id == store_id]
+    conditions = [Invoice.store_id == store_id, document_is_active(Invoice.document_id)]
     term = (search or "").strip()
     if term:
         pattern = f"%{term}%"
@@ -697,7 +698,7 @@ async def supply_history(session: AsyncSession, store_ids: Sequence[uuid.UUID], 
     """
     if not store_ids:
         return [], {}, 0
-    conditions = [Invoice.store_id.in_(list(store_ids))]
+    conditions = [Invoice.store_id.in_(list(store_ids)), document_is_active(Invoice.document_id)]
     if vendor_id is not None:
         conditions.append(Invoice.vendor_id == vendor_id)
     if delivered_from is not None or delivered_to is not None:
@@ -715,7 +716,8 @@ async def supply_vendors(session: AsyncSession, store_ids: Sequence[uuid.UUID]) 
         return {}
     rows = (await session.execute(
         select(Invoice.vendor_id, Invoice.store_id)
-        .where(Invoice.store_id.in_(list(store_ids)), Invoice.vendor_id.is_not(None))
+        .where(Invoice.store_id.in_(list(store_ids)), Invoice.vendor_id.is_not(None),
+               document_is_active(Invoice.document_id))
         .group_by(Invoice.vendor_id, Invoice.store_id)
     )).all()
     out: dict[uuid.UUID, set[uuid.UUID]] = {}
