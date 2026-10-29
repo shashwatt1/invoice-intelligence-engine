@@ -86,6 +86,7 @@ import {
   revokeStoreAccess,
   grantStoreAccess,
   grantAllPhysicalStores,
+  grantStoresAccess,
   reverseReceipt,
   reviseProposal,
   saveReferenceLink,
@@ -701,6 +702,11 @@ export function useGrantStoreAccess(userId: string) {
 export function useRevokeStoreAccess(userId: string) {
   return useStoreAccessMutation(({ storeId, reason }: { storeId: string; reason: string }) =>
     revokeStoreAccess(userId, storeId, reason), userId);
+}
+
+export function useGrantStoresAccess(userId: string) {
+  return useStoreAccessMutation(({ storeIds, reason }: { storeIds: string[]; reason: string }) =>
+    grantStoresAccess(userId, storeIds, reason), userId);
 }
 
 export function useGrantAllPhysicalStores(userId: string) {
