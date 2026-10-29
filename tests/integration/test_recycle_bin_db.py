@@ -26,6 +26,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.models.document import Document
+from app.models.inventory import InventoryMovement, InventoryReceipt
 from app.models.invoice import Invoice
 from app.models.recycle_bin import BinDeletionRequest, ImmutableBinHistoryError, RecycleBinEntry
 from tests.integration.conftest import (
@@ -266,6 +267,81 @@ class TestDeletionRequestsAndPurge:
         [record] = await entries(api_client, "PURGED")
         assert (record["previous_status"], record["reason"], record["binned_by"], record["document_id"]) == (
             "COMPLETED", "uploaded twice", "testadmin", None)
+
+
+class TestDeletingADocumentThatWasRestoredBefore:
+    """
+    Regression: deleting a document clears document_id on EVERY bin entry for it, including an
+    earlier RESTORED one. That used to violate ck_recycle_bin_entries_document and roll the
+    delete back. Closed entries may now lose the link; open entries may not.
+    """
+
+    async def _restored_once(self, api_client, manager, db_session, received):  # noqa: F811
+        # An unrelated opening count at the same store: the deletion must leave the ledger alone.
+        r = await api_client.post(f"/api/v1/inventory/stores/{received.store_id}/opening-counts", json={
+            "count_date": "2026-10-10", "reason": "shelf count",
+            "entries": [{"item_code": "99900000099", "quantity": 7}]})
+        assert r.status_code == 201, r.text
+        assert (await bin_doc(manager, received.document_id, reason="first time")).status_code == 200
+        [first] = await entries(manager)
+        assert (await manager.post(f"/api/v1/recycle-bin/{first['id']}/restore", json={})).status_code == 200
+        return first
+
+    async def _ledger(self, db_session):
+        db_session.expire_all()
+        return ((await db_session.execute(select(func.count()).select_from(InventoryMovement))).scalar(),
+                (await db_session.execute(select(func.count()).select_from(InventoryReceipt))).scalar())
+
+    async def _history(self, db_session, received):  # noqa: F811
+        db_session.expire_all()
+        return (await db_session.execute(
+            select(RecycleBinEntry).where(RecycleBinEntry.invoice_id == received.invoice_id)
+            .order_by(RecycleBinEntry.binned_at))).scalars().all()
+
+    async def test_bin_restore_bin_then_purge_deletes_it_and_keeps_both_entries(
+        self, api_client, manager, db_session, received,  # noqa: F811
+    ):
+        first = await self._restored_once(api_client, manager, db_session, received)
+        ledger = await self._ledger(db_session)
+        assert (await bin_doc(manager, received.document_id, reason="second time")).status_code == 200
+        [second] = await entries(manager)
+        r = await api_client.post(f"/api/v1/recycle-bin/{second['id']}/purge", json={"reason": "duplicate test upload"})
+        assert r.status_code == 200, r.text
+
+        assert await doc_status(db_session, received.document_id) is None
+        assert (await db_session.execute(select(Invoice).where(Invoice.id == received.invoice_id))).first() is None
+        history = await self._history(db_session, received)
+        assert [(e.status, e.reason, e.document_id) for e in history] == [
+            ("RESTORED", "first time", None), ("PURGED", "second time", None)]
+        assert [str(e.id) for e in history] == [first["id"], second["id"]]
+        assert history[0].closed_by == "testmanager" and history[1].close_note == "duplicate test upload"
+        assert all(e.filename == "inventory.pdf" and e.invoice_number for e in history)   # snapshots kept
+        assert await self._ledger(db_session) == ledger                                  # ledger untouched
+        assert await entries(api_client) == []                                           # nothing left open
+
+    async def test_bin_restore_then_direct_admin_delete_succeeds_and_is_recorded(
+        self, api_client, manager, db_session, received,  # noqa: F811
+    ):
+        await self._restored_once(api_client, manager, db_session, received)
+        ledger = await self._ledger(db_session)
+        r = await api_client.delete(f"/api/v1/invoices/{received.invoice_id}", params={"reason": "uploaded twice"})
+        assert r.status_code == 200, r.text
+
+        assert await doc_status(db_session, received.document_id) is None
+        history = await self._history(db_session, received)
+        assert [(e.status, e.reason, e.document_id) for e in history] == [
+            ("RESTORED", "first time", None), ("PURGED", "uploaded twice", None)]
+        assert history[1].binned_by == "testadmin" and history[1].previous_status == "COMPLETED"
+        assert await self._ledger(db_session) == ledger
+
+    async def test_an_open_entry_still_cannot_lose_its_document(self, manager, db_session, received):  # noqa: F811
+        from sqlalchemy import text
+        from sqlalchemy.exc import IntegrityError
+
+        await bin_doc(manager, received.document_id)
+        with pytest.raises(IntegrityError):
+            await db_session.execute(text("UPDATE recycle_bin_entries SET document_id = NULL WHERE status = 'IN_BIN'"))
+        await db_session.rollback()
 
 
 class TestHistoryIsImmutable:
