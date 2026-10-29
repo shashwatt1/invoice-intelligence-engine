@@ -146,6 +146,34 @@ class TestAdministrationRefusesFirst:
                              reason=reason)
 
 
+class TestBulkGrantRefusesFirst:
+    """grant_stores refuses before touching the database: actor, reason, count and duplicates."""
+
+    @pytest.mark.parametrize("actor", [account("MANAGER"), account("USER"), account("ADMIN", active=False)])
+    async def test_only_an_active_administrator_grants_in_bulk(self, actor):
+        with pytest.raises(PermissionDeniedError):
+            await sa.grant_stores(_NoDatabase(), user_id=uuid.uuid4(), store_ids=[STORE_ID], actor=actor,
+                                  reason="pilot")
+
+    @pytest.mark.parametrize("reason", [None, "", "   ", "x" * 501])
+    async def test_a_reason_is_required(self, reason):
+        with pytest.raises(ValidationError):
+            await sa.grant_stores(_NoDatabase(), user_id=uuid.uuid4(), store_ids=[STORE_ID],
+                                  actor=account("ADMIN"), reason=reason)
+
+    @pytest.mark.parametrize("ids, reason", [
+        ([], "count"),
+        ([uuid.uuid4() for _ in range(sa.MAX_BULK_GRANT + 1)], "count"),
+        ([STORE_ID, STORE_ID], "duplicate_store_ids"),
+    ])
+    async def test_count_and_duplicates_are_refused_and_nothing_is_read(self, ids, reason):
+        with pytest.raises(ValidationError) as refused:
+            await sa.grant_stores(_NoDatabase(), user_id=uuid.uuid4(), store_ids=ids, actor=account("ADMIN"),
+                                  reason="pilot")
+        assert refused.value.detail["reason"] == reason
+        assert sa.MAX_BULK_GRANT == 100
+
+
 class TestTheGrantModel:
     def test_only_the_revocation_fields_may_ever_change(self):
         expected = {"revoked_at", "revoked_by_user_id", "revoked_by", "revoked_by_role", "revoke_reason"}
