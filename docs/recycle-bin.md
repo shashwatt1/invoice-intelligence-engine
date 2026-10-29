@@ -26,8 +26,9 @@ or deleted (database constraints and ORM guards).
 
 **Inactive documents** (in the bin, or reference copies) stay readable but are left out of the
 default invoice list, dashboard counts and confidence, the mapping queue, store invoices, supply
-history, vendor statistics and store invoice counts, so nothing is counted twice. The status
-filter still finds them.
+history, vendor statistics and store invoice counts, so nothing is counted twice. Binned documents
+are found in the Recycle Bin; reference copies through the Invoices "Reference copies" filter. The
+Invoices status filter no longer offers a bin view.
 
 ### Scenarios
 
@@ -37,6 +38,13 @@ filter still finds them.
 - **An administrator restores a binned document while a newer copy is active.** A normal restore is
   refused; the administrator may restore it as a read-only reference copy for debugging. It cannot
   affect EDI, inventory or counts.
+
+### Limitations (verified 2026-10-29)
+
+- **Documents binned before `0037`** are not in the Recycle Bin and cannot be restored through it.
+- **Exports made before the EDI export ledger existed** leave no record, so binning cannot detect
+  them; such an invoice can be binned (and, by an administrator, purged).
+- **A purge deletes the stored invoice files for good.** Database backups do not include them.
 
 ## 2. Compatibility and order
 
@@ -51,12 +59,15 @@ filter still finds them.
 
 ## 3. Production procedure (not run)
 
+For a production release, follow
+[release-runbook-inventory-store-access.md](release-runbook-inventory-store-access.md), which sets the
+order and approval gates. The steps below are the `0037`-specific checks it relies on.
+
 1. **Confirm the state (read-only, Supabase SQL editor).**
    ```sql
    SELECT version_num FROM alembic_version;                               -- expect exactly: 0036
    SELECT to_regclass('public.recycle_bin_entries') AS entries,
           to_regclass('public.bin_deletion_requests') AS requests;        -- expect: NULL, NULL
-   SELECT count(*) FROM documents WHERE status = 'BINNED';                -- note the number
    ```
    Stop if the revision is not exactly `0036`.
 
@@ -75,24 +86,22 @@ filter still finds them.
 3. **Apply** the reviewed SQL. Re-run step 1: expect `0037` and both tables present. Only then
    deploy the release (section 2).
 
-4. **Documents already binned before 0037** have no bin entry, so they do not appear on the
-   Recycle Bin page (no backfill by design). They stay BINNED, read-only and uncounted, and can
-   still be found with the Invoices status filter. If they should be listed, that is a separate,
-   approved step.
-
-5. **Verify in the application** with a test document:
-   - bin it with a reason;
-   - see it in the Recycle Bin;
-   - restore it.
-   
-   Then confirm (read-only):
+4. **Verify.** The write paths (bin, restore, reference copy, requests, purge) are verified in the
+   pre-release rehearsal, not in production (see the release runbook). In production, check read
+   only: the Recycle Bin page opens and both tabs are empty, and
    ```sql
-   SELECT status, binned_by, reason, closed_by FROM recycle_bin_entries ORDER BY binned_at DESC LIMIT 5;
+   SELECT count(*) FROM recycle_bin_entries;   -- expect 0 right after the release
    ```
 
 ## 4. Rollback
 
-- **Code rollback** is safe: the previous release ignores the new tables and column. Reference
-  copies would then show as an unknown status, so restore or purge any before rolling back code.
+- **Code rollback** keeps working on the new schema (the previous release ignores the new tables
+  and column), with two caveats:
+  - reference copies would show an unknown status, so restore or purge any first;
+  - **the previous release cannot delete a document that has an open bin entry**: its delete
+    routes do not close the entry, and the database refuses to leave an open entry without its
+    document. Restore or purge such documents before rolling back code, or roll forward.
+- **A purge cannot be undone** by restoring the database: the stored files are deleted, and
+  database backups do not include them.
 - **Migration rollback** (`alembic downgrade 0036`) is refused while any bin history or reference
   copy exists, because that history explains deletions.

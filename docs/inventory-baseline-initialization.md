@@ -56,6 +56,10 @@ Verified against the ledger code (`app/services/inventory_service.py`, `inventor
 
 ## 4. Steps
 
+For a production release, the order and approvals come from
+[release-runbook-inventory-store-access.md](release-runbook-inventory-store-access.md): steps 1–2 here are
+its state check and Gate 2, and steps 3–6 are its Gate 5, run only after the release is deployed.
+
 ### Step 1 — confirm the database state (read-only, Supabase SQL editor)
 
 ```sql
