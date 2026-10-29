@@ -296,3 +296,68 @@ class InventoryMovement(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("idx_inventory_movements_store_item", "store_id", "item_code", "business_date"),
         Index("idx_inventory_movements_invoice", "invoice_id"),
     )
+
+
+# ---- store inventory baseline (0036) --------------------------------------------------------
+
+BASELINE_EARLIEST_RECEIPT = "EARLIEST_POSTED_RECEIPT"   # the store already had posted receipts
+BASELINE_INITIALIZATION_DATE = "INITIALIZATION_DATE"     # no posted receipt yet: the day it was initialized
+BASELINE_BASES = frozenset({BASELINE_EARLIEST_RECEIPT, BASELINE_INITIALIZATION_DATE})
+BASELINE_CHECKS = {
+    "ck_store_inventory_baselines_basis": f"basis IN ({_in(BASELINE_BASES)})",
+    # The earliest receipt is the evidence for its basis, and only for it.
+    "ck_store_inventory_baselines_evidence": (
+        f"(basis = '{BASELINE_EARLIEST_RECEIPT}') = (earliest_receipt_id IS NOT NULL)"),
+    "ck_store_inventory_baselines_dates": "baseline_date <= initialization_date",
+    "ck_store_inventory_baselines_reason": "length(trim(reason)) > 0",
+}
+
+
+class StoreInventoryBaseline(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """
+    A store's inventory start: every product at this store that has no
+    product-level opening count starts at zero on `baseline_date`.
+
+    It is not a count. A product-level OPENING_COUNT always takes precedence
+    for its product. Against a baseline, every RECEIPT movement counts —
+    including one approved later with an earlier arrival date, which a zero
+    start cannot already contain — and other movements count from
+    `baseline_date` (see app.services.inventory_service.fold_balances).
+
+    At most one per store; never edited and never deleted. Recorded only by an
+    administrator through scripts/initialize_inventory_baselines.py.
+    """
+
+    __tablename__ = "store_inventory_baselines"
+
+    store_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False)
+    baseline_date: Mapped[date] = mapped_column(Date, nullable=False)
+    basis: Mapped[str] = mapped_column(String(32), nullable=False)
+    earliest_receipt_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("inventory_receipts.id", ondelete="RESTRICT"), nullable=True,
+        doc="The posted receipt whose arrival date set baseline_date (EARLIEST_POSTED_RECEIPT only).")
+    initialization_date: Mapped[date] = mapped_column(Date, nullable=False, doc="The day the run recorded it.")
+    initialized_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    initialized_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    initialized_by_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        *(CheckConstraint(sql, name=name) for name, sql in BASELINE_CHECKS.items()),
+        UniqueConstraint("store_id", name="uq_store_inventory_baselines_store"),
+    )
+
+
+class ImmutableBaselineError(RuntimeError):
+    """A write that would edit or delete a store inventory baseline."""
+
+
+@event.listens_for(StoreInventoryBaseline, "before_update")
+def _baselines_are_never_edited(_mapper, _connection, _target: StoreInventoryBaseline) -> None:
+    raise ImmutableBaselineError("A store inventory baseline is never changed once recorded.")
+
+
+@event.listens_for(StoreInventoryBaseline, "before_delete")
+def _baselines_are_never_deleted(_mapper, _connection, _target: StoreInventoryBaseline) -> None:
+    raise ImmutableBaselineError("Store inventory baselines are history and are never deleted.")

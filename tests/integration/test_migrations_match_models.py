@@ -148,6 +148,48 @@ def _receipt_rules(conn):
     return checks, indexes
 
 
+def test_0036_baselines_are_one_per_store_rls_protected_and_the_downgrade_keeps_them(migrated_scratch_db):
+    """Leaves the scratch database at head, with no baseline rows."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.inventory import BASELINE_CHECKS
+
+    engine = create_engine(migrated_scratch_db)
+    with engine.connect() as conn:
+        checks = set(conn.execute(text(
+            "SELECT conname FROM pg_constraint WHERE conrelid = 'store_inventory_baselines'::regclass "
+            "AND contype = 'c'")).scalars().all())
+        rls = conn.execute(text(
+            "SELECT relrowsecurity FROM pg_class WHERE relname = 'store_inventory_baselines'")).scalar()
+    assert set(BASELINE_CHECKS) <= checks and rls is True
+
+    insert = text("INSERT INTO store_inventory_baselines (store_id, baseline_date, basis, initialization_date, "
+                  "initialized_by, initialized_by_role, reason) "
+                  "VALUES (:s, '2026-10-29', 'INITIALIZATION_DATE', '2026-10-29', 'probe', 'ADMIN', 'probe')")
+    with engine.begin() as conn:
+        store = conn.execute(text("INSERT INTO stores (display_name, identity_status) "
+                                  "VALUES ('AF Baseline Probe', 'confirmed') RETURNING id")).scalar()
+        conn.execute(insert, {"s": store})
+    with pytest.raises(IntegrityError), engine.begin() as conn:             # one per store
+        conn.execute(insert, {"s": store})
+    with pytest.raises(IntegrityError), engine.begin() as conn:             # EARLIEST basis needs its receipt
+        conn.execute(text(insert.text.replace("'INITIALIZATION_DATE'", "'EARLIEST_POSTED_RECEIPT'")),
+                     {"s": store})
+
+    refused = _alembic(migrated_scratch_db, "downgrade", "0035")
+    assert refused.returncode != 0 and "holds store inventory baselines" in refused.stderr
+    with engine.begin() as conn:                                              # scratch database only
+        conn.execute(text("DELETE FROM store_inventory_baselines"))
+        conn.execute(text("DELETE FROM stores WHERE id = :s"), {"s": store})
+    down = _alembic(migrated_scratch_db, "downgrade", "0035")
+    assert down.returncode == 0, down.stderr
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT to_regclass('public.store_inventory_baselines')")).scalar() is None
+    up = _alembic(migrated_scratch_db, "upgrade", "head")
+    assert up.returncode == 0, up.stderr
+    engine.dispose()
+
+
 def test_0035_approval_rules_exist_and_the_downgrade_keeps_history(migrated_scratch_db):
     """Runs last in this module and leaves the scratch database at head again."""
     from app.models.inventory import RECEIPT_CHECKS

@@ -9,7 +9,7 @@ to ensure autogenerate detects all tables.
 from app.models.document import Document, DocumentStatus
 from app.models.document_page import DocumentPage
 from app.models.edi_export import EdiExport
-from app.models.inventory import InventoryMovement, InventoryReceipt
+from app.models.inventory import InventoryMovement, InventoryReceipt, StoreInventoryBaseline
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.processing_log import LogStatus, PipelineStage, ProcessingLog
@@ -43,6 +43,7 @@ __all__ = [
     "DocumentStatus",
     "InventoryMovement",
     "InventoryReceipt",
+    "StoreInventoryBaseline",
     "Invoice",
     "InvoiceItem",
     "LogStatus",
