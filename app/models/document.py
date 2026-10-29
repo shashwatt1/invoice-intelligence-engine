@@ -40,8 +40,10 @@ class DocumentStatus(StrEnum):
         Any active stage → STOPPED (user/admin cancellation, see
             app.services.document_lifecycle.stop_document)
         Any non-BINNED state → BINNED (managed, recoverable discard from
-            the active workflow, see
-            app.services.document_lifecycle.move_document_to_bin)
+            the active workflow, see app.services.recycle_bin)
+        BINNED → its previous state (restored), or → REFERENCE: a
+            read-only reference copy, restored by an administrator while an
+            active document holds the same invoice (reference_of_document_id)
     """
 
     UPLOADED = "UPLOADED"
@@ -54,7 +56,13 @@ class DocumentStatus(StrEnum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     STOPPED = "STOPPED"    # cancelled mid-pipeline; source and audit trail preserved
-    BINNED = "BINNED"      # removed from the active workflow; recoverable, never physically deleted
+    BINNED = "BINNED"      # in the Recycle Bin: out of the active workflow, recoverable
+    REFERENCE = "REFERENCE"  # restored as a read-only reference copy of an active document
+
+
+# Out of the active workflow: never changed, exported, received, reprocessed or counted, and not a
+# duplicate of a new upload. Shared by the guards, the duplicate check and every operational list.
+INACTIVE_DOCUMENT_STATUSES: frozenset[str] = frozenset({DocumentStatus.BINNED.value, DocumentStatus.REFERENCE.value})
 
 
 class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -128,6 +136,11 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     raw_ocr_text: Mapped[str | None] = mapped_column(
         Text, nullable=True, doc="Raw text extracted by OCR or pdfplumber."
     )
+    # A REFERENCE document's active counterpart (0037). Set only when an administrator restores a
+    # binned document while an active one holds the same invoice; NULL for every other document.
+    reference_of_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL", name="fk_documents_reference_of"), nullable=True,
+    )
     source_type: Mapped[str | None] = mapped_column(
         String(20), nullable=True, doc="Extraction method: 'digital_pdf' or 'ocr'."
     )
@@ -153,6 +166,7 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         Index("idx_documents_file_hash", "file_hash"),
         Index("idx_documents_status", "status"),
+        Index("idx_documents_reference_of", "reference_of_document_id"),
     )
 
     def __repr__(self) -> str:

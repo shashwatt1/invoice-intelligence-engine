@@ -148,6 +148,48 @@ def _receipt_rules(conn):
     return checks, indexes
 
 
+def test_0037_recycle_bin_rules_rls_and_the_downgrade_keeps_history(migrated_scratch_db):
+    """Leaves the scratch database at head, with no bin rows."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.recycle_bin import ENTRY_CHECKS, REQUEST_CHECKS
+
+    engine = create_engine(migrated_scratch_db)
+    with engine.connect() as conn:
+        for table, expected in (("recycle_bin_entries", ENTRY_CHECKS), ("bin_deletion_requests", REQUEST_CHECKS)):
+            checks = set(conn.execute(text(
+                f"SELECT conname FROM pg_constraint WHERE conrelid = '{table}'::regclass AND contype = 'c'"
+            )).scalars().all())
+            rls = conn.execute(text(f"SELECT relrowsecurity FROM pg_class WHERE relname = '{table}'")).scalar()
+            assert set(expected) <= checks and rls is True, table
+
+    entry = text("INSERT INTO recycle_bin_entries (document_id, filename, file_hash, previous_status, binned_at, "
+                 "binned_by, binned_by_role, reason, status) VALUES (:d, 'probe.pdf', repeat('b', 64), "
+                 "'FAILED', now(), 'probe', 'ADMIN', 'probe', 'IN_BIN')")
+    with engine.begin() as conn:
+        doc = conn.execute(text("INSERT INTO documents (filename, mime_type, file_size_bytes, file_path, file_hash, "
+                                "status) VALUES ('probe.pdf', 'application/pdf', 1, 'p', repeat('b', 64), "
+                                "'BINNED') RETURNING id")).scalar()
+        conn.execute(entry, {"d": doc})
+    with pytest.raises(IntegrityError), engine.begin() as conn:             # one open entry per document
+        conn.execute(entry, {"d": doc})
+
+    refused = _alembic(migrated_scratch_db, "downgrade", "0036")
+    assert refused.returncode != 0 and "recycle bin holds history" in refused.stderr
+    with engine.begin() as conn:                                              # scratch database only
+        conn.execute(text("DELETE FROM recycle_bin_entries"))
+        conn.execute(text("DELETE FROM documents WHERE id = :d"), {"d": doc})
+    down = _alembic(migrated_scratch_db, "downgrade", "0036")
+    assert down.returncode == 0, down.stderr
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT to_regclass('public.recycle_bin_entries')")).scalar() is None
+        assert conn.execute(text("SELECT count(*) FROM information_schema.columns WHERE table_name = 'documents' "
+                                 "AND column_name = 'reference_of_document_id'")).scalar() == 0
+    up = _alembic(migrated_scratch_db, "upgrade", "head")
+    assert up.returncode == 0, up.stderr
+    engine.dispose()
+
+
 def test_0036_baselines_are_one_per_store_rls_protected_and_the_downgrade_keeps_them(migrated_scratch_db):
     """Leaves the scratch database at head, with no baseline rows."""
     from sqlalchemy.exc import IntegrityError

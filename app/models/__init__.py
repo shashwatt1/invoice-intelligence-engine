@@ -24,6 +24,7 @@ from app.models.product_master import (
     MasterProductIdentifier,
 )
 from app.models.product_reference import ProductIdentifier, ProductIdentity, ProductPricing
+from app.models.recycle_bin import BinDeletionRequest, RecycleBinEntry
 from app.models.store import Store, StoreIdentifier
 from app.models.store_product_reference import StoreProductReference
 from app.models.user import ROLE_RANK, User, UserRole
@@ -49,6 +50,8 @@ __all__ = [
     "LogStatus",
     "PipelineStage",
     "ProcessingLog",
+    "RecycleBinEntry",
+    "BinDeletionRequest",
     "ProductCaseMapping",
     "ProductDataProposal",
     "ProductIdentifier",
