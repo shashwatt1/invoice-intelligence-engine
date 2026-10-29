@@ -59,6 +59,12 @@ class StoreAccessOut(BaseModel):
         )
 
 
+class StoreAccessBulkGrantRequest(BaseModel):
+    store_ids: list[uuid.UUID] = Field(min_length=1, max_length=100,
+                                       description="1 to 100 physical store ids, each listed once.")
+    reason: str = REASON_FIELD
+
+
 class StoreAccessGrantAllRequest(BaseModel):
     reason: str = REASON_FIELD
 

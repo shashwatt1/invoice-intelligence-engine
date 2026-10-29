@@ -42,6 +42,7 @@ from app.schemas.auth import (
 )
 from app.schemas.base import APIResponse
 from app.schemas.store_access import (
+    StoreAccessBulkGrantRequest,
     StoreAccessGrantAllRequest,
     StoreAccessGrantAllResult,
     StoreAccessGrantRequest,
@@ -243,6 +244,42 @@ async def grant_all_physical_stores(
     stores = {s.id: s for s in await StoreRepository(db).list()}
     logger.info("store_access_granted_all_physical", user_id=str(user_id), actor_user_id=str(actor.id),
                 actor_username=actor.username, created=len(created), already_granted=len(existing))
+    return APIResponse(data=StoreAccessGrantAllResult(
+        created=[StoreAccessOut.from_grant(g, stores.get(g.store_id)) for g in created],
+        already_granted=[StoreAccessOut.from_grant(g, stores.get(g.store_id)) for g in existing],
+    ))
+
+
+@router.post(
+    "/{user_id}/store-access/bulk", response_model=APIResponse[StoreAccessGrantAllResult],
+    summary="Grant an account several physical stores' inventory at once (all or nothing)",
+    description=(
+        "Grants an active MANAGER or ADMIN account 1 to 100 physical stores, each listed once, with one "
+        "reason. Every store is checked before anything is written: if any is unknown or a source "
+        "identity, nothing is granted and every offending store is named (422, reason invalid_stores). "
+        "Each new grant is its own audit row (the acting administrator, role and reason) and log entry; "
+        "a store the account already holds is returned unchanged under already_granted."
+    ),
+    responses={404: {"description": "User not found"},
+               422: {"description": "No reason, 0 or more than 100 stores, duplicate ids, account not "
+                                    "eligible, or invalid stores (nothing granted)"}},
+)
+async def grant_store_access_bulk(
+    user_id: uuid.UUID, body: StoreAccessBulkGrantRequest, db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_admin),
+) -> APIResponse[StoreAccessGrantAllResult]:
+    created, existing = await store_access.grant_stores(
+        db, user_id=user_id, store_ids=body.store_ids, actor=actor, reason=body.reason)
+    await db.commit()
+    stores = {s.id: s for s in await StoreRepository(db).list()}
+    for grant in created:                      # one entry per new grant, exactly as the single-store route
+        logger.info("store_access_granted", grant_id=str(grant.id), user_id=str(grant.user_id),
+                    username=grant.username, store_id=str(grant.store_id), actor_user_id=str(actor.id),
+                    actor_username=actor.username, actor_role=actor.role, self_granted=actor.id == grant.user_id,
+                    bulk=True)
+    logger.info("store_access_granted_bulk", user_id=str(user_id), actor_user_id=str(actor.id),
+                actor_username=actor.username, requested=len(body.store_ids), created=len(created),
+                already_granted=len(existing))
     return APIResponse(data=StoreAccessGrantAllResult(
         created=[StoreAccessOut.from_grant(g, stores.get(g.store_id)) for g in created],
         already_granted=[StoreAccessOut.from_grant(g, stores.get(g.store_id)) for g in existing],
