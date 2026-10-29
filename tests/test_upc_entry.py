@@ -203,7 +203,7 @@ class TestMissingMeansTheExportGatesOwnTest:
         assert items_with_unresolved_identity(inv) == ["ITEM 0"]
         assert "no resolved UPC" in pdi_export_eligibility(inv, {"01200000113": 1}).blocked_reason
 
-        inv.items[0].product_sku = "0-28400-26092-1"
+        inv.items[0].product_sku = "0-28400-26092-3"
         # Identity is resolved now; the mapping gate still applies to the new code.
         eligibility = pdi_export_eligibility(inv, {"01200000113": 1})
         assert eligibility.allowed is False

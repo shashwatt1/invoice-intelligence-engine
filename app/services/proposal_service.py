@@ -46,9 +46,12 @@ from app.models.invoice import Invoice
 from app.models.product_case_mapping import SOURCE_APPROVED
 from app.models.product_data_proposal import (
     ENTITY_CASE_MAPPING,
+    ENTITY_VENDOR_ITEM,
+    FIELD_ITEM_CODE,
     FIELD_UNITS_PER_CASE,
     SOURCE_BEER_INVENTORY_EXPLICIT,
     SOURCE_BEER_INVENTORY_PACKAGE,
+    SOURCE_CONFLICT_RESOLUTION,
     SOURCE_DOCUMENT_AMBIGUOUS,
     SOURCE_DOCUMENT_DERIVED,
     SOURCE_OPERATOR_ENTERED,
@@ -66,6 +69,7 @@ from app.services.case_mapping_service import (
     SUGGESTION_FROM_REFERENCE_PACKAGE,
     CaseMappingStatus,
 )
+from app.services.product_master import shared_decisions
 
 # suggestion source -> proposal source
 _REFERENCE_PROPOSAL_SOURCE = {
@@ -74,11 +78,19 @@ _REFERENCE_PROPOSAL_SOURCE = {
 }
 
 
+SCOPE_STORE = "store"        # this store only (the historical behaviour)
+SCOPE_SHARED = "shared"      # every physical store: a shared Product Master value (0038)
+VALID_SCOPES = frozenset({SCOPE_STORE, SCOPE_SHARED})
+
+
 @dataclass(frozen=True)
 class ApprovalResult:
     proposal: ProductDataProposal
     applied_to: str          # e.g. "product_case_mappings:06206738062"
     previous_value: Any | None
+    shared_mapping_id: str | None = None      # the shared value this approval set or confirmed
+    overrides_recorded: int = 0               # stores whose differing value was kept as an override
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -167,40 +179,93 @@ async def approve(
     *,
     reviewed_by: str,
     note: str | None = None,
+    scope: str = SCOPE_STORE,
+    override_reason: str | None = None,
+    keep_store_values: bool = False,
+    reviewer_user_id: uuid.UUID | None = None,
+    reviewer_role: str | None = None,
 ) -> ApprovalResult:
     """
     Promote one proposal to authoritative data.
 
     Freezes the proposal first, then applies it. Both changes are
     flushed in the caller's transaction; commit or roll back together.
+
+    For a units-per-case proposal:
+      * scope "store" (default): the proposal's store's mapping, as always;
+        with `override_reason` it is also recorded as that store's deliberate
+        exception to the shared value (a Product Master store override);
+      * scope "shared": the store's mapping AND the shared value every other
+        physical store resolves from (shared_decisions.set_shared_value). If
+        other stores hold a different approved value the approval is refused
+        unless `keep_store_values` records theirs as overrides.
+    A vendor_item proposal confirms the vendor item crosswalk link.
     """
+    if scope not in VALID_SCOPES:
+        raise ValueError(f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}.")
+    if proposal.entity_type == ENTITY_VENDOR_ITEM and proposal.field == FIELD_ITEM_CODE:
+        from app.services import (
+            vendor_item_crosswalk,  # local: the crosswalk service imports this module
+        )
+
+        proposals = ProductDataProposalRepository(session)
+        await proposals.mark_approved(proposal, reviewed_by=reviewed_by, note=note)
+        link = await vendor_item_crosswalk.confirm_from_proposal(
+            session, proposal, reviewer=reviewed_by, reviewer_role=reviewer_role)
+        return ApprovalResult(proposal=proposal, applied_to=f"vendor_item_crosswalk:{link.id}",
+                              previous_value=proposal.current_value)
+
+    if proposal.entity_type != ENTITY_CASE_MAPPING or proposal.field != FIELD_UNITS_PER_CASE:
+        raise ValueError(
+            f"No approval handler for {proposal.entity_type}.{proposal.field}; "
+            "the proposal was not applied."
+        )
+    units = int(proposal.proposed_value)
+    evidence = {"proposal_id": str(proposal.id), "invoice_id": str(proposal.invoice_id or ""),
+                "store_id": str(proposal.store_id), "proposal_source": proposal.source,
+                "invoice_description": (proposal.evidence or {}).get("invoice_description")}
+
     proposals = ProductDataProposalRepository(session)
     await proposals.mark_approved(proposal, reviewed_by=reviewed_by, note=note)
 
-    if proposal.entity_type == ENTITY_CASE_MAPPING and proposal.field == FIELD_UNITS_PER_CASE:
-        # The proposal's store is the mapping's store. A reviewer approving
-        # store A's evidence writes store A's row and no other.
-        mappings = ProductCaseMappingRepository(session)
-        previous = await mappings.get(proposal.store_id, proposal.entity_key)
-        previous_value = previous.units_per_case if previous else None
-        mapping = await mappings.upsert(
-            store_id=proposal.store_id,
-            item_code=proposal.entity_key,
-            units_per_case=int(proposal.proposed_value),
-            description=(proposal.evidence or {}).get("invoice_description"),
-            source=SOURCE_APPROVED,
+    shared_id: str | None = None
+    overrides = 0
+    notes: list[str] = []
+    if scope == SCOPE_SHARED:
+        outcome = await shared_decisions.set_shared_value(
+            session, item_code=proposal.entity_key, units=units, reviewer=reviewed_by,
+            reviewer_user_id=reviewer_user_id, reviewer_role=reviewer_role,
+            note=note or f"Approved from proposal {proposal.id} for every store.", evidence=evidence,
+            origin_store_id=proposal.store_id, keep_store_values=keep_store_values,
         )
-        mapping.approved_proposal_id = proposal.id
-        await session.flush()
-        return ApprovalResult(
-            proposal=proposal,
-            applied_to=f"product_case_mappings:{proposal.store_id}:{proposal.entity_key}",
-            previous_value=previous_value,
+        shared_id, overrides, notes = str(outcome.mapping.id), len(outcome.overrides), list(outcome.notes)
+    elif override_reason:
+        await shared_decisions.set_store_override(
+            session, store_id=proposal.store_id, item_code=proposal.entity_key, units=units,
+            reason=override_reason, reviewer=reviewed_by, reviewer_user_id=reviewer_user_id,
+            reviewer_role=reviewer_role, evidence=evidence,
         )
+        notes.append("recorded as this store's override of the shared value")
 
-    raise ValueError(
-        f"No approval handler for {proposal.entity_type}.{proposal.field}; "
-        "the proposal was not applied."
+    # The proposal's store is the mapping's store. A reviewer approving
+    # store A's evidence writes store A's row and no other.
+    mappings = ProductCaseMappingRepository(session)
+    previous = await mappings.get(proposal.store_id, proposal.entity_key)
+    previous_value = previous.units_per_case if previous else None
+    mapping = await mappings.upsert(
+        store_id=proposal.store_id,
+        item_code=proposal.entity_key,
+        units_per_case=units,
+        description=(proposal.evidence or {}).get("invoice_description"),
+        source=SOURCE_APPROVED,
+    )
+    mapping.approved_proposal_id = proposal.id
+    await session.flush()
+    return ApprovalResult(
+        proposal=proposal,
+        applied_to=f"product_case_mappings:{proposal.store_id}:{proposal.entity_key}",
+        previous_value=previous_value, shared_mapping_id=shared_id, overrides_recorded=overrides,
+        notes=tuple(notes),
     )
 
 
@@ -224,6 +289,10 @@ async def decide_many(
     approve_them: bool,
     reviewed_by: str,
     note: str | None = None,
+    scope: str = SCOPE_STORE,
+    keep_store_values: bool = False,
+    reviewer_user_id: uuid.UUID | None = None,
+    reviewer_role: str | None = None,
 ) -> list[DecisionOutcome]:
     """
     Approve or reject a batch, all-or-nothing.
@@ -240,7 +309,10 @@ async def decide_many(
     outcomes: list[DecisionOutcome] = []
     for p in proposals:
         if approve_them:
-            result = await approve(session, p, reviewed_by=reviewed_by, note=note)
+            result = await approve(session, p, reviewed_by=reviewed_by, note=note,
+                                   scope=scope if p.entity_type == ENTITY_CASE_MAPPING else SCOPE_STORE,
+                                   keep_store_values=keep_store_values,
+                                   reviewer_user_id=reviewer_user_id, reviewer_role=reviewer_role)
             outcomes.append(DecisionOutcome(proposal=p, applied_to=result.applied_to))
         else:
             await reject(session, p, reviewed_by=reviewed_by, note=note)
@@ -319,4 +391,69 @@ async def pending_by_item_code(
 ) -> dict[str, ProductDataProposal]:
     return await ProductDataProposalRepository(session).pending_for_keys(
         store_id, ENTITY_CASE_MAPPING, FIELD_UNITS_PER_CASE, item_codes
+    )
+
+
+@dataclass(frozen=True)
+class DifferenceResolution:
+    item_code: str
+    units: int
+    shared_mapping_id: str
+    adopted_store_ids: tuple[uuid.UUID, ...]
+    kept_store_ids: tuple[uuid.UUID, ...]
+
+
+async def resolve_difference(
+    session: AsyncSession,
+    *,
+    item_code: str,
+    units: int,
+    keep_store_ids: set[uuid.UUID],
+    note: str,
+    reviewed_by: str,
+    reviewer_user_id: uuid.UUID | None = None,
+    reviewer_role: str | None = None,
+) -> DifferenceResolution:
+    """
+    Settle a cross-store difference (shared_decisions.cross_store_differences):
+    `units` becomes the shared value; each store listed in `keep_store_ids`
+    keeps its own value as a recorded override; every other differing store
+    adopts the shared value through an approved proposal (source
+    conflict_resolution), so its own mapping's history says who changed it
+    and why. A store whose differing value is an approved Product Master
+    mapping is refused — reopen that decision first. All or nothing.
+    """
+    note = (note or "").strip()
+    if not note:
+        raise shared_decisions.SharedDecisionRefusedError(
+            message="Say why this value is right; the note is kept with every record this writes.",
+            detail={"reason": "note_required"})
+    state = (await shared_decisions.item_states(session, [item_code]))[item_code]
+    differing = state.differing(units)
+    adopt = [v for v in differing if v.store_id not in keep_store_ids]
+    blocked = [v for v in adopt if v.source != "store mapping"]
+    if blocked:
+        raise shared_decisions.SharedDecisionRefusedError(
+            message=("These stores hold an approved Product Master value, not a store mapping: "
+                     f"{', '.join(v.store_label for v in blocked)}. Reopen those in Product Master Approvals, "
+                     "or keep them as overrides."),
+            detail={"reason": "store_product_master_value", "stores": [str(v.store_id) for v in blocked]})
+    repository = ProductDataProposalRepository(session)
+    for v in adopt:
+        proposal = await repository.create(
+            store_id=v.store_id, entity_type=ENTITY_CASE_MAPPING, entity_key=item_code, field=FIELD_UNITS_PER_CASE,
+            proposed_value=units, current_value=v.units, source=SOURCE_CONFLICT_RESOLUTION, proposed_by=reviewed_by,
+            evidence={"resolution": "adopt_shared_value", "previous_units": v.units, "note": note},
+            reason=f"Cross-store difference settled at {units}: {note}",
+        )
+        await approve(session, proposal, reviewed_by=reviewed_by, note=note)
+    outcome = await shared_decisions.set_shared_value(
+        session, item_code=item_code, units=units, reviewer=reviewed_by, reviewer_user_id=reviewer_user_id,
+        reviewer_role=reviewer_role, note=note, keep_store_values=True,
+        evidence={"decision": "cross_store_resolution", "adopted": [str(v.store_id) for v in adopt]},
+    )
+    return DifferenceResolution(
+        item_code=item_code, units=units, shared_mapping_id=str(outcome.mapping.id),
+        adopted_store_ids=tuple(v.store_id for v in adopt),
+        kept_store_ids=tuple(o.store_id for o in outcome.overrides),
     )

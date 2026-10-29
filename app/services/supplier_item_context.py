@@ -55,12 +55,23 @@ def _clean(value: Any) -> str | None:
 
 
 def supplier_item_ids(invoice: Any) -> dict[int, str]:
-    """sort_order -> supplier ITEM number, for rows where the match is certain."""
-    raw_items = _raw_line_items(getattr(invoice, "raw_extraction_json", None))
-    if not raw_items:
-        return {}
+    """
+    sort_order -> supplier ITEM number, for rows where the match is certain.
+
+    A row's persisted `supplier_item_id` (0038) is used as it is. Rows extracted
+    before that column existed fall back to the raw response, fail-closed.
+    """
     found: dict[int, str] = {}
     for item in invoice.items:
+        persisted = _clean(getattr(item, "supplier_item_id", None))
+        if persisted is not None and isinstance(item.sort_order, int):
+            found[item.sort_order] = persisted
+    raw_items = _raw_line_items(getattr(invoice, "raw_extraction_json", None))
+    if not raw_items:
+        return found
+    for item in invoice.items:
+        if item.sort_order in found:
+            continue
         if (item.entry_source or "extracted") != "extracted":
             continue
         index = item.sort_order

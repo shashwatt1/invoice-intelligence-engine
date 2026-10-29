@@ -39,7 +39,7 @@ from tests.pdf_builder import build_pdf
 
 pytestmark = requires_db
 
-ITEM_CODE_12 = "999000000034"   # 12-digit UPC as printed
+ITEM_CODE_12 = "999000000038"   # 12-digit UPC as printed
 ITEM_CODE_11 = "99900000003"    # normalized (check digit dropped)
 
 

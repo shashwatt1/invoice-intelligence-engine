@@ -11,7 +11,9 @@ Per item code, in this fixed order:
 
   1. PRODUCT_MASTER_PHYSICAL_STORE   an APPROVED commercial mapping held by the
                                      invoice's own physical store
-  2. PRODUCT_MASTER_GLOBAL           an APPROVED global commercial mapping —
+  2. PRODUCT_MASTER_GLOBAL           an APPROVED shared value (store_id NULL, 0038:
+                                     a reviewer's decision for every store), and/or
+                                     an APPROVED global commercial mapping —
                                      distributor/product evidence that applies
                                      to every physical store. For this
                                      transition the global mappings are the
@@ -31,7 +33,15 @@ Per item code, in this fixed order:
                                      line blocks export until a person decides.
 
 Physical-store mappings are explicit store-specific overrides of the global
-mapping (business rule, 2026-10-08).
+mapping (business rule, 2026-10-08). One that disagrees with the shared value
+wins only when it carries an `override_reason` — a reviewer's recorded
+exception; without one the disagreement is a CONFLICT, as before.
+
+A shared value never silently replaces a store's own decision: when the store's
+legacy mapping (an approved store-level value) says something different, the
+line is a CONFLICT until a reviewer settles it (Product Master → cross-store
+differences). The store's own Product Master override is its newer decision
+and is used over its legacy row, with a note.
 
 Only APPROVED Product Master mappings are ever used. A mapping awaiting
 review (REVIEW_REQUIRED, PENDING, a CONFLICT basis) or REJECTED is reported
@@ -98,6 +108,7 @@ class ScopedMapping:
     approval_state: str
     commercial_unit_basis: str
     units_accounted_for: int | None
+    override_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +140,10 @@ class Scope:
     label: str
 
 
+SHARED_SCOPE_LABEL = "All stores (shared value)"
+SHARED_SCOPE_ID = "shared"
+
+
 def global_scope_label(item_sales_code: str) -> str:
     """How the global scope is named: global, with where its evidence is held as provenance."""
     return f"Global (distributor evidence, held under Item Sales · {item_sales_code})"
@@ -146,34 +161,68 @@ def resolve_code(
     legacy_units: int | None = None,
     physical_scope: Scope | None = None,
     global_scope: Scope | None = None,
+    shared: Sequence[ScopedMapping] = (),
 ) -> CodeResolution:
     """The resolution for one item code. Pure: everything it reads is passed in."""
+    shared_scope = Scope(SHARED_SCOPE_ID, SHARED_SCOPE_LABEL)
     approved_physical = [m for m in physical if m.approval_state == STATE_APPROVED]
-    approved_global = [m for m in global_ if m.approval_state == STATE_APPROVED]
+    approved_holder = [m for m in global_ if m.approval_state == STATE_APPROVED]
+    approved_shared = [m for m in shared if m.approval_state == STATE_APPROVED]
     notes: list[str] = []
 
     def conflict(reason: str) -> CodeResolution:
         return CodeResolution(code, PATH_CONFLICT, None, legacy_units=legacy_units, notes=(reason,))
 
-    for scope, approved in ((physical_scope, approved_physical), (global_scope, approved_global)):
+    for scope, approved in ((physical_scope, approved_physical), (global_scope, approved_holder),
+                            (shared_scope, approved_shared)):
         if len(approved) > 1:
             return conflict(f"{len(approved)} approved Product Master mappings for this code in "
                             f"{scope.label if scope else 'one scope'}")
-    if approved_physical and approved_global:
-        p, g = approved_physical[0], approved_global[0]
-        if (p.commercial_unit_basis, p.units_accounted_for) != (g.commercial_unit_basis, g.units_accounted_for):
-            return conflict(f"physical-store override ({_describe(p)}) and global mapping "
-                            f"({_describe(g)}) disagree")
-        notes.append("global mapping agrees with the physical-store override")
 
-    if approved_physical or approved_global:
-        chosen, scope, path = (
-            (approved_physical[0], physical_scope, PATH_PRODUCT_MASTER_PHYSICAL) if approved_physical
-            else (approved_global[0], global_scope, PATH_PRODUCT_MASTER_GLOBAL)
-        )
+    # The shared scope: a reviewer's shared value and the distributor-evidence
+    # global mapping are both "every store"; they must agree to be used.
+    global_choice: tuple[ScopedMapping, Scope | None] | None = None
+    if approved_shared and approved_holder:
+        sh, gh = approved_shared[0], approved_holder[0]
+        if (sh.commercial_unit_basis, sh.units_accounted_for) != (gh.commercial_unit_basis, gh.units_accounted_for):
+            return conflict(f"shared value ({_describe(sh)}) and "
+                            f"{global_scope.label if global_scope else 'global mapping'} ({_describe(gh)}) disagree")
+        notes.append("the shared value agrees with the distributor-evidence global mapping")
+        global_choice = (sh, shared_scope)
+    elif approved_shared:
+        global_choice = (approved_shared[0], shared_scope)
+    elif approved_holder:
+        global_choice = (approved_holder[0], global_scope)
+
+    chosen: ScopedMapping | None = None
+    scope: Scope | None = None
+    path = PATH_REQUIRES_MAPPING
+    if approved_physical:
+        p = approved_physical[0]
+        if global_choice is not None:
+            g, g_scope = global_choice
+            if (p.commercial_unit_basis, p.units_accounted_for) != (g.commercial_unit_basis, g.units_accounted_for):
+                if not p.override_reason:
+                    return conflict(f"physical-store override ({_describe(p)}) and global mapping "
+                                    f"({_describe(g)}) disagree")
+                notes.append(f"store override ({p.override_reason}); "
+                             f"{g_scope.label if g_scope else 'the shared value'} says {_describe(g)}")
+            else:
+                notes.append("global mapping agrees with the physical-store override")
+        chosen, scope, path = p, physical_scope, PATH_PRODUCT_MASTER_PHYSICAL
+    elif global_choice is not None:
+        chosen, scope = global_choice
+        path = PATH_PRODUCT_MASTER_GLOBAL
+
+    if chosen is not None:
         if chosen.units_accounted_for is None:
             return conflict("approved Product Master mapping carries no units_accounted_for")
         if legacy_units is not None and legacy_units != chosen.units_accounted_for:
+            if path == PATH_PRODUCT_MASTER_GLOBAL:
+                # A store's own approved value is never overruled silently by a value
+                # decided for every store.
+                return conflict(f"this store's own mapping says {legacy_units}; "
+                                f"{scope.label if scope else 'the shared value'} says {chosen.units_accounted_for}")
             notes.append(f"legacy mapping says {legacy_units}; the approved Product Master value is used")
         return CodeResolution(
             code, path, chosen.units_accounted_for, mapping_id=chosen.mapping_id, product_id=chosen.product_id,
@@ -182,7 +231,7 @@ def resolve_code(
         )
 
     unapproved: list[tuple[str, str]] = []
-    for scope, mappings in ((physical_scope, physical), (global_scope, global_)):
+    for scope, mappings in ((physical_scope, physical), (global_scope, global_), (shared_scope, shared)):
         for m in mappings:
             notes.append(f"Product Master mapping in {scope.label if scope else 'scope'} is "
                          f"{m.approval_state} ({m.commercial_unit_basis}) — not used until approved")
@@ -235,7 +284,8 @@ def store_value_block(line: CodeResolution | None, proposed_units: int | None) -
         if proposed_units is not None and proposed_units != line.units_per_case:
             return (f"{line.scope_label or 'An approved Product Master mapping'} already governs this item at "
                     f"{line.units_per_case}/case; this value ({proposed_units}) would never be used for EDI. "
-                    "Reject it, or reopen the Product Master mapping.")
+                    "Approve it for this store only as an override with a reason, reject it, or reopen the "
+                    "Product Master mapping.")
         return None
     if line.unapproved:
         state, basis = line.unapproved[0]
@@ -285,16 +335,17 @@ async def resolve_store_codes(
                if holder is not None else None)
 
     scope_ids = [uuid.UUID(s.store_id) for s in (physical, global_) if s is not None]
+    in_scope = or_(MasterCommercialMapping.store_id.is_(None), MasterCommercialMapping.store_id.in_(scope_ids)) \
+        if scope_ids else MasterCommercialMapping.store_id.is_(None)
     rows = (await session.execute(
-        select(MasterCommercialMapping).where(
-            MasterCommercialMapping.store_id.in_(scope_ids),
-            MasterCommercialMapping.pdi_item_code.in_(codes),
-        )
-    )).scalars().all() if scope_ids and codes else []
+        select(MasterCommercialMapping).where(in_scope, MasterCommercialMapping.pdi_item_code.in_(codes))
+    )).scalars().all() if codes else []
     by_scope: dict[tuple[str, str], list[ScopedMapping]] = {}
     for row in rows:
-        by_scope.setdefault((str(row.store_id), row.pdi_item_code), []).append(ScopedMapping(
-            str(row.id), str(row.product_id), row.approval_state, row.commercial_unit_basis, row.units_accounted_for))
+        key = str(row.store_id) if row.store_id is not None else SHARED_SCOPE_ID
+        by_scope.setdefault((key, row.pdi_item_code), []).append(ScopedMapping(
+            str(row.id), str(row.product_id), row.approval_state, row.commercial_unit_basis, row.units_accounted_for,
+            getattr(row, "override_reason", None)))
 
     resolution = CommercialResolution(enabled=True)
     for c in codes:
@@ -303,6 +354,7 @@ async def resolve_store_codes(
             physical=by_scope.get((physical.store_id, c), []) if physical else [],
             global_=by_scope.get((global_.store_id, c), []) if global_ else [],
             legacy_units=legacy.get(c), physical_scope=physical, global_scope=global_,
+            shared=by_scope.get((SHARED_SCOPE_ID, c), []),
         )
     fallback = sorted(c for c, r in resolution.lines.items() if r.path == PATH_LEGACY_FALLBACK)
     logger.info(

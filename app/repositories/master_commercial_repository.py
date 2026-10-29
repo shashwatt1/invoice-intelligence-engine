@@ -75,7 +75,8 @@ class MasterCommercialRepository:
         return (
             select(MasterCommercialMapping, MasterProduct, Store)
             .join(MasterProduct, MasterProduct.id == MasterCommercialMapping.product_id)
-            .join(Store, Store.id == MasterCommercialMapping.store_id)
+            # Outer: a shared value (0038) is held under no store.
+            .outerjoin(Store, Store.id == MasterCommercialMapping.store_id)
         )
 
     def _filtered(
@@ -135,7 +136,7 @@ class MasterCommercialRepository:
         inner = self._filtered(
             select(MasterCommercialMapping.id)
             .join(MasterProduct, MasterProduct.id == MasterCommercialMapping.product_id)
-            .join(Store, Store.id == MasterCommercialMapping.store_id),
+            .outerjoin(Store, Store.id == MasterCommercialMapping.store_id),
             **filters,
         ).subquery()
         return int(

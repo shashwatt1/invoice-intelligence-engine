@@ -597,6 +597,8 @@ class InvoiceProcessingPipeline:
             await self._fail(session, document, PipelineStage.PERSISTENCE, wrapped)
             raise wrapped from exc
 
+        await self._apply_vendor_item_links(session, invoice.id)
+
         logger.info(
             "pipeline_complete",
             document_id=str(document.id),
@@ -617,6 +619,33 @@ class InvoiceProcessingPipeline:
             validation_report=validation.report.to_dict(),
             llm_metadata=llm_payload,
         )
+
+    async def _apply_vendor_item_links(self, session, invoice_id) -> None:
+        """
+        Give lines whose vendor item a reviewer already confirmed their UPC
+        (app/services/vendor_item_crosswalk.py), then revalidate. Best effort:
+        the invoice is already persisted, and a failure here only means the
+        reviewer enters the UPC by hand, exactly as before.
+        """
+        from app.repositories.invoice_repository import InvoiceRepository
+        from app.services import vendor_item_crosswalk
+        from app.services.revalidation_service import revalidate_invoice
+
+        try:
+            # A savepoint: a failure undoes only this step and leaves the
+            # persisted invoice (and the objects the caller still reads) intact.
+            async with session.begin_nested():
+                repository = InvoiceRepository(session)
+                invoice = await repository.get_detail(invoice_id)
+                if invoice is None:
+                    return
+                result = await vendor_item_crosswalk.apply_to_invoice(session, invoice)
+                if result.applied:
+                    await revalidate_invoice(session, await repository.get_detail(invoice_id))
+                    logger.info("vendor_item_links_applied", invoice_id=str(invoice_id), lines=result.applied)
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001 — never fail a persisted invoice over a convenience step
+            logger.warning("vendor_item_links_not_applied", invoice_id=str(invoice_id), error=str(exc)[:300])
 
     async def _fail(
         self,

@@ -25,7 +25,6 @@ from app.services.export_service import (
     PDI_BLOCK_A_WIDTH,
     PDI_BLOCK_B_TAIL_WIDTH,
     PDI_DESCRIPTION_WIDTH,
-    PDI_ITEM_CODE_WIDTH,
     _pdi_cost_block,
     _pdi_cost_tail,
     _pdi_item_code,
@@ -206,8 +205,11 @@ class TestPdiItemCode:
     def test_short_vendor_item_number_is_zero_padded(self):
         assert _pdi_item_code("12345") == "00000012345"
 
-    def test_code_longer_than_field_is_truncated(self):
-        assert len(_pdi_item_code("1234567890123456")) == PDI_ITEM_CODE_WIDTH
+    def test_code_longer_than_field_is_refused_never_truncated(self):
+        # A 16-digit value is not a barcode PDI can hold; the export gate blocks
+        # the line first, and the formatter refuses rather than cut it to fit.
+        with pytest.raises(ValueError):
+            _pdi_item_code("1234567890123456")
 
     def test_missing_code_uses_confirmed_blank_convention(self):
         # "00000" + spaces — confirmed against a real blank-code row observed
@@ -516,7 +518,10 @@ class TestPdiExportEligibility:
         # covers the blank-UPC CSV case elsewhere) — this test is about
         # the status rule, not product identity, so give it a resolved
         # code to isolate what's under test.
-        invoice.items[1].product_sku = "0000098765"
+        # Valid barcodes on both rows: the fixture's short placeholder codes are
+        # vendor-number shaped, which the item-code gate (tested elsewhere) refuses.
+        invoice.items[0].product_sku = "036000291452"
+        invoice.items[1].product_sku = "012000001291"
         result = pdi_export_eligibility(invoice)
         assert result.allowed is True
         assert result.requires_confirmation is False
@@ -524,7 +529,10 @@ class TestPdiExportEligibility:
 
     def test_review_required_invoice_with_items_is_allowed_with_confirmation(self):
         invoice = make_invoice(status="REVIEW_REQUIRED")
-        invoice.items[1].product_sku = "0000098765"
+        # Valid barcodes on both rows: the fixture's short placeholder codes are
+        # vendor-number shaped, which the item-code gate (tested elsewhere) refuses.
+        invoice.items[0].product_sku = "036000291452"
+        invoice.items[1].product_sku = "012000001291"
         result = pdi_export_eligibility(invoice)
         assert result.allowed is True
         assert result.requires_confirmation is True

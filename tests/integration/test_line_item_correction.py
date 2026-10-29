@@ -278,11 +278,11 @@ class TestACutOffPrintedUpc:
         assert any(c["name"] == "PRODUCT_CODE_COMPLETE" and c["field"] == "line_items[0].product_code"
                    for c in detail["validation_report"]["checks"])
 
-        response = await patch(api_client, invoice_id, 0, product_code="0-12000-12630-0",
+        response = await patch(api_client, invoice_id, 0, product_code="0-12000-12630-7",
                                corrected_by="reviewer", note="UPC continues on the next print line")
         assert response.status_code == 200, response.text
         data = response.json()["data"]
-        assert data["item"]["product_code"] == "0-12000-12630-0"
+        assert data["item"]["product_code"] == "0-12000-12630-7"
         assert data["item"]["corrected_fields"] == ["product_code"]
         assert "cut off" not in (data["pdi_export_blocked_reason"] or "")
         assert "units-per-case" in data["pdi_export_blocked_reason"]
@@ -292,7 +292,7 @@ class TestACutOffPrintedUpc:
         assert row["product_code_cut_off"] is None
         entry = row["correction_history"][-1]
         assert (entry["field"], entry["old"], entry["new"], entry["by"]) == (
-            "product_code", "0-12000-1263", "0-12000-12630-0", "testadmin")
+            "product_code", "0-12000-1263", "0-12000-12630-7", "testadmin")
         assert not any(c["name"] == "PRODUCT_CODE_COMPLETE" for c in detail["validation_report"]["checks"])
 
 

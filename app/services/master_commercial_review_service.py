@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import RecordNotFoundError, StaleReviewError, ValidationError
@@ -50,6 +51,7 @@ from app.models.product_master import (
     STATE_PENDING,
     STATE_REJECTED,
     STATE_REVIEW_REQUIRED,
+    MasterCommercialMapping,
     MasterCommercialReview,
 )
 from app.repositories.master_commercial_repository import MasterCommercialRepository
@@ -156,6 +158,34 @@ def _validate_resolution(basis: str, units: int | None) -> tuple[str, int | None
     return basis, units
 
 
+async def _refuse_second_shared_value(session: AsyncSession, mappings) -> None:
+    """
+    A shared candidate (store_id NULL, 0038) cannot be approved while another
+    shared value for the same item code is approved: that one must be reopened
+    first. Checked here so the reviewer gets a reason, not a constraint error.
+    """
+    shared = [m for m in mappings if getattr(m, "store_id", "held") is None]
+    if not shared:
+        return
+    codes = {m.pdi_item_code for m in shared}
+    approved = (await session.execute(select(MasterCommercialMapping).where(
+        MasterCommercialMapping.store_id.is_(None), MasterCommercialMapping.approval_state == STATE_APPROVED,
+        MasterCommercialMapping.pdi_item_code.in_(codes),
+    ))).scalars().all()
+    chosen_ids = {m.id for m in shared}
+    clash = [a for a in approved if a.id not in chosen_ids]
+    seen: dict[str, int] = {}
+    for m in shared:
+        seen[m.pdi_item_code] = seen.get(m.pdi_item_code, 0) + 1
+    if clash or any(n > 1 for n in seen.values()):
+        raise ValidationError(
+            message=("Another shared value for this item is already approved. Reopen it before approving a "
+                     "different one; nothing was approved."),
+            detail={"reason": "shared_value_exists",
+                    "item_codes": sorted({a.pdi_item_code for a in clash} | {c for c, n in seen.items() if n > 1})},
+        )
+
+
 async def approve(
     session: AsyncSession,
     mapping_id: uuid.UUID,
@@ -197,6 +227,7 @@ async def approve(
             detail={"approval_state": mapping.approval_state},
         )
     note = _require_basis(note, DECISION_APPROVE)
+    await _refuse_second_shared_value(session, [mapping])
 
     outcome, review = _approval(
         mapping, reviewer=reviewer, note=note,
@@ -637,6 +668,7 @@ async def bulk_approve(
             message="Some selected mappings need an individual decision. Nothing was approved.",
             detail={"ineligible": ineligible},
         )
+    await _refuse_second_shared_value(session, [locked[item.mapping_id] for item in items])
     decisions = [
         _approval(
             locked[item.mapping_id], reviewer=reviewer, note=basis,

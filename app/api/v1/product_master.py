@@ -25,12 +25,15 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_authenticated_user, require_manager
 from app.database.session import get_db
 from app.models.product_master import COMMERCIAL_CONFLICT, DESC_CANONICAL, STATE_REVIEW_REQUIRED
 from app.models.user import User
+from app.models.vendor import Vendor
+from app.models.vendor_item_crosswalk import CROSSWALK_CONFIRMED, VendorItemCrosswalk
 from app.repositories.master_commercial_repository import MasterCommercialRepository
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import SourceIdentityRef
@@ -44,14 +47,23 @@ from app.schemas.product_master import (
     CommercialReviewDecision,
     CommercialReviewRequest,
     CommercialReviewSummary,
+    CrossStoreDifference,
+    DifferenceResolutionRequest,
+    DifferenceResolutionResult,
     EvidenceView,
     IdentityUnresolvedRow,
     LegacyMappingRef,
     ProductDescriptionView,
     ProductNameVariant,
     ReviewHistoryEntry,
+    StoreValueOut,
+    VendorItemLinkOut,
+    VendorItemRetireRequest,
 )
 from app.services import master_commercial_review_service as review_service
+from app.services import proposal_service, vendor_item_crosswalk
+from app.services.product_master import shared_decisions
+from app.services.product_master.commercial_resolution import SHARED_SCOPE_LABEL
 from app.services.product_master.display_name import NAME_AMBIGUOUS, resolve_display_name
 
 # Viewing and proposing are open to any authenticated account; approving
@@ -79,7 +91,7 @@ def _row(mapping, product, store, legacy: list,
     legacy_units = {row.units_per_case for row in legacy}
     evidence = mapping.evidence or {}
     name = resolve_display_name(descriptions or [])
-    source_identity = SourceIdentityRef.from_store(store)
+    source_identity = SourceIdentityRef.from_store(store) if store is not None else None
     return CommercialCandidateRow(
         id=mapping.id,
         product_id=product.id,
@@ -95,14 +107,16 @@ def _row(mapping, product, store, legacy: list,
         ] if name.basis == NAME_AMBIGUOUS else [],
         canonical_identifier=product.canonical_upc,
         pdi_item_code=mapping.pdi_item_code,
-        store_id=store.id,
+        store_id=store.id if store is not None else None,
         # A source identity is named by its source identifier, never "Store <code>".
-        store_label=store.display_name or (
+        store_label=SHARED_SCOPE_LABEL if store is None else store.display_name or (
             source_identity.label if source_identity
             else f"Store {mapping.evidence.get('source_store_identifier', '')}".strip()),
-        store_identity_status=store.identity_status,
-        store_kind=store.kind,
+        store_identity_status=store.identity_status if store is not None else "shared",
+        store_kind=store.kind if store is not None else "shared",
         store_source_identity=source_identity,
+        override_reason=getattr(mapping, "override_reason", None),
+        source_system=getattr(mapping, "source_system", None),
         commercial_unit_basis=mapping.commercial_unit_basis,
         units_accounted_for=mapping.units_accounted_for,
         case_cost=float(mapping.case_cost) if mapping.case_cost is not None else None,
@@ -424,3 +438,112 @@ async def identity_unresolved(
     return APIResponse(data=[
         IdentityUnresolvedRow(**row) for row in await load_unresolved_candidates(db)
     ])
+
+
+# ---- shared values: cross-store differences (0038) ---------------------------------------
+
+def _store_value(v) -> StoreValueOut:
+    return StoreValueOut(store_id=v.store_id, store=v.store_label, units=v.units, source=v.source,
+                         override_reason=v.override_reason)
+
+
+@router.get(
+    "/differences",
+    response_model=APIResponse[list[CrossStoreDifference]],
+    summary="Items whose approved units-per-case disagree between stores or with the shared value",
+    description=(
+        "Every place where approved data conflicts — for example one store holding 18 and another 1 for the "
+        "same C-18 case. Nothing is chosen automatically: when Product Master resolution is on, an affected "
+        "line is a CONFLICT until one of these is settled. Deliberate store overrides are listed beside, "
+        "not counted as a disagreement."
+    ),
+)
+async def list_differences(db: AsyncSession = Depends(get_db)) -> APIResponse[list[CrossStoreDifference]]:
+    found = await shared_decisions.cross_store_differences(db)
+    return APIResponse(data=[
+        CrossStoreDifference(item_code=d.item_code, shared_units=d.shared_units, distinct_values=d.distinct_values,
+                             stores=[_store_value(v) for v in d.stores],
+                             overrides=[_store_value(v) for v in d.overrides])
+        for d in found
+    ])
+
+
+@router.post(
+    "/differences/{item_code}/resolve",
+    response_model=APIResponse[DifferenceResolutionResult],
+    summary="Settle a cross-store difference: one shared value, explicit store exceptions",
+    description=(
+        "Sets `units` as the shared value. Each store in `keep_store_ids` keeps its own value as a recorded "
+        "store override; every other differing store adopts the shared value through an approved, audited "
+        "proposal. Refused (nothing written) when a different shared value is already approved, or a "
+        "differing store's value is an approved Product Master mapping that must be reopened first."
+    ),
+    responses={422: {"description": "Refused; nothing was written"}},
+)
+async def resolve_difference(
+    item_code: str, body: DifferenceResolutionRequest, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[DifferenceResolutionResult]:
+    result = await proposal_service.resolve_difference(
+        db, item_code=item_code, units=body.units, keep_store_ids=set(body.keep_store_ids), note=body.note,
+        reviewed_by=user.username, reviewer_user_id=user.id, reviewer_role=user.role,
+    )
+    await db.commit()
+    return APIResponse(data=DifferenceResolutionResult(
+        item_code=result.item_code, units=result.units, shared_mapping_id=uuid.UUID(result.shared_mapping_id),
+        adopted_store_ids=list(result.adopted_store_ids), kept_store_ids=list(result.kept_store_ids),
+    ))
+
+
+# ---- vendor item crosswalk (0038) -----------------------------------------------------------
+
+@router.get(
+    "/vendor-items",
+    response_model=APIResponse[list[VendorItemLinkOut]],
+    summary="Confirmed (and retired) vendor item number -> product links",
+)
+async def list_vendor_items(
+    vendor_id: uuid.UUID | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=64),
+    include_retired: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[VendorItemLinkOut]]:
+    statement = select(VendorItemCrosswalk, Vendor).join(Vendor, Vendor.id == VendorItemCrosswalk.vendor_id)
+    if vendor_id:
+        statement = statement.where(VendorItemCrosswalk.vendor_id == vendor_id)
+    if not include_retired:
+        statement = statement.where(VendorItemCrosswalk.state == CROSSWALK_CONFIRMED)
+    if search:
+        term = f"%{search.strip()}%"
+        statement = statement.where(or_(VendorItemCrosswalk.vendor_item_code.ilike(term),
+                                        VendorItemCrosswalk.item_code.ilike(term)))
+    rows = (await db.execute(statement.order_by(Vendor.name, VendorItemCrosswalk.vendor_item_code).limit(500))).all()
+    return APIResponse(data=[
+        VendorItemLinkOut(
+            id=link.id, vendor_id=link.vendor_id, vendor=vendor.label if hasattr(vendor, "label") else vendor.name,
+            vendor_item_code=link.vendor_item_code, vendor_item_code_raw=link.vendor_item_code_raw,
+            item_code=link.item_code, upc=link.upc, state=link.state, confirmed_by=link.confirmed_by,
+            confirmed_at=link.confirmed_at, retired_at=link.retired_at, retired_by=link.retired_by,
+            retire_reason=link.retire_reason)
+        for link, vendor in rows
+    ])
+
+
+@router.post(
+    "/vendor-items/{link_id}/retire",
+    response_model=APIResponse[VendorItemLinkOut],
+    summary="Stop applying a wrong vendor item link (corrections it already made stay recorded on their lines)",
+)
+async def retire_vendor_item(
+    link_id: uuid.UUID, body: VendorItemRetireRequest, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[VendorItemLinkOut]:
+    link = await vendor_item_crosswalk.retire(db, link_id, reason=body.reason, retired_by=user.username)
+    vendor = await db.get(Vendor, link.vendor_id)
+    await db.commit()
+    return APIResponse(data=VendorItemLinkOut(
+        id=link.id, vendor_id=link.vendor_id, vendor=vendor.name if vendor else None,
+        vendor_item_code=link.vendor_item_code, vendor_item_code_raw=link.vendor_item_code_raw,
+        item_code=link.item_code, upc=link.upc, state=link.state, confirmed_by=link.confirmed_by,
+        confirmed_at=link.confirmed_at, retired_at=link.retired_at, retired_by=link.retired_by,
+        retire_reason=link.retire_reason))

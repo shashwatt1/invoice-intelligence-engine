@@ -41,6 +41,7 @@ from app.models.document import INACTIVE_DOCUMENT_STATUSES, DocumentStatus
 from app.models.processing_log import PipelineStage
 from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
 from app.models.user import User, UserRole
+from app.models.vendor_item_crosswalk import VendorItemCrosswalk
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
@@ -75,8 +76,9 @@ from app.schemas.processing import (
     StoreAssignment,
     StoreRef,
     VendorData,
+    VendorItemRemembered,
 )
-from app.services import inventory_approval, recycle_bin
+from app.services import inventory_approval, proposal_service, recycle_bin, vendor_item_crosswalk
 from app.services.case_mapping_service import (
     build_case_mapping_status,
     invoice_commercial_resolution,
@@ -93,6 +95,7 @@ from app.services.export_service import (
     persisted_pdi_export_eligibility,
     unmapped_item_codes,
 )
+from app.services.gtin import classify as classify_printed_code
 from app.services.inventory_service import ensure_invoice_changeable
 from app.services.invoice_workflow_service import completion_state, current_facts, status_for
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
@@ -509,6 +512,12 @@ async def get_invoice(
                     and normalize_item_code(item.product_sku) is None
                 ),
                 supplier_item_id=supplier_items.get(item.sort_order),
+                product_code_unusable=(
+                    classify_printed_code(item.product_sku).reason
+                    if (item.line_type or "product") == "product"
+                    and classify_printed_code(item.product_sku).key is not None
+                    and not classify_printed_code(item.product_sku).exportable else None
+                ),
                 **names.get(item.sort_order, {}),
                 unit_discount=float(item.discount) if item.discount is not None else None,
                 entry_source=item.entry_source or "extracted",
@@ -862,6 +871,21 @@ async def correct_line_item(
                 detail={"invoice_id": str(invoice_id), "sort_order": sort_order, "field": "product_code"},
             )
 
+    vendor_code = None
+    if payload.remember_vendor_item:
+        if new_code is None:
+            raise ValidationError(message="Enter the UPC to remember it for the vendor's item.",
+                                  detail={"field": "product_code", "reason": "upc_required"})
+        before = await repository.get_detail(invoice_id)
+        row = next((i for i in before.items if i.sort_order == sort_order), None) if before else None
+        if row is not None:
+            vendor_code = vendor_item_crosswalk.vendor_code_for(
+                supplier_item_ids(before).get(sort_order), row.product_sku)
+        if vendor_code is None:
+            raise ValidationError(
+                message="This row has no vendor item number to remember the UPC by.",
+                detail={"invoice_id": str(invoice_id), "sort_order": sort_order, "reason": "no_vendor_item_number"})
+
     item = await repository.correct_item(
         invoice_id, sort_order, updates, corrected_by=user.username, note=payload.note,
     )
@@ -873,6 +897,23 @@ async def correct_line_item(
     invoice = await repository.get_detail(invoice_id)
     await _log_correction(db, invoice, "line_item_corrected", user.username, payload.note,
                           sort_order=sort_order, changes=(item.correction_history or [])[-len(updates):])
+
+    remembered = None
+    if vendor_code is not None:
+        # The reviewer read the UPC off the paper for this vendor item: proposed and
+        # approved in one step (MANAGER/ADMIN), with the usual audit trail.
+        proposal = await vendor_item_crosswalk.propose(
+            db, invoice=invoice, sort_order=sort_order, vendor_code=vendor_code, entered_code=new_code,
+            description=item.description, proposed_by=user.username,
+        )
+        approval = await proposal_service.approve(
+            db, proposal, reviewed_by=user.username, note="Confirmed while entering the UPC.",
+            reviewer_user_id=user.id, reviewer_role=user.role)
+        link = await db.get(VendorItemCrosswalk, uuid.UUID(approval.applied_to.split(":", 1)[1]))
+        others = await vendor_item_crosswalk.apply_to_open_invoices(db, link, exclude_invoice_id=invoice_id)
+        remembered = VendorItemRemembered(vendor_item_code=vendor_code[1], item_code=link.item_code,
+                                          link_id=link.id, applied_to_invoice_ids=others)
+        invoice = await repository.get_detail(invoice_id)
     report = await revalidate_invoice(db, invoice)
 
     units = await invoice_units_by_item_code(db, invoice)
@@ -888,6 +929,7 @@ async def correct_line_item(
             review_reasons=report.review_reasons,
             pdi_export_allowed=eligibility.allowed,
             pdi_export_blocked_reason=eligibility.blocked_reason,
+            vendor_item_link=remembered,
         )
     )
 

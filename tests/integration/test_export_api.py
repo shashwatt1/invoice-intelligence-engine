@@ -151,7 +151,7 @@ class TestPdiExport:
         sample_invoice = extracted_invoice(
             line_items=[
                 ExtractedLineItem(
-                    description="NORTHWIND LAGER 12PK CAN", product_code="999000000015",
+                    description="NORTHWIND LAGER 12PK CAN", product_code="999000000014",
                     quantity=3.0, unit_price=21.95, line_total=65.85,
                 )
             ],
@@ -172,7 +172,7 @@ class TestPdiExport:
         json_export = (
             await api_client.get(f"/api/v1/invoices/{status['invoice_id']}/export")
         ).json()
-        assert json_export["line_items"][0]["sku_upc"] == "999000000015"
+        assert json_export["line_items"][0]["sku_upc"] == "999000000014"
 
         await confirm_mapping(api_client, db_session, status["invoice_id"])
         response = await api_client.get(
@@ -237,7 +237,7 @@ class TestPdiExport:
         taxed_invoice = extracted_invoice(
             line_items=[
                 ExtractedLineItem(
-                    description="Blue Widget", product_code="999000000027",
+                    description="Blue Widget", product_code="999000000021",
                     quantity=2.0, unit_price=9.45, line_total=18.9,
                 )
             ],
@@ -272,7 +272,7 @@ class TestPdiExport:
 
         sample_invoice = extracted_invoice(
             line_items=[ExtractedLineItem(
-                description="Blue Widget", product_code="999000000034",
+                description="Blue Widget", product_code="999000000038",
                 quantity=2.0, unit_price=9.45, line_total=18.9,
             )],
         )
@@ -320,7 +320,7 @@ class TestPdiExport:
         return_invoice = extracted_invoice(
             line_items=[
                 ExtractedLineItem(
-                    description="NORTHWIND LAGER 12PK CAN", product_code="999000000015",
+                    description="NORTHWIND LAGER 12PK CAN", product_code="999000000014",
                     quantity=3.0, unit_price=-15.56, line_total=-46.68,
                 )
             ],
@@ -370,7 +370,7 @@ class TestPdiExport:
 
         unreviewed = extracted_invoice(
             line_items=[ExtractedLineItem(
-                description="Mismatched item", product_code="999000000041",
+                description="Mismatched item", product_code="999000000045",
                 quantity=2.0, unit_price=5.0, line_total=18.9,  # 2 x 5.0 != 18.9
             )],
         )
@@ -437,7 +437,7 @@ class TestPdiExport:
         # VALIDATED: allowed, no confirmation needed.
         validated = extracted_invoice(
             line_items=[ExtractedLineItem(
-                description="Blue Widget", product_code="999000000058",
+                description="Blue Widget", product_code="999000000052",
                 quantity=2.0, unit_price=9.45, line_total=18.9,
             )],
         )
@@ -460,7 +460,7 @@ class TestPdiExport:
         # REVIEW_REQUIRED with items: allowed, but flagged for confirmation.
         unreviewed = extracted_invoice(
             line_items=[ExtractedLineItem(
-                description="Mismatched item", product_code="999000000065",
+                description="Mismatched item", product_code="999000000069",
                 quantity=2.0, unit_price=5.0, line_total=18.9,
             )],
         )

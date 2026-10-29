@@ -293,13 +293,21 @@ async def _decide(db: AsyncSession, proposal_id: uuid.UUID, body: ProposalDecisi
     p = await ProductDataProposalRepository(db).get(proposal_id)
     if p is None:
         raise RecordNotFoundError(message="Proposal not found.", detail={"id": str(proposal_id)})
-    if approve:
+    # The store-level guard applies to a plain store approval. A store override
+    # (with a reason) and a shared approval make their own checks, which refuse
+    # rather than bypass any approved or open Product Master decision.
+    if approve and body.scope == proposal_service.SCOPE_STORE and not body.override_reason:
         block = (await _product_master_blocks(db, [p])).get(p.id)
         if block:
             raise ValidationError(message=block, detail={"id": str(proposal_id), "reason": "product_master_governs"})
+    result = None
     try:
         if approve:
-            result = await proposal_service.approve(db, p, reviewed_by=user.username, note=body.note)
+            result = await proposal_service.approve(
+                db, p, reviewed_by=user.username, note=body.note, scope=body.scope,
+                override_reason=body.override_reason, keep_store_values=body.keep_store_values,
+                reviewer_user_id=user.id, reviewer_role=user.role,
+            )
             applied = result.applied_to
         else:
             await proposal_service.reject(db, p, reviewed_by=user.username, note=body.note)
@@ -307,7 +315,12 @@ async def _decide(db: AsyncSession, proposal_id: uuid.UUID, body: ProposalDecisi
     except ProposalImmutableError as exc:
         raise ValidationError(message=str(exc), detail={"id": str(proposal_id), "status": p.status}) from exc
     await db.commit()
-    return APIResponse(data=ProposalDecisionResult(proposal=await _detail(db, p), applied_to=applied))
+    return APIResponse(data=ProposalDecisionResult(
+        proposal=await _detail(db, p), applied_to=applied,
+        shared_mapping_id=(uuid.UUID(shared) if (shared := getattr(result, "shared_mapping_id", None)) else None),
+        overrides_recorded=getattr(result, "overrides_recorded", 0),
+        notes=list(getattr(result, "notes", ())),
+    ))
 
 
 async def _decide_bulk(db: AsyncSession, body: BulkProposalDecision, approve: bool, user: User):
@@ -320,7 +333,7 @@ async def _decide_bulk(db: AsyncSession, body: BulkProposalDecision, approve: bo
             message=f"{len(missing)} proposal(s) not found; nothing was decided.",
             detail={"failures": missing},
         )
-    if approve:
+    if approve and body.scope == proposal_service.SCOPE_STORE:
         blocked = await _product_master_blocks(db, [p for p in found if p is not None])
         if blocked:
             raise ValidationError(
@@ -331,6 +344,8 @@ async def _decide_bulk(db: AsyncSession, body: BulkProposalDecision, approve: bo
         outcomes = await proposal_service.decide_many(
             db, [p for p in found if p is not None],
             approve_them=approve, reviewed_by=user.username, note=body.note,
+            scope=body.scope, keep_store_values=body.keep_store_values,
+            reviewer_user_id=user.id, reviewer_role=user.role,
         )
     except BatchRefusedError as exc:
         await db.rollback()

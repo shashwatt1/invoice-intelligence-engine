@@ -49,7 +49,7 @@ from tests.integration.test_api_db import api_client  # noqa: F401 — fixture r
 pytestmark = requires_db
 
 CODE = "07777733333"
-PRINTED = CODE + "3"
+PRINTED = CODE + "4"   # a valid UPC-A check digit
 
 
 @pytest.fixture
