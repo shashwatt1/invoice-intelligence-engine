@@ -62,13 +62,13 @@ class TestVocabulary:
             COMMERCIAL_CASE_IS_SELLING_UNIT, COMMERCIAL_UNIT_IS_SELLING_UNIT,
             COMMERCIAL_UNKNOWN, COMMERCIAL_CONFLICT,
         }
-        assert VALID_COMMERCIAL_BASES == whole_vocabulary
+        assert whole_vocabulary == VALID_COMMERCIAL_BASES
 
     def test_cost_bases_distinguish_absent_from_contradictory(self):
         whole_vocabulary = {
             COST_DISTRIBUTOR_CASE_PRICE, COST_UNRESOLVED, COST_CONFLICTING_SOURCES,
         }
-        assert VALID_COST_BASES == whole_vocabulary
+        assert whole_vocabulary == VALID_COST_BASES
 
 
 class TestCommercialUnitDecisions:
