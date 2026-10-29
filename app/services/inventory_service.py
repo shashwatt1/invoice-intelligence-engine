@@ -12,6 +12,13 @@ Rules (business decisions, 2026-10-09):
     count is the closing stock of its count date: movements on or before that
     date are already in it; only later movements change the balance. The POS
     "Current Inventory Count" is never used.
+  * A store baseline (store_inventory_baselines, 0036) starts every product
+    at that store WITHOUT a product-level opening count at zero on its
+    baseline date. It is not a count: every RECEIPT movement counts against
+    it — including one approved later with an earlier arrival date, which a
+    zero start cannot already contain (a reversal nets to zero either way) —
+    and every other movement counts from the baseline date. A product-level
+    opening count always takes precedence for its product.
   * A receipt is a person's explicit confirmation — never inferred from an
     invoice being validated or exported. It is never posted directly: marking
     the invoice Retailed submits it, and an approver posts it (see
@@ -62,6 +69,7 @@ from app.models.inventory import (
     RECEIPT_SUBMITTED,
     InventoryMovement,
     InventoryReceipt,
+    StoreInventoryBaseline,
 )
 from app.models.invoice import Invoice
 from app.models.store import Store
@@ -192,16 +200,27 @@ class ItemBalance:
     received: Decimal = Decimal("0")          # receipts after the opening count (all receipts when there is none)
     sold: Decimal = Decimal("0")
     other: Decimal = Decimal("0")             # returns, transfers, adjustments
-    on_hand: Decimal | None = None            # only once an opening count exists
+    on_hand: Decimal | None = None            # only once an opening count or a store baseline exists
     status: str = STATUS_OPENING_REQUIRED
     last_movement: date | None = None
+    opening_source: str | None = None         # OPENING_SOURCE_COUNT / OPENING_SOURCE_BASELINE; None: no start yet
 
 
-def fold_balances(rows: Sequence[Any]) -> list[ItemBalance]:
+OPENING_SOURCE_COUNT = "OPENING_COUNT"        # the product's own audited opening count
+OPENING_SOURCE_BASELINE = "STORE_BASELINE"    # the store's zero start (no count for this product)
+
+
+def fold_balances(rows: Sequence[Any], baseline_date: date | None = None) -> list[ItemBalance]:
     """
     Per item code, from movements summed by (item_code, movement_type,
-    business_date): the opening count, what moved after it, and the on-hand
-    balance — none until an opening count exists. Sorted by item code.
+    business_date): the opening point, what moved after it, and the on-hand
+    balance. Sorted by item code.
+
+    A product's own opening count comes first: movements on or before its
+    count date are already in it. Otherwise, with a store baseline, the
+    product starts at zero on `baseline_date`: every RECEIPT movement counts,
+    and every other movement counts from `baseline_date`. With neither, there
+    is no on-hand figure ("Opening stock required").
     """
     items: dict[str, ItemBalance] = {}
     openings: dict[str, tuple[date, Decimal]] = {}
@@ -217,8 +236,12 @@ def fold_balances(rows: Sequence[Any]) -> list[ItemBalance]:
             continue
         balance = items[row["item_code"]]
         opening = openings.get(row["item_code"])
-        if opening is not None and row["business_date"] <= opening[0]:
-            continue                                   # already in the count
+        if opening is not None:
+            if row["business_date"] <= opening[0]:
+                continue                               # already in the count
+        elif (baseline_date is not None and row["movement_type"] != MOVEMENT_RECEIPT
+              and row["business_date"] < baseline_date):
+            continue                                   # before the store's tracked start
         quantity = Decimal(str(row["quantity"]))
         if row["movement_type"] == MOVEMENT_RECEIPT:
             balance.received += quantity
@@ -229,8 +252,14 @@ def fold_balances(rows: Sequence[Any]) -> list[ItemBalance]:
     for code, balance in items.items():
         if code in openings:
             balance.opening_date, balance.opening_quantity = openings[code]
-            balance.on_hand = balance.opening_quantity + balance.received + balance.sold + balance.other
-            balance.status = STATUS_OUT_OF_STOCK if balance.on_hand <= 0 else STATUS_IN_STOCK
+            balance.opening_source = OPENING_SOURCE_COUNT
+        elif baseline_date is not None:
+            balance.opening_date, balance.opening_quantity = baseline_date, Decimal("0")
+            balance.opening_source = OPENING_SOURCE_BASELINE
+        else:
+            continue
+        balance.on_hand = balance.opening_quantity + balance.received + balance.sold + balance.other
+        balance.status = STATUS_OUT_OF_STOCK if balance.on_hand <= 0 else STATUS_IN_STOCK
     return [items[code] for code in sorted(items)]
 
 
@@ -528,8 +557,33 @@ async def record_opening_counts(
     return movements
 
 
+_baseline_schema_seen = False
+
+
+async def baseline_schema_ready(session: AsyncSession) -> bool:
+    """
+    Whether migration 0036 (store_inventory_baselines) is applied. Before it,
+    no store has a baseline and balances are exactly as they were. Only the
+    final state is cached, so applying 0036 takes effect without a restart.
+    """
+    global _baseline_schema_seen
+    if not _baseline_schema_seen:
+        _baseline_schema_seen = bool((await session.execute(
+            text("SELECT to_regclass('public.store_inventory_baselines') IS NOT NULL"))).scalar())
+    return _baseline_schema_seen
+
+
+async def store_baseline(session: AsyncSession, store_id: uuid.UUID) -> StoreInventoryBaseline | None:
+    """The store's inventory baseline, if one was recorded (and 0036 is applied)."""
+    if not await baseline_schema_ready(session):
+        return None
+    return (await session.execute(
+        select(StoreInventoryBaseline).where(StoreInventoryBaseline.store_id == store_id)
+    )).scalars().first()
+
+
 async def store_balances(session: AsyncSession, store_id: uuid.UUID) -> list[ItemBalance]:
-    """Every product with a movement at this store, folded into balances."""
+    """Every product with a movement at this store, folded into balances (with its baseline, if any)."""
     rows = (await session.execute(
         select(InventoryMovement.item_code, InventoryMovement.movement_type, InventoryMovement.business_date,
                func.sum(InventoryMovement.quantity).label("quantity"),
@@ -537,7 +591,8 @@ async def store_balances(session: AsyncSession, store_id: uuid.UUID) -> list[Ite
         .where(InventoryMovement.store_id == store_id)
         .group_by(InventoryMovement.item_code, InventoryMovement.movement_type, InventoryMovement.business_date)
     )).mappings().all()
-    return fold_balances(rows)
+    baseline = await store_baseline(session, store_id)
+    return fold_balances(rows, baseline.baseline_date if baseline else None)
 
 
 async def item_movements(session: AsyncSession, store_id: uuid.UUID, item_code: str) -> list[InventoryMovement]:

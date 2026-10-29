@@ -43,6 +43,16 @@ class ReceiptSummary(BaseModel):
     reversal_reason: str | None = None
 
 
+class InventoryBaselineOut(BaseModel):
+    """The store's inventory start: products without their own opening count start at zero on baseline_date."""
+
+    baseline_date: date
+    basis: str = Field(description="EARLIEST_POSTED_RECEIPT or INITIALIZATION_DATE.")
+    initialization_date: date
+    initialized_by: str
+    reason: str
+
+
 class InventoryOverview(BaseModel):
     store: StoreRef
     tracked_products: int = Field(description="Products with at least one movement at this store.")
@@ -52,6 +62,8 @@ class InventoryOverview(BaseModel):
     last_recorded_at: datetime | None = Field(default=None, description="When the latest movement was recorded.")
     recent_receipts: list[ReceiptSummary] = Field(default_factory=list)
     pending_approvals: int = Field(default=0, description="Receipt submissions awaiting approval at this store.")
+    baseline: InventoryBaselineOut | None = Field(
+        default=None, description="The store's zero start, if an administrator initialized one.")
 
 
 class InventoryItemRow(BaseModel):
@@ -64,8 +76,12 @@ class InventoryItemRow(BaseModel):
     received: Decimal = Field(description="Receipts after the opening count (all receipts when there is none).")
     sold: Decimal
     other: Decimal
-    on_hand: Decimal | None = Field(default=None, description="Only once an opening count exists.")
+    on_hand: Decimal | None = Field(default=None,
+                                    description="Only once an opening count or a store baseline exists.")
     last_movement: date | None = None
+    opening_source: str | None = Field(
+        default=None, description="OPENING_COUNT (the product's own count), STORE_BASELINE (the store's zero "
+                                  "start), or null when there is no start yet.")
 
 
 class MovementRow(BaseModel):

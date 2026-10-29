@@ -44,6 +44,7 @@ from app.services.product_master import commercial_resolution as cr
 ROOT = Path(__file__).resolve().parent.parent
 MIGRATION = ROOT / "alembic/versions/20261023_0033_store_inventory_ledger.py"
 APPROVAL_MIGRATION = ROOT / "alembic/versions/20261023_0035_inventory_receipt_approval.py"
+BASELINE_MIGRATION = ROOT / "alembic/versions/20261029_0036_store_inventory_baselines.py"
 
 BUD = "01820053030"            # 11-digit PDI code (UPC-A 018200530304 without its check digit)
 TEA = "08769283102"
@@ -194,6 +195,55 @@ class TestBalances:
         assert list(balances) == sorted(balances)
 
 
+class TestStoreBaseline:
+    """A store baseline starts products without their own count at zero; it is not a count."""
+
+    START = date(2026, 10, 1)
+
+    def test_opening_zero_plus_thirty_received_is_thirty(self):
+        [b] = inv.fold_balances([mv(BUD, "RECEIPT", 30, self.START)], self.START)
+        assert (b.opening_source, b.opening_date, b.opening_quantity) == (inv.OPENING_SOURCE_BASELINE, self.START, 0)
+        assert (b.received, b.on_hand, b.status) == (30, 30, inv.STATUS_IN_STOCK)
+
+    def test_every_historical_receipt_counts_once(self):
+        rows = [mv(BUD, "RECEIPT", 12, self.START), mv(BUD, "RECEIPT", 24, date(2026, 10, 5)),
+                mv(BUD, "RECEIPT", 6, date(2026, 10, 5))]                      # same day: summed, not doubled
+        [b] = inv.fold_balances(rows, self.START)
+        assert (b.received, b.on_hand) == (42, 42)
+
+    def test_a_receipt_approved_later_with_an_earlier_arrival_date_still_counts(self):
+        # Initialized 1 Nov with no receipts; a receipt that arrived 30 Oct is approved afterwards.
+        [b] = inv.fold_balances([mv(BUD, "RECEIPT", 24, date(2026, 10, 30))], date(2026, 11, 1))
+        assert (b.on_hand, b.status) == (24, inv.STATUS_IN_STOCK)
+
+    def test_a_reversed_receipt_nets_to_zero_whichever_side_of_the_baseline(self):
+        for day in (date(2026, 9, 20), date(2026, 10, 20)):
+            [b] = inv.fold_balances([mv(BUD, "RECEIPT", 24, day), mv(BUD, "RECEIPT", -24, day)], self.START)
+            assert (b.on_hand, b.status) == (0, inv.STATUS_OUT_OF_STOCK), day
+
+    def test_a_products_own_opening_count_takes_precedence_and_keeps_its_rule(self):
+        rows = [mv(BUD, "RECEIPT", 48, date(2026, 10, 3)),                     # before the count: in it
+                mv(BUD, "OPENING_COUNT", 30, date(2026, 10, 5)),
+                mv(BUD, "RECEIPT", 24, date(2026, 10, 6)),
+                mv(TEA, "RECEIPT", 8, date(2026, 10, 3))]                      # no count: baseline applies
+        balances = {b.item_code: b for b in inv.fold_balances(rows, self.START)}
+        assert (balances[BUD].opening_source, balances[BUD].opening_quantity, balances[BUD].on_hand) == (
+            inv.OPENING_SOURCE_COUNT, 30, 54)
+        assert (balances[TEA].opening_source, balances[TEA].on_hand) == (inv.OPENING_SOURCE_BASELINE, 8)
+        assert balances == {b.item_code: b for b in inv.fold_balances(rows, self.START)}   # pure, repeatable
+
+    def test_other_movements_count_only_from_the_baseline_date(self):
+        rows = [mv(BUD, "ADJUSTMENT", -5, date(2026, 9, 30)), mv(BUD, "SALE", -3, self.START),
+                mv(BUD, "RECEIPT", 12, date(2026, 10, 2))]
+        [b] = inv.fold_balances(rows, self.START)
+        assert (b.received, b.sold, b.other, b.on_hand) == (12, -3, 0, 9)
+
+    def test_without_a_baseline_nothing_changes(self):
+        rows = [mv(BUD, "RECEIPT", 48, self.START)]
+        [b] = inv.fold_balances(rows)
+        assert (b.status, b.on_hand, b.opening_source) == (inv.STATUS_OPENING_REQUIRED, None, None)
+
+
 # ---- API -----------------------------------------------------------------------------------
 
 STORE = Store(id=uuid.uuid4(), display_name="AF NV Midler", address_line_1="1 Main St",
@@ -286,6 +336,7 @@ def endpoint(app, monkeypatch):
     monkeypatch.setattr(inv, "receipt_preview", preview)
     monkeypatch.setattr(inv, "record_opening_counts", opening)
     monkeypatch.setattr(inv, "last_recorded", nothing)
+    monkeypatch.setattr(inv, "store_baseline", nothing)
     monkeypatch.setattr(inv, "recent_receipts", none_list)
     monkeypatch.setattr(inv, "item_movements", none_list)
 
@@ -487,6 +538,23 @@ class TestTheMigration:
         tables["inventory_receipts"] |= {name for name, _type in m0035.NEW_COLUMNS}
         assert tables == {"inventory_receipts": set(InventoryReceipt.__table__.columns.keys()),
                           "inventory_movements": set(InventoryMovement.__table__.columns.keys())}
+
+    def test_0036_chains_from_0035_is_additive_and_matches_the_model(self):
+        from app.models.inventory import BASELINE_CHECKS, StoreInventoryBaseline
+        source = BASELINE_MIGRATION.read_text()
+        assert 'revision = "0036"' in source and 'down_revision = "0035"' in source
+        assert source.count("op.create_table(") == 1
+        for forbidden in ("op.alter_column", "op.drop_column", "UPDATE ", "DELETE ", "INSERT ",
+                          "FORCE ROW LEVEL SECURITY", "CREATE POLICY"):
+            assert forbidden not in source, forbidden
+        assert "ENABLE ROW LEVEL SECURITY" in source
+        tree = ast.parse(source)
+        columns = {a.args[0].value for node in ast.walk(tree)
+                   if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "create_table"
+                   for a in node.args[1:] if isinstance(a, ast.Call) and getattr(a.func, "attr", None) == "Column"}
+        assert columns == set(StoreInventoryBaseline.__table__.columns.keys())
+        for name in (*BASELINE_CHECKS, "uq_store_inventory_baselines_store"):
+            assert name in source, name
 
     def test_constraints_that_make_posting_idempotent_are_in_both(self):
         source = MIGRATION.read_text()

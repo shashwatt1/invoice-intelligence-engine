@@ -35,6 +35,7 @@ from app.models.user import User
 from app.models.vendor import Vendor
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.inventory import (
+    InventoryBaselineOut,
     InventoryItemRow,
     InventoryOverview,
     LineChangeOut,
@@ -138,6 +139,7 @@ async def overview(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                    user: User = Depends(require_manager)) -> APIResponse[InventoryOverview]:
     store = await store_access.ensure_store_access(db, user, store_id)
     balances = await inventory.store_balances(db, store.id)
+    baseline = await inventory.store_baseline(db, store.id)
     return APIResponse(data=InventoryOverview(
         store=StoreRef.from_store(store), tracked_products=len(balances),
         opening_required=sum(1 for b in balances if b.status == inventory.STATUS_OPENING_REQUIRED),
@@ -146,6 +148,7 @@ async def overview(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
         last_recorded_at=await inventory.last_recorded(db, store.id),
         recent_receipts=[_receipt(r) for r in await inventory.recent_receipts(db, store.id)],
         pending_approvals=await approval.pending_count(db, store.id),
+        baseline=InventoryBaselineOut.model_validate(baseline, from_attributes=True) if baseline else None,
     ))
 
 
