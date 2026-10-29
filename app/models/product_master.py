@@ -1,11 +1,11 @@
 """
 Product Master — app/models/product_master.py
 
-The authoritative product model. Additive and unused by the invoice,
-mapping-queue and EDI paths: nothing in this file is read or written by
-an existing code path, and the legacy `product_identity`,
-`product_identifier` and `product_case_mappings` tables continue to own
-production behaviour until a later phase migrates them deliberately.
+The authoritative product model. When Product Master commercial resolution
+is on, approved commercial mappings here decide a line's units-per-case
+(app/services/product_master/commercial_resolution.py); the legacy
+`product_case_mappings` table remains the store-level fallback and the
+authority when it is off.
 
 Five tables, because the research established that five different
 questions were being answered by one column:
@@ -41,6 +41,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -49,6 +50,7 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -401,10 +403,11 @@ class MasterCommercialMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     product_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("master_products.id", ondelete="CASCADE"), nullable=False,
     )
-    store_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False,
+    store_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("stores.id", ondelete="RESTRICT"), nullable=True,
         doc=("The store record the mapping is held under: a physical store for an override, or the "
-              "Item Sales location the global mappings' evidence was imported under (provenance)."),
+             "Item Sales location the global mappings' evidence was imported under (provenance). "
+             "NULL (0038) is the shared scope itself: one value for every physical store."),
     )
     pdi_item_code: Mapped[str] = mapped_column(
         String(32), nullable=False, doc="The code PDI product-matches on, as emitted to EDI.",
@@ -445,6 +448,12 @@ class MasterCommercialMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     proposed_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     # The raw source values a reviewer needs, captured at seed time so the
     # deployed dashboard never has to read the reference workbooks.
+    override_reason: Mapped[str | None] = mapped_column(
+        String(500), nullable=True,
+        doc=("Set only on a physical store's mapping that deliberately differs from the shared value "
+             "(0038). With a reason it is a store-specific override and wins; without one, a "
+             "disagreement with the shared value stays a conflict."),
+    )
     source_snapshot: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict,
         doc="Raw source fields as written, with unknowns left absent rather than invented.",
@@ -462,6 +471,11 @@ class MasterCommercialMapping(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         Index("idx_master_commercial_store_item", "store_id", "pdi_item_code"),
         Index("idx_master_commercial_product", "product_id"),
+        # At most one APPROVED shared value per item code (0038).
+        Index("uq_master_commercial_shared_approved", "pdi_item_code", unique=True,
+              postgresql_where=text("store_id IS NULL AND approval_state = 'APPROVED'")),
+        CheckConstraint("override_reason IS NULL OR store_id IS NOT NULL",
+                        name="ck_master_commercial_override_store_scoped"),
     )
 
 

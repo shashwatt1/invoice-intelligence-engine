@@ -30,6 +30,7 @@ from app.models.store_product_reference import StoreProductReference
 from app.models.user import ROLE_RANK, User, UserRole
 from app.models.user_store_access import UserStoreAccess
 from app.models.vendor import Vendor
+from app.models.vendor_item_crosswalk import VendorItemCrosswalk
 
 __all__ = [
     "Document",
@@ -64,5 +65,6 @@ __all__ = [
     "User",
     "UserRole",
     "Vendor",
+    "VendorItemCrosswalk",
     "UserStoreAccess",
 ]

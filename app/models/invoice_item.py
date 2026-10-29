@@ -144,6 +144,11 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
     product_sku: Mapped[str | None] = mapped_column(
         String(100), nullable=True, doc="Matched product SKU (populated in Phase 3)."
     )
+    supplier_item_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        doc=("The vendor's own item number for the row, exactly as extraction read it (0038). "
+             "Never a UPC and never exported; it is the key of the vendor item crosswalk."),
+    )
 
     # Ordering
     sort_order: Mapped[int] = mapped_column(
