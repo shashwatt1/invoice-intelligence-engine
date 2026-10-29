@@ -292,3 +292,96 @@ class TestGrantAdministration:
             await db_session.execute(text("UPDATE user_store_access SET revoked_at = now() WHERE id = :id"),
                                      {"id": row.id})
         await db_session.rollback()
+
+
+class TestStoreDirectoryScope:
+    """The Store Directory page: ADMIN sees every store; a MANAGER only the physical stores they are granted."""
+
+    async def test_a_manager_sees_only_granted_physical_stores_and_an_admin_sees_all(
+        self, received, manager, api_client, db_session,  # noqa: F811
+    ):
+        a = store_id(PHYSICAL_STORE)
+        assert (await manager.get("/api/v1/stores/directory")).json()["data"] == []
+        await grant(db_session, "MANAGER", a)
+        assert [s["id"] for s in (await manager.get("/api/v1/stores/directory")).json()["data"]] == [str(a)]
+        everything = {s["id"] for s in (await api_client.get("/api/v1/stores")).json()["data"]}
+        admin_view = {s["id"] for s in (await api_client.get("/api/v1/stores/directory")).json()["data"]}
+        assert admin_view == everything and str(store_id(SOURCE_ONLY_STORE)) in admin_view
+
+    async def test_the_processing_store_pickers_are_unchanged_for_managers(
+        self, received, manager, api_client,  # noqa: F811
+    ):
+        # GET /stores feeds the pickers used while processing invoices; it is not grant-scoped.
+        as_manager = {s["id"] for s in (await manager.get("/api/v1/stores")).json()["data"]}
+        as_admin = {s["id"] for s in (await api_client.get("/api/v1/stores")).json()["data"]}
+        assert as_manager == as_admin
+
+    async def test_a_user_account_has_no_directory(self, received, app):  # noqa: F811
+        user = await client_as(app, USER_USERNAME, USER_PASSWORD)
+        try:
+            assert (await user.get("/api/v1/stores/directory")).status_code == 403
+        finally:
+            await user.aclose()
+
+
+class TestStoreIdentityIsAdministratorOnly:
+    async def test_a_manager_cannot_add_a_store_or_change_an_identity_and_nothing_changes(
+        self, received, manager, api_client,  # noqa: F811
+    ):
+        a = store_id(PHYSICAL_STORE)
+        before = (await api_client.get(f"/api/v1/stores/{a}")).json()["data"]
+        r = await manager.post("/api/v1/stores", json={"display_name": "Manager Market", "created_by": "m"})
+        assert r.status_code == 403
+        r = await manager.patch(f"/api/v1/stores/{a}", json={"display_name": "Renamed", "confirm": True,
+                                                              "confirmed_by": "m"})
+        assert r.status_code == 403
+        assert (await api_client.get(f"/api/v1/stores/{a}")).json()["data"] == before
+        names = {s["display_name"] for s in (await api_client.get("/api/v1/stores")).json()["data"]}
+        assert "Manager Market" not in names
+
+    async def test_an_administrator_still_can(self, received, api_client):  # noqa: F811
+        a = store_id(PHYSICAL_STORE)
+        r = await api_client.patch(f"/api/v1/stores/{a}", json={"customer_name": "Billing Name Inc"})
+        assert r.status_code == 200 and r.json()["data"]["customer_name"] == "Billing Name Inc"
+
+
+class TestGrantAllPhysicalStores:
+    async def _physical(self, api_client):
+        return {s["id"] for s in (await api_client.get("/api/v1/stores")).json()["data"] if s["kind"] == "physical"}
+
+    async def test_an_administrator_account_gets_every_physical_store_once_and_a_repeat_writes_nothing(
+        self, received, api_client, db_session,  # noqa: F811
+    ):
+        aid = KNOWN_USERS["ADMIN"]
+        url = f"/api/v1/users/{aid}/store-access/grant-all-physical"
+        physical = await self._physical(api_client)
+        first = (await api_client.post(url, json={"reason": "admin oversight of every store"})).json()["data"]
+        granted_before = {g["store_id"] for g in first["already_granted"]}
+        assert granted_before == {str(received.store_id)}            # the fixture's existing grant, unchanged
+        assert {g["store_id"] for g in first["created"]} | granted_before == physical
+        assert all(g["grant_reason"] == "admin oversight of every store" and g["self_granted"]
+                   for g in first["created"])
+        assert str(store_id(SOURCE_ONLY_STORE)) not in {g["store_id"] for g in first["created"]}
+        again = (await api_client.post(url, json={"reason": "again"})).json()["data"]
+        assert again["created"] == [] and {g["store_id"] for g in again["already_granted"]} == physical
+        total = (await db_session.execute(select(func.count()).select_from(UserStoreAccess).where(
+            UserStoreAccess.user_id == aid, UserStoreAccess.revoked_at.is_(None)))).scalar()
+        assert total == len(physical)
+        listed = {s["id"] for s in (await api_client.get("/api/v1/inventory/stores")).json()["data"]}
+        assert listed == physical
+
+    async def test_it_is_refused_for_a_manager_account_without_a_reason_or_by_a_manager(
+        self, received, api_client, manager, db_session,  # noqa: F811
+    ):
+        mid = KNOWN_USERS["MANAGER"]
+        r = await api_client.post(f"/api/v1/users/{mid}/store-access/grant-all-physical", json={"reason": "x"})
+        assert r.status_code == 422 and r.json()["error"]["detail"]["reason"] == "account_not_administrator"
+        aid = KNOWN_USERS["ADMIN"]
+        assert (await api_client.post(f"/api/v1/users/{aid}/store-access/grant-all-physical",
+                                      json={"reason": "  "})).status_code == 422
+        assert (await manager.post(f"/api/v1/users/{aid}/store-access/grant-all-physical",
+                                   json={"reason": "x"})).status_code == 403
+        assert (await api_client.post(f"/api/v1/users/{uuid.uuid4()}/store-access/grant-all-physical",
+                                      json={"reason": "x"})).status_code == 404
+        assert (await db_session.execute(select(func.count()).select_from(UserStoreAccess).where(
+            UserStoreAccess.user_id == mid))).scalar() == 0

@@ -42,6 +42,8 @@ from app.schemas.auth import (
 )
 from app.schemas.base import APIResponse
 from app.schemas.store_access import (
+    StoreAccessGrantAllRequest,
+    StoreAccessGrantAllResult,
     StoreAccessGrantRequest,
     StoreAccessGrantResult,
     StoreAccessOut,
@@ -218,6 +220,33 @@ async def grant_store_access(
                     username=grant.username, store_id=str(grant.store_id), actor_user_id=str(actor.id),
                     actor_username=actor.username, actor_role=actor.role, self_granted=actor.id == grant.user_id)
     return APIResponse(data=StoreAccessGrantResult(grant=StoreAccessOut.from_grant(grant, store), created=created))
+
+
+@router.post(
+    "/{user_id}/store-access/grant-all-physical", response_model=APIResponse[StoreAccessGrantAllResult],
+    summary="Grant an administrator account every physical store's inventory",
+    description=(
+        "For an active ADMIN account only: one audited grant per physical store it does not already hold, "
+        "all with the given reason, in one transaction. Stores already granted are left unchanged, so it "
+        "can be repeated. MANAGER accounts are refused: they are granted store by store."
+    ),
+    responses={404: {"description": "User not found"},
+               422: {"description": "Account is not an active administrator, or no reason"}},
+)
+async def grant_all_physical_stores(
+    user_id: uuid.UUID, body: StoreAccessGrantAllRequest, db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_admin),
+) -> APIResponse[StoreAccessGrantAllResult]:
+    created, existing = await store_access.grant_all_physical_stores(
+        db, user_id=user_id, actor=actor, reason=body.reason)
+    await db.commit()
+    stores = {s.id: s for s in await StoreRepository(db).list()}
+    logger.info("store_access_granted_all_physical", user_id=str(user_id), actor_user_id=str(actor.id),
+                actor_username=actor.username, created=len(created), already_granted=len(existing))
+    return APIResponse(data=StoreAccessGrantAllResult(
+        created=[StoreAccessOut.from_grant(g, stores.get(g.store_id)) for g in created],
+        already_granted=[StoreAccessOut.from_grant(g, stores.get(g.store_id)) for g in existing],
+    ))
 
 
 @router.post(

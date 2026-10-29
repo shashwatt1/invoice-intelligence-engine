@@ -6,6 +6,15 @@ where one is confirmed, the source identifiers that name the store in
 each system, and how much data each store holds. Also the one place a
 person confirms a store's human identity.
 
+Who may do what:
+  * GET /stores — MANAGER+, every store. It feeds the store pickers used
+    while processing invoices, which are not grant-scoped; it is not an
+    authorisation boundary.
+  * GET /stores/directory — the Store Directory page: an ADMIN sees every
+    store; a MANAGER sees only the physical stores they hold a grant for.
+  * POST /stores and PATCH /stores/{id} — ADMIN only: adding a store and
+    confirming or correcting its identity are administrator decisions.
+
 Confirmation is explicit and recorded. Nothing here links an observed
 name to a source store code on its own.
 """
@@ -18,10 +27,11 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import require_manager
+from app.core.dependencies import require_admin, require_manager
 from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
 from app.models.store import IDENTITY_CONFIRMED, IDENTITY_UNRESOLVED, SOURCE_DOCUMENT, Store
+from app.models.user import User, UserRole
 from app.repositories.store_repository import StoreRepository
 from app.schemas.base import APIResponse
 from app.schemas.processing import (
@@ -31,6 +41,7 @@ from app.schemas.processing import (
     StoreIdentifierOut,
     StoreIdentityUpdate,
 )
+from app.services.store_access import accessible_stores
 
 router = APIRouter(tags=["Stores"], dependencies=[Depends(require_manager)])
 
@@ -75,6 +86,27 @@ async def list_stores(db: AsyncSession = Depends(get_db)) -> APIResponse[list[St
     return APIResponse(data=[_entry(s, counts.get(s.id, {})) for s in stores])
 
 
+@router.get(
+    "/stores/directory",
+    response_model=APIResponse[list[StoreDirectoryEntry]],
+    summary="The Store Directory page, scoped to the account",
+    description=(
+        "An ADMIN sees every store in the master. A MANAGER sees only the physical stores their "
+        "account holds an active grant for (the same grants that open inventory)."
+    ),
+)
+async def store_directory(
+    db: AsyncSession = Depends(get_db), user: User = Depends(require_manager),
+) -> APIResponse[list[StoreDirectoryEntry]]:
+    repo = StoreRepository(db)
+    if user.role == UserRole.ADMIN.value:
+        stores = await repo.list()
+    else:
+        stores = await accessible_stores(db, user)
+    counts = await repo.counts()
+    return APIResponse(data=[_entry(s, counts.get(s.id, {})) for s in stores])
+
+
 @router.post(
     "/stores",
     response_model=APIResponse[StoreDirectoryEntry],
@@ -83,10 +115,11 @@ async def list_stores(db: AsyncSession = Depends(get_db)) -> APIResponse[list[St
     description=(
         "A person names a store (a location) so invoices can be processed for it. No "
         "source code is attached: which Item Sales / POS code belongs to it is a separate, "
-        "explicit decision. With `confirm=true` the identity is marked confirmed by "
+        "explicit decision. ADMIN only. With `confirm=true` the identity is marked confirmed by "
         "`created_by`. A display name already in the directory is refused."
     ),
     responses={422: {"description": "A store with this name already exists"}},
+    dependencies=[Depends(require_admin)],
 )
 async def create_store(body: StoreCreate, db: AsyncSession = Depends(get_db)) -> APIResponse[StoreDirectoryEntry]:
     repo = StoreRepository(db)
@@ -133,8 +166,9 @@ async def get_store(store_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> 
     description=(
         "A person states what this store is called and where it is. With `confirm=true` the "
         "identity is marked confirmed and `confirmed_by` is recorded in the notes. This never "
-        "moves data between stores and never attaches a source code."
+        "moves data between stores and never attaches a source code. ADMIN only."
     ),
+    dependencies=[Depends(require_admin)],
 )
 async def update_store_identity(
     store_id: uuid.UUID, body: StoreIdentityUpdate, db: AsyncSession = Depends(get_db)

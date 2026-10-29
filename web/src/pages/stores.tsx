@@ -1,7 +1,7 @@
-import { Check, MapPin, Pencil, Plus, X } from "lucide-react";
+import { Boxes, Check, MapPin, Pencil, Plus, X } from "lucide-react";
 import { StatusPill } from "@/components/shared/status-badge";
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import type { StoreCreate, StoreDirectoryEntry, StoreIdentityUpdate } from "@/api/types";
@@ -10,72 +10,143 @@ import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/state
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { useCreateStore, useStores, useUpdateStoreIdentity } from "@/hooks/use-api";
+import { useAuth } from "@/hooks/use-auth";
+import {
+  useCreateStore,
+  useInventoryStatus,
+  useInventoryStores,
+  useStoreDirectory,
+  useUpdateStoreIdentity,
+} from "@/hooks/use-api";
 import { rememberedReviewer, rememberReviewer } from "@/lib/reviewer";
-import { PHYSICAL_STORE_NOT_IDENTIFIED, sourceIdentityView } from "@/lib/stores";
 import { cn } from "@/lib/utils";
-import { SourceIdentityBadge } from "@/components/shared/source-identity-badge";
+
+/** Whether this account can open a store's inventory: switched off, granted, or not granted. */
+type InventoryAccess = "off" | "open" | "none";
 
 /**
- * The Store Directory: every store the system knows, what it is called
- * where that is confirmed, the identifiers each source system uses for
- * it, and how much data it holds. The one place a person confirms a
- * store's identity — nothing here links a name to a source code on its own.
+ * The Store Directory. The server decides what is listed (GET /stores/directory):
+ * an ADMIN sees every physical store with its identity, identifiers and data
+ * counts, and is the only role that adds a store or confirms / corrects an
+ * identity (the server refuses anyone else). A MANAGER sees only the physical
+ * stores they are granted, as a short task list: the store, and a way into
+ * its inventory. Records known only by a source-system code are not shown
+ * here; they remain in the database.
  */
 export function StoresPage() {
-  const { data, isPending, isError, error, refetch } = useStores();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "ADMIN";
+  const { data, isPending, isError, error, refetch } = useStoreDirectory();
+  const inventory = useInventoryStatus();
+  const inventoryOn = inventory.data?.enabled === true;
+  const granted = useInventoryStores({ enabled: inventoryOn });
+  const grantedIds = new Set((granted.data ?? []).map((s) => s.id));
+  const accessFor = (id: string): InventoryAccess =>
+    !inventoryOn || !granted.isSuccess ? "off" : grantedIds.has(id) ? "open" : "none";
   const [search] = useSearchParams();
   const highlight = search.get("store");
   const [adding, setAdding] = useState(false);
+  const stores = (data ?? []).filter((s) => s.kind !== "source_identity");
 
   return (
     <>
       <PageHeader
         title="Store Directory"
-        description="Every location the system processes invoices for: its confirmed identity — or the identifier it is known by until a person confirms one — and what the system holds for it."
-        actions={
+        description={isAdmin
+          ? "Every location the system processes invoices for: its confirmed identity — or the identifier it is known by until a person confirms one — and what the system holds for it."
+          : "The stores you have access to. Open a store to check its inventory."}
+        actions={isAdmin ? (
           <Button size="sm" onClick={() => setAdding((v) => !v)} data-testid="add-store-toggle">
             <Plus className="size-3.5" /> Add store
           </Button>
-        }
+        ) : undefined}
       />
-      {adding ? <AddStoreForm onDone={() => setAdding(false)} /> : null}
+      {isAdmin && adding ? <AddStoreForm onDone={() => setAdding(false)} /> : null}
       {isError ? (
         <ErrorState error={error} onRetry={() => void refetch()} />
       ) : isPending ? (
         <TableSkeleton rows={3} />
-      ) : data.length === 0 ? (
-        <EmptyState icon={MapPin} title="No stores" description="Add a store, or import reference data for one." />
-      ) : (
+      ) : stores.length === 0 ? (
+        isAdmin ? (
+          <EmptyState icon={MapPin} title="No stores" description="Add a store, or import reference data for one." />
+        ) : (
+          <EmptyState icon={MapPin} title="No stores assigned to you"
+                      description="Store access is granted per store. Ask an administrator to grant you access to a store." />
+        )
+      ) : isAdmin ? (
         <div className="space-y-4">
-          {data.filter((s) => s.kind !== "source_identity").map((store) => (
-            <StoreCard key={store.id} store={store} highlighted={store.id === highlight} />
+          {stores.map((store) => (
+            <StoreCard key={store.id} store={store} highlighted={store.id === highlight} inventory={accessFor(store.id)} />
           ))}
-          {data.some((s) => s.kind === "source_identity") ? (
-            <section className="space-y-3 pt-4" data-testid="source-identities">
-              <div>
-                <h2 className="text-[0.9rem] font-semibold tracking-tight">Unresolved source identities</h2>
-                <p className="t-meta mt-1">
-                  Known only by a source-system code, such as an Item Sales store code. These are not physical stores:
-                  which location a code belongs to is a data-team decision, and nothing links it automatically.
-                </p>
-              </div>
-              {data.filter((s) => s.kind === "source_identity").map((store) => (
-                <StoreCard key={store.id} store={store} highlighted={store.id === highlight} sourceIdentity />
-              ))}
-            </section>
-          ) : null}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {stores.map((store) => (
+            <ManagerStoreCard key={store.id} store={store} highlighted={store.id === highlight}
+                              inventory={accessFor(store.id)} />
+          ))}
         </div>
       )}
     </>
   );
 }
 
-function StoreCard({ store, highlighted, sourceIdentity = false }: {
-  store: StoreDirectoryEntry; highlighted: boolean; sourceIdentity?: boolean;
+function storeName(store: StoreDirectoryEntry): string {
+  return store.label.replace(" (identity unconfirmed)", "").replace(" (location not yet confirmed)", "");
+}
+
+/** The way into a store's inventory. Disabled, with the reason, where the account holds no grant. */
+function CheckInventory({ store, access, primary = false }: {
+  store: StoreDirectoryEntry; access: InventoryAccess; primary?: boolean;
+}) {
+  if (access === "off") return null;
+  if (access === "none") {
+    return (
+      <span className="inline-flex items-center gap-2">
+        <span className="t-meta">No inventory access</span>
+        <Button size="sm" variant="outline" disabled data-testid="check-inventory"
+                title="Grant this store to your account on the Users page to open its inventory.">
+          <Boxes className="size-3.5" aria-hidden /> Check Inventory
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <Button asChild size="sm" variant={primary ? "default" : "outline"} data-testid="check-inventory">
+      <Link to={`/inventory?store=${encodeURIComponent(store.id)}`} aria-label={`Check Inventory for ${storeName(store)}`}>
+        <Boxes className="size-3.5" aria-hidden /> Check Inventory
+      </Link>
+    </Button>
+  );
+}
+
+/** A manager's view of one store: what it is, where it is, and the way into its inventory. */
+function ManagerStoreCard({ store, highlighted, inventory }: {
+  store: StoreDirectoryEntry; highlighted: boolean; inventory: InventoryAccess;
+}) {
+  return (
+    <div className={cn("surface overflow-hidden", highlighted && "ring-2 ring-primary/40")} id={store.id}
+         data-testid="store-card">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
+        <div className="min-w-0">
+          <div className="text-[1rem] font-semibold tracking-tight">{storeName(store)}</div>
+          <div className="t-meta mt-1">
+            {store.address ?? "No address recorded."}
+            {store.customer_name ? <> · billed as <span className="font-medium text-foreground">{store.customer_name}</span></> : null}
+            {" · "}<span className="font-medium text-foreground tabular-nums">{store.invoices.toLocaleString()}</span>
+            {store.invoices === 1 ? " invoice" : " invoices"}
+          </div>
+        </div>
+        <CheckInventory store={store} access={inventory} primary />
+      </div>
+    </div>
+  );
+}
+
+function StoreCard({ store, highlighted, inventory }: {
+  store: StoreDirectoryEntry; highlighted: boolean; inventory: InventoryAccess;
 }) {
   const unresolved = store.identity_status !== "confirmed";
-  const source = sourceIdentity ? sourceIdentityView(store.kind, store.source_identity) : null;
   const [editing, setEditing] = useState(false);
   const hasReference = store.pricing_rows + store.catalogue_rows + store.identities > 0;
   return (
@@ -83,27 +154,24 @@ function StoreCard({ store, highlighted, sourceIdentity = false }: {
       <div className="flex flex-wrap items-start justify-between gap-3 px-6 pt-5 pb-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("text-[1rem] font-semibold tracking-tight", unresolved && !store.display_name && "font-mono")}>{source ? source.name : store.label.replace(" (identity unconfirmed)", "").replace(" (location not yet confirmed)", "")}</span>
-            {source ? <SourceIdentityBadge /> : (
-              <StatusPill size="xs" tone={unresolved ? "warning" : "success"}
-                          label={unresolved ? "Identity needs confirmation" : "Identity confirmed"}
-                          meaning={unresolved ? "Known by a source identifier or by what documents say; a person has not confirmed the location." : "A person confirmed this store's name and address."} />
-            )}
+            <span className={cn("text-[1rem] font-semibold tracking-tight", unresolved && !store.display_name && "font-mono")}>{storeName(store)}</span>
+            <StatusPill size="xs" tone={unresolved ? "warning" : "success"}
+                        label={unresolved ? "Identity needs confirmation" : "Identity confirmed"}
+                        meaning={unresolved ? "Known by a source identifier or by what documents say; a person has not confirmed the location." : "A person confirmed this store's name and address."} />
             {store.source_codes.length ? <span className="t-mono text-muted-foreground">#{store.source_codes.join(", ")}</span> : null}
-            {!sourceIdentity && !store.in_store_directory ? (
+            {!store.in_store_directory ? (
               <StatusPill size="xs" tone="warning" label="Not in store directory"
                           meaning="The operator's CStorePro store directory does not list this store; a person should reconcile it." />
             ) : null}
           </div>
           <div className="t-meta mt-1">
-            {source ? PHYSICAL_STORE_NOT_IDENTIFIED : (store.address ?? (unresolved ? "No confirmed address." : "No address recorded."))}
+            {store.address ?? (unresolved ? "No confirmed address." : "No address recorded.")}
             {store.customer_name ? <> · billed as <span className="font-medium text-foreground">{store.customer_name}</span></> : null}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {sourceIdentity ? (
-            <span className="t-meta max-w-[18rem] text-right">Linking this code to a physical store is a data-team decision.</span>
-          ) : editing ? null : (
+        <div className="flex flex-wrap items-center gap-2">
+          <CheckInventory store={store} access={inventory} />
+          {editing ? null : (
             <Button size="sm" variant={unresolved ? "default" : "outline"} onClick={() => setEditing(true)}>
               <Pencil className="size-3.5" /> {unresolved ? "Confirm identity" : "Correct identity"}
             </Button>

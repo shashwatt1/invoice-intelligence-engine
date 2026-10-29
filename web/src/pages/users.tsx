@@ -6,6 +6,7 @@ import type { UserAccount, UserRole } from "@/api/types";
 import { PageHeader, SectionHeader } from "@/components/layout/page-header";
 import { ErrorState } from "@/components/shared/states";
 import { ResetPasswordDialog } from "@/components/users/reset-password-dialog";
+import { StoreAccessDialog } from "@/components/users/store-access-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,7 +23,7 @@ const MIN_USERNAME = 3;
 
 const ROLE_MEANING: Record<UserRole, string> = {
   USER: "Upload, track their own documents, stop or bin their own uploads.",
-  MANAGER: "Everything business: review queue, corrections, mappings, proposals, stores, EDI.",
+  MANAGER: "Everything business: review queue, corrections, mappings, proposals, EDI, and inventory for the stores they are granted.",
   ADMIN: "Everything, plus technical diagnostics, reprocessing and user management.",
 };
 
@@ -46,6 +47,7 @@ export function UsersPage() {
   // Resetting another account's password is ADMIN-only; the server enforces it regardless.
   const canResetPasswords = currentUser?.role === "ADMIN";
   const [resetting, setResetting] = useState<UserAccount | null>(null);
+  const [granting, setGranting] = useState<UserAccount | null>(null);
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -166,6 +168,12 @@ export function UsersPage() {
                         >
                           {account.is_active ? "Deactivate" : "Reactivate"}
                         </Button>
+                        {account.role !== "USER" ? (
+                          <Button size="sm" variant="ghost" onClick={() => setGranting(account)}
+                                  aria-label={`Store access for ${account.username}`}>
+                            Store access
+                          </Button>
+                        ) : null}
                         {canResetPasswords && !isSelf ? (
                           <Button size="sm" variant="ghost" onClick={() => setResetting(account)}>
                             Reset Password
@@ -180,6 +188,7 @@ export function UsersPage() {
           )}
         </section>
         {resetting ? <ResetPasswordDialog account={resetting} onClose={() => setResetting(null)} /> : null}
+        {granting ? <StoreAccessDialog account={granting} onClose={() => setGranting(null)} /> : null}
 
         <section className="surface overflow-hidden">
           <SectionHeader

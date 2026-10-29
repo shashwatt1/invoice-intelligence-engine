@@ -59,6 +59,15 @@ class StoreAccessOut(BaseModel):
         )
 
 
+class StoreAccessGrantAllRequest(BaseModel):
+    reason: str = REASON_FIELD
+
+
+class StoreAccessGrantAllResult(BaseModel):
+    created: list[StoreAccessOut] = Field(description="Grants written by this request.")
+    already_granted: list[StoreAccessOut] = Field(description="Active grants that already existed; unchanged.")
+
+
 class StoreAccessGrantResult(BaseModel):
     grant: StoreAccessOut
     created: bool = Field(description="False when an active grant already existed; nothing was written.")

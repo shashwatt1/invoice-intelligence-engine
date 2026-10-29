@@ -182,6 +182,35 @@ async def grant_store_access(
     return grant, True
 
 
+async def grant_all_physical_stores(
+    session: AsyncSession, *, user_id: uuid.UUID, actor, reason: str | None,
+) -> tuple[list[UserStoreAccess], list[UserStoreAccess]]:
+    """
+    Grant an ADMINISTRATOR account every physical store it does not already
+    hold, one audited grant per store with the same reason. Returns
+    (created, already_active). Never offered for a MANAGER: managers are
+    granted store by store. Repeatable: stores already granted are left
+    untouched. Flushes; the caller commits, so it is all or nothing.
+    """
+    _require_admin_actor(actor)
+    _reason(reason, "reason")
+    target = await _locked_account(session, user_id)
+    if not (target.is_active and target.role == UserRole.ADMIN.value):
+        raise ValidationError(
+            message="Granting every physical store is only available for an active administrator account.",
+            detail={"field": "user_id", "reason": "account_not_administrator", "role": target.role,
+                    "is_active": target.is_active},
+        )
+    created: list[UserStoreAccess] = []
+    existing: list[UserStoreAccess] = []
+    stores = [s for s in await StoreRepository(session).list() if s.kind == KIND_PHYSICAL]
+    for store in sorted(stores, key=lambda s: (s.label.lower(), str(s.id))):
+        grant, was_created = await grant_store_access(session, user_id=target.id, store_id=store.id,
+                                                      actor=actor, reason=reason)
+        (created if was_created else existing).append(grant)
+    return created, existing
+
+
 async def revoke_store_access(
     session: AsyncSession, *, user_id: uuid.UUID, store_id: uuid.UUID, actor, reason: str | None,
 ) -> UserStoreAccess:

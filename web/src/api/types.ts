@@ -1007,6 +1007,36 @@ export interface UserAccount {
   updated_at: string;
 }
 
+/** One inventory store grant, exactly as recorded (active or revoked). */
+export interface StoreAccessGrant {
+  id: string;
+  user_id: string;
+  username: string;
+  store_id: string;
+  store: StoreRef | null;
+  active: boolean;
+  self_granted: boolean;
+  granted_at: string;
+  granted_by: string;
+  granted_by_role: string;
+  grant_reason: string;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  revoked_by_role: string | null;
+  revoke_reason: string | null;
+}
+
+export interface StoreAccessGrantResult {
+  grant: StoreAccessGrant;
+  /** False when an active grant already existed; nothing was written. */
+  created: boolean;
+}
+
+export interface StoreAccessGrantAllResult {
+  created: StoreAccessGrant[];
+  already_granted: StoreAccessGrant[];
+}
+
 // ---------------------------------------------------------------------------
 // Product Master — commercial review (Phase 2D)
 // ---------------------------------------------------------------------------

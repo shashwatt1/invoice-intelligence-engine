@@ -63,6 +63,9 @@ import type {
   ReceiptPreview,
   ReceiptReversalResult,
   ReferenceLink,
+  StoreAccessGrant,
+  StoreAccessGrantAllResult,
+  StoreAccessGrantResult,
   StoreAssignmentResult,
   StoreCreate,
   StoreDirectoryEntry,
@@ -120,6 +123,32 @@ export async function setUserActive(userId: string, isActive: boolean): Promise<
 }
 
 /** ADMIN only, for another account. Who is resetting is the signed-in account; it is never sent. */
+/** ADMIN only — an account's inventory store grants, active and revoked, oldest first. */
+export async function listStoreAccess(userId: string): Promise<StoreAccessGrant[]> {
+  const { data } = await apiClient.get<ApiEnvelope<StoreAccessGrant[]>>(`/users/${userId}/store-access`);
+  return data.data!;
+}
+
+export async function grantStoreAccess(userId: string, storeId: string, reason: string): Promise<StoreAccessGrantResult> {
+  const { data } = await apiClient.post<ApiEnvelope<StoreAccessGrantResult>>(`/users/${userId}/store-access`, {
+    store_id: storeId, reason,
+  });
+  return data.data!;
+}
+
+export async function revokeStoreAccess(userId: string, storeId: string, reason: string): Promise<StoreAccessGrant> {
+  const { data } = await apiClient.post<ApiEnvelope<StoreAccessGrant>>(
+    `/users/${userId}/store-access/${storeId}/revoke`, { reason });
+  return data.data!;
+}
+
+/** ADMIN accounts only (the server refuses a manager): one grant per physical store not yet held. */
+export async function grantAllPhysicalStores(userId: string, reason: string): Promise<StoreAccessGrantAllResult> {
+  const { data } = await apiClient.post<ApiEnvelope<StoreAccessGrantAllResult>>(
+    `/users/${userId}/store-access/grant-all-physical`, { reason });
+  return data.data!;
+}
+
 export async function resetUserPassword(
   userId: string, newPassword: string, confirmPassword: string,
 ): Promise<UserAccount> {
@@ -351,6 +380,12 @@ export async function getMappingQueueSummary(): Promise<MappingQueueSummary> {
 
 export async function listStores(): Promise<StoreDirectoryEntry[]> {
   const { data } = await apiClient.get<ApiEnvelope<StoreDirectoryEntry[]>>("/stores");
+  return data.data!;
+}
+
+/** The Store Directory page: every store for an ADMIN, only granted physical stores for a MANAGER (server-decided). */
+export async function listStoreDirectory(): Promise<StoreDirectoryEntry[]> {
+  const { data } = await apiClient.get<ApiEnvelope<StoreDirectoryEntry[]>>("/stores/directory");
   return data.data!;
 }
 

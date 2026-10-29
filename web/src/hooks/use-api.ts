@@ -48,6 +48,8 @@ import {
   listIdentityUnresolved,
   listInventoryItems,
   listInventoryStores,
+  listStoreAccess,
+  listStoreDirectory,
   listInventoryMovements,
   listInvoices,
   listMappingQueue,
@@ -73,6 +75,9 @@ import {
   reopenRetailed,
   reopenVendor,
   resetUserPassword,
+  revokeStoreAccess,
+  grantStoreAccess,
+  grantAllPhysicalStores,
   reverseReceipt,
   reviseProposal,
   saveReferenceLink,
@@ -153,6 +158,11 @@ export function useInvoiceExport(invoiceId: string, enabled: boolean) {
     enabled, // fetched lazily when the Structured Output tab is opened
     staleTime: Infinity, // immutable once persisted
   });
+}
+
+/** The Store Directory page's list — scoped by the server to the account (see listStoreDirectory). */
+export function useStoreDirectory() {
+  return useQuery({ queryKey: ["stores", "directory"], queryFn: listStoreDirectory, staleTime: 60_000 });
 }
 
 export function useStores() {
@@ -603,6 +613,38 @@ export function useSetUserActive() {
       setUserActive(userId, isActive),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["users"] }),
   });
+}
+
+/** ADMIN only — one account's inventory store grants (active and revoked). */
+export function useStoreAccess(userId: string | undefined) {
+  return useQuery({ queryKey: ["users", userId, "store-access"], queryFn: () => listStoreAccess(userId!),
+                    enabled: Boolean(userId) });
+}
+
+function useStoreAccessMutation<V, R>(fn: (v: V) => Promise<R>, userId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["users", userId, "store-access"] });
+      void queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      void queryClient.invalidateQueries({ queryKey: ["stores", "directory"] });
+    },
+  });
+}
+
+export function useGrantStoreAccess(userId: string) {
+  return useStoreAccessMutation(({ storeId, reason }: { storeId: string; reason: string }) =>
+    grantStoreAccess(userId, storeId, reason), userId);
+}
+
+export function useRevokeStoreAccess(userId: string) {
+  return useStoreAccessMutation(({ storeId, reason }: { storeId: string; reason: string }) =>
+    revokeStoreAccess(userId, storeId, reason), userId);
+}
+
+export function useGrantAllPhysicalStores(userId: string) {
+  return useStoreAccessMutation(({ reason }: { reason: string }) => grantAllPhysicalStores(userId, reason), userId);
 }
 
 export function useResetUserPassword() {
