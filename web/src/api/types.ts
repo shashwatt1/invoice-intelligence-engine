@@ -1266,6 +1266,17 @@ export interface InventoryOverview {
   recent_receipts: InventoryReceiptSummary[];
   /** Receipt submissions awaiting approval at this store. */
   pending_approvals: number;
+  /** The store's zero start, if an administrator initialized one. */
+  baseline?: InventoryBaseline | null;
+}
+
+/** Products without their own opening count start at zero on baseline_date. */
+export interface InventoryBaseline {
+  baseline_date: string;
+  basis: "EARLIEST_POSTED_RECEIPT" | "INITIALIZATION_DATE";
+  initialization_date: string;
+  initialized_by: string;
+  reason: string;
 }
 
 export interface InventoryItemRow {
@@ -1278,9 +1289,11 @@ export interface InventoryItemRow {
   received: DecimalString;
   sold: DecimalString;
   other: DecimalString;
-  /** Null until an audited opening count exists. */
+  /** Null until an audited opening count or a store baseline exists. */
   on_hand: DecimalString | null;
   last_movement: string | null;
+  /** OPENING_COUNT: the product's own count. STORE_BASELINE: the store's zero start. Null: no start yet. */
+  opening_source?: "OPENING_COUNT" | "STORE_BASELINE" | null;
 }
 
 export type InventoryItemSort = "code" | "name" | "on_hand_desc" | "on_hand_asc" | "received_desc" | "recent";

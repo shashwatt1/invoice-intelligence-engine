@@ -265,6 +265,37 @@ describe("Inventory page", () => {
     expect(screen.getByTestId("provisional-note")).toHaveTextContent("Sales are not imported yet");
   });
 
+  it("shows the store's zero start and labels products that start from it", async () => {
+    getInventoryOverview.mockResolvedValue({
+      store: MIDLER, tracked_products: 2, opening_required: 0, out_of_stock: 0, in_stock: 2,
+      last_recorded_at: "2026-10-09T12:00:00Z", recent_receipts: [], pending_approvals: 0,
+      baseline: { baseline_date: "2026-10-09", basis: "EARLIEST_POSTED_RECEIPT", initialization_date: "2026-10-20",
+                  initialized_by: "admin", reason: "go-live" },
+    });
+    listInventoryItems.mockResolvedValue({
+      success: true, total: 2, page: 1, page_size: 50, request_id: null,
+      items: [
+        item("01820000833", "BUD LIGHT B-4/6", { status: "IN_STOCK", opening_date: "2026-10-09", opening_quantity: "0",
+                                                received: "30", on_hand: "30", opening_source: "STORE_BASELINE" }),
+        item("08769283102", "TWISTED TEA", { status: "IN_STOCK", opening_date: "2026-10-01", opening_quantity: "10",
+                                            received: "12", on_hand: "22", opening_source: "OPENING_COUNT" }),
+      ],
+    });
+    renderPage();
+    const rows = await screen.findAllByTestId("inventory-row");
+    expect(within(rows[0]).getByText(/store start 09 Oct 2026/)).toBeInTheDocument();
+    expect(within(rows[0]).getAllByText("30")).toHaveLength(2);                 // received 30, on hand 30
+    expect(within(rows[1]).queryByText(/store start/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("baseline-note")).toHaveTextContent("Inventory started at zero on 09 Oct 2026");
+    expect(screen.getByTestId("baseline-note")).toHaveTextContent("first received invoice");
+  });
+
+  it("shows no store-start note when the store has no baseline", async () => {
+    renderPage();
+    await screen.findAllByTestId("inventory-row");
+    expect(screen.queryByTestId("baseline-note")).not.toBeInTheDocument();
+  });
+
   it("lists the store's pending submissions with who submitted them, from the server's queue", async () => {
     const user = userEvent.setup();
     renderPage();

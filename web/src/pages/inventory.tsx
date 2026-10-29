@@ -311,6 +311,13 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
             Provisional: on hand is the opening count plus receipts and adjustments since. Sales are not imported yet, so
             it overstates stock until they are. Nothing here is reconciled against the POS.
           </p>
+          {o.baseline ? (
+            <p className="text-xs text-muted-foreground" data-testid="baseline-note">
+              Inventory started at zero on {formatDate(o.baseline.baseline_date)}
+              {o.baseline.basis === "EARLIEST_POSTED_RECEIPT" ? " (the store's first received invoice)" : ""}: products
+              without their own opening count start there, and every approved receipt counts.
+            </p>
+          ) : null}
         </>
       ) : null}
 
@@ -428,7 +435,9 @@ function ProductsTab({ storeId }: { storeId: string }) {
                     <TableCell><StatusPill tone={meta.tone} label={meta.label} meaning={meta.meaning} /></TableCell>
                     <TableCell className="text-right tabular-nums">
                       {row.opening_quantity !== null ? (
-                        <>{formatUnits(row.opening_quantity)}<div className="text-xs text-muted-foreground">{formatDate(row.opening_date)}</div></>
+                        <>{formatUnits(row.opening_quantity)}<div className="text-xs text-muted-foreground">
+                          {row.opening_source === "STORE_BASELINE" ? `store start ${formatDate(row.opening_date)}` : formatDate(row.opening_date)}
+                        </div></>
                       ) : "—"}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{formatUnits(row.received)}</TableCell>
