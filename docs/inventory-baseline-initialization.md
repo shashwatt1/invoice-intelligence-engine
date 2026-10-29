@@ -43,8 +43,10 @@ Verified against the ledger code (`app/services/inventory_service.py`, `inventor
 
 ## 3. Preconditions
 
-1. The release containing this work is reviewed, approved and deployed. The code tolerates the
-   database being at `0035` or `0036`, so it can be deployed first.
+1. The release containing this work is reviewed and approved. The same release also contains
+   migration `0037` (Recycle Bin), which adds a column the code reads, so **migrations come before
+   the deploy**: apply `0036` (step 2 below), then `0037` (see [recycle-bin.md](recycle-bin.md)), then
+   deploy. Run the initialization script only after the deploy.
 2. The person running the script has an **active ADMIN** account in the application. It is recorded
    on every baseline.
 3. The script runs from a trusted machine with the backend's dependencies installed and
