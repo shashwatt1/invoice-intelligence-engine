@@ -1,0 +1,9 @@
+{
+  "_about": "The store POS 'Item Sales Summary' export already on file (data/reference/store_*/). Scan codes are 11-digit PDI item codes (check digit omitted). No units-per-case column exists in this export, so it adds identity and wording only. The header row is 3 or 4 depending on the file: pass --header-row.",
+  "source_system": "item_master:item_sales_summary",
+  "upc": "Scan code",
+  "description": "Description",
+  "header_row": 4,
+  "barcode_convention": "CHECK_DIGIT_OMITTED",
+  "representation": "TEXT"
+}
