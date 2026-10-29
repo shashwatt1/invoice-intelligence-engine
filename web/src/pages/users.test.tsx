@@ -4,23 +4,27 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
 import type { UserAccount } from "@/api/types";
 
 const toastSuccess = vi.fn();
-vi.mock("sonner", () => ({ toast: { success: (...a: unknown[]) => toastSuccess(...a), error: vi.fn() } }));
+const toastError = vi.fn();
+vi.mock("sonner", () => ({ toast: { success: (...a: unknown[]) => toastSuccess(...a),
+                                    error: (...a: unknown[]) => toastError(...a) } }));
 
 let currentUser = { id: "u-admin", username: "shashwatt1", role: "ADMIN" };
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: currentUser }) }));
 
 const listUsers = vi.fn();
 const resetUserPassword = vi.fn();
-const access = { list: vi.fn(), grant: vi.fn(), revoke: vi.fn(), grantAll: vi.fn(), stores: vi.fn() };
+const access = { list: vi.fn(), grant: vi.fn(), grantMany: vi.fn(), revoke: vi.fn(), grantAll: vi.fn(), stores: vi.fn() };
 vi.mock("@/api/endpoints", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/endpoints")>()),
   listUsers: (...a: unknown[]) => listUsers(...a),
   resetUserPassword: (...a: unknown[]) => resetUserPassword(...a),
   listStoreAccess: (...a: unknown[]) => access.list(...a),
   grantStoreAccess: (...a: unknown[]) => access.grant(...a),
+  grantStoresAccess: (...a: unknown[]) => access.grantMany(...a),
   revokeStoreAccess: (...a: unknown[]) => access.revoke(...a),
   grantAllPhysicalStores: (...a: unknown[]) => access.grantAll(...a),
   listStores: (...a: unknown[]) => access.stores(...a),
@@ -142,6 +146,7 @@ describe("store access (inventory grants)", () => {
     access.stores.mockResolvedValue([WOLF, MIDLER, TIKI, CODE]);
     access.list.mockResolvedValue([grantOf(WOLF), grantOf(TIKI, false)]);
     access.grant.mockResolvedValue({ created: true, grant: grantOf(MIDLER) });
+    access.grantMany.mockResolvedValue({ created: [grantOf(MIDLER), grantOf(TIKI)], already_granted: [] });
     access.revoke.mockResolvedValue(grantOf(WOLF, false));
     access.grantAll.mockResolvedValue({ created: [grantOf(MIDLER)], already_granted: [grantOf(WOLF)] });
   });
@@ -160,20 +165,112 @@ describe("store access (inventory grants)", () => {
     expect(within(await rowFor("vivek")).queryByRole("button", { name: /Store access/ })).not.toBeInTheDocument();
   });
 
-  it("grants a manager one physical, not-yet-granted store with a reason, and never offers grant-all", async () => {
-    const { user, dialog } = await openAccess("barj");
-    expect(await within(dialog).findByText("PB Wolf")).toBeInTheDocument();
-    expect(within(dialog).getByText(/1 earlier grant revoked/)).toBeInTheDocument();
-    expect(within(dialog).queryByTestId("grant-all")).not.toBeInTheDocument();
+  const option = (dialog: HTMLElement, name: string) => within(dialog).getByRole("checkbox", { name: new RegExp(name) });
 
-    await user.click(within(dialog).getByRole("combobox", { name: "Store to grant" }));
-    const offered = (await screen.findAllByRole("option")).map((o) => o.textContent);
-    expect(offered).toEqual(["AF NV Midler", "AF MV Tiki"]);          // not PB Wolf (granted), not the source code
-    await user.click(screen.getByRole("option", { name: "AF NV Midler" }));
-    expect(within(dialog).getByTestId("grant-one")).toBeDisabled();      // reason still missing
-    await user.type(within(dialog).getByLabelText("Reason"), "store manager for Midler");
-    await user.click(within(dialog).getByTestId("grant-one"));
-    await waitFor(() => expect(access.grant).toHaveBeenCalledWith("u-barj", "midler", "store manager for Midler"));
+  it("grants several stores with one confirmation and one request; granted stores cannot be picked again", async () => {
+    const { user, dialog } = await openAccess("barj");
+    expect(await within(dialog).findByTestId("store-options")).toBeInTheDocument();
+    expect(within(dialog).getByText(/1 earlier grant revoked/)).toBeInTheDocument();
+    expect(within(dialog).queryByTestId("grant-all")).not.toBeInTheDocument();     // a manager account: no grant-all
+
+    // Physical stores only; the granted one is checked, disabled and labelled.
+    const names = within(dialog).getAllByTestId("store-option").map((o) => o.querySelector("label")!.textContent);
+    expect(names).toEqual(["AF MV Tiki", "AF NV Midler", "PB Wolf"]);
+    expect(option(dialog, "PB Wolf")).toBeDisabled();
+    expect(option(dialog, "PB Wolf")).toBeChecked();
+    expect(within(dialog).getByText("Granted")).toBeInTheDocument();
+
+    await user.click(option(dialog, "AF NV Midler"));
+    await user.click(option(dialog, "AF MV Tiki"));
+    const chips = within(dialog).getByRole("list", { name: "Selected stores" });
+    expect(within(chips).getAllByRole("listitem").map((c) => c.textContent)).toEqual(["AF NV Midler", "AF MV Tiki"]);
+    await user.click(within(dialog).getByRole("button", { name: "Remove AF MV Tiki" }));     // one chip, not all
+    expect(within(chips).getAllByRole("listitem")).toHaveLength(1);
+    await user.click(within(dialog).getByRole("button", { name: "Clear selection" }));
+    expect(within(dialog).queryByTestId("selection")).not.toBeInTheDocument();
+
+    await user.click(option(dialog, "AF NV Midler"));
+    await user.click(option(dialog, "AF MV Tiki"));
+    expect(within(dialog).getByTestId("grant-selected")).toBeDisabled();          // reason still missing
+    await user.type(within(dialog).getByLabelText("Reason"), "store manager for these");
+    await user.click(within(dialog).getByTestId("grant-selected"));
+    expect(within(dialog).getByTestId("grant-confirm")).toHaveTextContent("access to 2 stores: AF NV Midler, AF MV Tiki");
+    expect(access.grantMany).not.toHaveBeenCalled();                              // nothing before confirming
+    await user.click(within(dialog).getByTestId("confirm-grant"));
+    await waitFor(() => expect(access.grantMany).toHaveBeenCalledTimes(1));
+    expect(access.grantMany).toHaveBeenCalledWith("u-barj", ["midler", "tiki"], "store manager for these");
+    expect(access.grant).not.toHaveBeenCalled();
+    expect(await within(dialog).findByTestId("grant-result")).toHaveTextContent("Granted 2 stores.");
+    expect(within(dialog).queryByTestId("selection")).not.toBeInTheDocument();
+  });
+
+  it("filters the list by search and says when nothing matches", async () => {
+    const { user, dialog } = await openAccess("barj");
+    await within(dialog).findByTestId("store-options");
+    await user.type(within(dialog).getByLabelText("Search stores"), "tiki");
+    expect(within(dialog).getAllByTestId("store-option")).toHaveLength(1);
+    expect(option(dialog, "AF MV Tiki")).toBeInTheDocument();
+    await user.clear(within(dialog).getByLabelText("Search stores"));
+    await user.type(within(dialog).getByLabelText("Search stores"), "nowhere");
+    expect(within(dialog).getByText(/No stores match/)).toBeInTheDocument();
+  });
+
+  it("sends a bulk grant only once however often confirm is pressed", async () => {
+    let finish: (v: unknown) => void = () => {};
+    access.grantMany.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const { user, dialog } = await openAccess("barj");
+    await user.click(await within(dialog).findByRole("checkbox", { name: /AF NV Midler/ }));
+    await user.type(within(dialog).getByLabelText("Reason"), "cover");
+    await user.click(within(dialog).getByTestId("grant-selected"));
+    const confirm = within(dialog).getByTestId("confirm-grant");
+    await user.click(confirm);
+    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveTextContent("Granting…");
+    await user.click(confirm);
+    expect(access.grantMany).toHaveBeenCalledTimes(1);
+    finish({ created: [grantOf(MIDLER)], already_granted: [] });
+    expect(await within(dialog).findByTestId("grant-result")).toHaveTextContent("Granted 1 store.");
+  });
+
+  it("shows which stores were refused, grants nothing and keeps the selection", async () => {
+    access.grantMany.mockRejectedValue(new ApiError(422, {
+      error_code: "ERR_VALIDATION_FAILED", message: "1 of the selected stores cannot be granted; nothing was granted.",
+      detail: { field: "store_ids", reason: "invalid_stores", stores: { tiki: "unknown" } },
+    }));
+    const { user, dialog } = await openAccess("barj");
+    await user.click(await within(dialog).findByRole("checkbox", { name: /AF NV Midler/ }));
+    await user.click(option(dialog, "AF MV Tiki"));
+    await user.type(within(dialog).getByLabelText("Reason"), "cover");
+    await user.click(within(dialog).getByTestId("grant-selected"));
+    await user.click(within(dialog).getByTestId("confirm-grant"));
+    expect(await within(dialog).findByTestId("grant-error")).toHaveTextContent("AF MV Tiki: no longer exists");
+    expect(within(dialog).getByTestId("grant-error")).toHaveTextContent("Nothing was granted");
+    expect(within(within(dialog).getByRole("list", { name: "Selected stores" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(toastError).toHaveBeenCalled();
+  });
+
+  it("keeps the selection after a server error so the grant can be retried", async () => {
+    access.grantMany.mockRejectedValueOnce(new ApiError(500, { error_code: "ERR_INTERNAL", message: "boom" }));
+    const { user, dialog } = await openAccess("barj");
+    await user.click(await within(dialog).findByRole("checkbox", { name: /AF NV Midler/ }));
+    await user.type(within(dialog).getByLabelText("Reason"), "cover");
+    await user.click(within(dialog).getByTestId("grant-selected"));
+    await user.click(within(dialog).getByTestId("confirm-grant"));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(within(dialog).queryByTestId("grant-error")).not.toBeInTheDocument();
+    expect(within(dialog).getByTestId("selection")).toHaveTextContent("1 store selected");
+    expect(within(dialog).getByTestId("grant-selected")).toBeEnabled();      // retry is possible
+  });
+
+  it("can be operated from the keyboard, with labelled checkboxes", async () => {
+    const { user, dialog } = await openAccess("barj");
+    const midler = await within(dialog).findByRole("checkbox", { name: /AF NV Midler/ });
+    midler.focus();
+    await user.keyboard(" ");
+    expect(midler).toBeChecked();
+    expect(within(dialog).getByTestId("selection")).toHaveTextContent("1 store selected");
+    await user.keyboard(" ");
+    expect(midler).not.toBeChecked();
   });
 
   it("revokes only with a reason", async () => {
