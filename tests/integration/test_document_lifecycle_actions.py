@@ -88,7 +88,7 @@ async def _stop(client, document_id) -> object:
 
 
 async def _bin(client, document_id) -> object:
-    return await client.post(f"/api/v1/documents/{document_id}/move-to-bin")
+    return await client.post(f"/api/v1/documents/{document_id}/move-to-bin", json={"reason": "test: not needed"})
 
 
 async def _log_count(db_session, document_id, stage=PipelineStage.LIFECYCLE) -> int:

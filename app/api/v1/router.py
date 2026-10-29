@@ -26,6 +26,7 @@ from app.api.v1 import (
     mapping_queue,
     product_master,
     proposals,
+    recycle_bin,
     stores,
     upload,
     users,
@@ -49,6 +50,7 @@ api_router.include_router(invoices.router, prefix="")
 api_router.include_router(invoice_workflow.router, prefix="")
 api_router.include_router(exports.router, prefix="")
 api_router.include_router(documents.router, prefix="")
+api_router.include_router(recycle_bin.router, prefix="")
 api_router.include_router(dashboard.router, prefix="")
 api_router.include_router(proposals.router, prefix="")
 api_router.include_router(mapping_queue.router, prefix="")

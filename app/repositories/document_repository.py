@@ -79,9 +79,14 @@ class DocumentRepository:
         return await self._session.get(Document, document_id)
 
     async def page_by_hash(self, file_hash: str) -> DocumentPage | None:
-        """A photo already used in an intake, by its own content hash."""
+        """
+        A photo already used in an ACTIVE intake, by its own content hash. Photos of a
+        document in the Recycle Bin or of a reference copy do not count (duplicate check).
+        """
         result = await self._session.execute(
-            select(DocumentPage).where(DocumentPage.file_hash == file_hash).limit(1)
+            select(DocumentPage).join(Document, Document.id == DocumentPage.document_id)
+            .where(DocumentPage.file_hash == file_hash, Document.status.notin_(INACTIVE_DOCUMENT_STATUSES))
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -105,9 +110,13 @@ class DocumentRepository:
         return {doc_id: int(n) for doc_id, n in result.all()}
 
     async def get_by_hash(self, file_hash: str) -> Document | None:
-        """Find an existing document with the same content hash (duplicate check)."""
+        """
+        An ACTIVE document with the same content hash (duplicate check). A document in the
+        Recycle Bin or a reference copy does not count, so its file can be processed again.
+        """
         result = await self._session.execute(
-            select(Document).where(Document.file_hash == file_hash).limit(1)
+            select(Document).where(Document.file_hash == file_hash,
+                                   Document.status.notin_(INACTIVE_DOCUMENT_STATUSES)).limit(1)
         )
         return result.scalar_one_or_none()
 

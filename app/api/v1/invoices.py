@@ -76,7 +76,7 @@ from app.schemas.processing import (
     StoreRef,
     VendorData,
 )
-from app.services import inventory_approval
+from app.services import inventory_approval, recycle_bin
 from app.services.case_mapping_service import (
     build_case_mapping_status,
     invoice_commercial_resolution,
@@ -616,6 +616,8 @@ def _redact_invoice_detail(data: InvoiceDetailData, role: str) -> InvoiceDetailD
 )
 async def delete_invoice(
     invoice_id: uuid.UUID,
+    reason: str | None = Query(default=None, max_length=1000,
+                               description="Why; kept in the Recycle Bin record of the deletion."),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_admin),
 ) -> APIResponse[InvoiceDeleteResult]:
@@ -635,6 +637,8 @@ async def delete_invoice(
         if p.file_path != document.file_path
     ]
 
+    # The deletion is recorded (who, when, why, what) before the document goes.
+    await recycle_bin.record_direct_delete(db, document, user, reason)
     # Deleting the document cascades to the invoice, its items, and its
     # processing logs at the database level — nothing else to clean up
     # manually. Commit explicitly so the deletion is durable before the
@@ -994,11 +998,11 @@ async def assign_store(
     user: User = Depends(require_manager),
 ) -> APIResponse[InvoiceDetailData]:
     await ensure_invoice_changeable(db, invoice_id, "assign_store")   # a POSTED receipt locks the invoice
-    await ensure_invoice_operable(db, invoice_id, "assign_store")   # not in the bin, not a reference copy
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    ensure_document_operable(invoice.document, "assign_store")   # not in the bin, not a reference copy
     if invoice.store_id is not None:
         raise ValidationError(
             message="This invoice already has a store; moving an invoice between stores is not done here.",

@@ -46,9 +46,10 @@ from app.schemas.processing import (
     StoreDeferral,
     StoreRef,
 )
+from app.schemas.recycle_bin import MoveToBinRequest
+from app.services import recycle_bin
 from app.services.document_lifecycle import (
     ensure_document_visible,
-    move_document_to_bin,
     stop_document,
 )
 from app.services.pipeline_service import InvoiceProcessingPipeline
@@ -148,34 +149,33 @@ async def stop_document_endpoint(
 @router.post(
     "/documents/{document_id}/move-to-bin",
     response_model=APIResponse[DocumentStatusData],
-    summary="Move a document out of the active workflow (recoverable)",
+    summary="Move a document to the Recycle Bin (recoverable)",
     description=(
-        "Backend-authoritative, recoverable discard. Removes the document from active "
-        "processing/queues without physically deleting the source file, the document row, "
-        "its invoice (if any), or any history — only documents.status changes, plus one audit "
-        "entry. Never touches mappings, proposals, or generates EDI, so a COMPLETED invoice is "
-        "never silently mutated by this call. Works from any status, including mid-pipeline "
-        "(the same withdrawal check STOP relies on) and already-terminal ones. Idempotent: "
-        "calling this again on an already-BINNED document returns 200 with no change. USER may "
-        "only bin a document they uploaded themselves (documents.uploaded_by_user_id); MANAGER "
-        "and ADMIN may bin any document. The actor is the authenticated session — never a "
-        "request field. The frontend must confirm this action before calling it."
+        "Moves the document out of the active workflow with a required reason, recorded in the "
+        "Recycle Bin with who and when. Nothing is deleted: the file, the document, its invoice and "
+        "every history row stay, and it can be restored. While it is in the bin the same file can be "
+        "processed again. Refused while the invoice is received into inventory (409) or once it was "
+        "exported to EDI (422, reason edi_exported). Idempotent for a document already in the bin. "
+        "USER may only bin a document they uploaded; MANAGER and ADMIN may bin any document."
     ),
     responses={
         401: {"description": "Not authenticated"},
         404: {"description": "Document not found"},
         403: {"description": "USER role, but not this document's uploader"},
+        409: {"description": "Received into inventory"},
+        422: {"description": "No reason, or exported to EDI"},
     },
 )
 async def move_document_to_bin_endpoint(
     document_id: uuid.UUID,
+    body: MoveToBinRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_authenticated_user),
 ) -> APIResponse[DocumentStatusData]:
     document = await DocumentRepository(db).get(document_id)
     if document is None:
         raise RecordNotFoundError(message="Document not found.", detail={"document_id": str(document_id)})
-    await move_document_to_bin(db, document, user)
+    await recycle_bin.move_to_bin(db, document, user, body.reason)
     await db.commit()
     await db.refresh(document)
 
@@ -210,6 +210,8 @@ DELETABLE_WITHOUT_INVOICE = {DocumentStatus.FAILED, DocumentStatus.STOPPED, Docu
 )
 async def delete_document_endpoint(
     document_id: uuid.UUID,
+    reason: str | None = Query(default=None, max_length=1000,
+                               description="Why; kept in the Recycle Bin record of the deletion."),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_admin),
 ) -> APIResponse[DocumentDeleteResult]:
@@ -232,6 +234,7 @@ async def delete_document_endpoint(
         p.file_path for p in await documents.pages(document) if p.file_path != document.file_path
     ]
     status, filename = document.status, document.filename
+    await recycle_bin.record_direct_delete(db, document, user, reason)
     await documents.delete(document)
     await db.commit()
     logger.info("document_deleted", document_id=str(document_id), status=status,

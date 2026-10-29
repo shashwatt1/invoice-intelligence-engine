@@ -272,6 +272,9 @@ class InvoiceProcessingPipeline:
                 file_path=page.file_path, file_hash=page.file_hash,
             ))
         await session.flush()
+        # A binned document with the same file (or a shared photo) records this upload as its re-upload.
+        from app.services.recycle_bin import link_reupload
+        await link_reupload(session, document, [p.file_hash for p in pages])
         await logs.add(
             document_id=document.id,
             stage=PipelineStage.UPLOAD,

@@ -259,6 +259,18 @@ class InvoiceInactiveError(InvoiceBaseException):
     message = "This invoice is not in the active workflow and cannot be changed."
 
 
+class RestoreConflictError(InvoiceBaseException):
+    """
+    Raised when a binned document cannot be restored as it was because an
+    active document holds the same file or the same invoice. Only an
+    administrator can restore it, as a read-only reference copy.
+    """
+
+    error_code = "ERR_RESTORE_CONFLICT"
+    http_status = 409
+    message = "An active document already holds this invoice."
+
+
 class StaleReviewError(InvoiceBaseException):
     """
     Raised when a review decision was made against a view of a Product Master

@@ -225,7 +225,7 @@ class TestConfirmStore:
 class TestAssignStore:
     def _pending(self, monkeypatch):
         invoice = SimpleNamespace(id=uuid.uuid4(), store_id=None, document_id=uuid.uuid4(),
-                                  document=SimpleNamespace(store_id=None))
+                                  document=SimpleNamespace(store_id=None, status="REVIEW_REQUIRED"))
 
         async def get_detail(self, invoice_id):
             return invoice if invoice_id == invoice.id else None

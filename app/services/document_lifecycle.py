@@ -44,7 +44,6 @@ from app.models.processing_log import LogStatus, PipelineStage
 from app.models.user import ROLE_RANK, User, UserRole
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
-from app.services.inventory_service import ensure_document_changeable
 from app.services.validation.report import ProcessingDecision
 
 logger = get_logger(__name__)
@@ -315,40 +314,5 @@ async def stop_document(session: AsyncSession, document: Document, user: User) -
                  "actor_username": user.username, "role": user.role, "previous_status": current.value},
     )
     logger.info("document_stopped", document_id=str(document.id), actor_user_id=str(user.id),
-               role=user.role, previous_status=current.value)
-    return document
-
-
-async def move_document_to_bin(session: AsyncSession, document: Document, user: User) -> Document:
-    """
-    Backend-authoritative, recoverable removal from the active workflow,
-    on behalf of the authenticated `user`.
-
-    Idempotent: calling this on an already-BINNED document is a no-op
-    success. Works from any non-BINNED state, including a terminal one
-    (COMPLETED, REVIEW_REQUIRED, FAILED) or an active one — a document
-    mid-pipeline is withdrawn the same way STOP withdraws one, via
-    ensure_document_active's WITHDRAWN_DOCUMENT_STATUSES check at each
-    stage boundary. Never deletes the source file, the document row, the
-    invoice, or any history: recoverable by restoring documents.status.
-
-    Flushes only; the caller commits.
-    """
-    _authorize(document, user)
-    current = DocumentStatus(document.status)
-    if current == DocumentStatus.BINNED:
-        return document
-    # Binning withdraws the invoice from receiving: refused while its goods are recorded as received.
-    await ensure_document_changeable(session, document.id, "move_to_bin")
-    await DocumentRepository(session).set_status(document, DocumentStatus.BINNED)
-    await ProcessingLogRepository(session).add(
-        document_id=document.id,
-        stage=PipelineStage.LIFECYCLE,
-        status=LogStatus.SUCCESS,
-        message=f"Moved to bin by {user.username} ({user.role}).",
-        payload={"event": "document_binned", "actor_user_id": str(user.id),
-                 "actor_username": user.username, "role": user.role, "previous_status": current.value},
-    )
-    logger.info("document_binned", document_id=str(document.id), actor_user_id=str(user.id),
                role=user.role, previous_status=current.value)
     return document

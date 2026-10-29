@@ -405,7 +405,8 @@ class TestCorrectionsAfterReceipt:
             "assign_store": api_client.post(f"{base}/assign-store", json={"store_id": str(other.id),
                                                                           "assigned_by": "m"}),
             # delete_invoice reverses the receipt first: tests/integration/test_inventory_approval_db.py
-            "move_to_bin": api_client.post(f"/api/v1/documents/{before['document_id']}/move-to-bin"),
+            "move_to_bin": api_client.post(f"/api/v1/documents/{before['document_id']}/move-to-bin",
+                                           json={"reason": "test: received invoice"}),
             "reprocess": api_client.post(f"/api/v1/documents/{before['document_id']}/reprocess"),
         }
         for action, request in attempts.items():
