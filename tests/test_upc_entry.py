@@ -136,13 +136,20 @@ MANAGER = SimpleNamespace(username="testmanager", role="MANAGER")
 
 
 def _record_lock(monkeypatch) -> list:
-    """Stub the posted-receipt lock (it needs a session) and record each call."""
+    """
+    Stub the posted-receipt lock and the Recycle Bin / reference-copy guard (both need a
+    session) and record each call: both run only after the input checks pass.
+    """
     calls: list = []
 
     async def lock(db, invoice_id, action):
         calls.append(action)
 
+    async def operable(db, invoice_id, action):
+        calls.append(f"operable:{action}")
+
     monkeypatch.setattr(invoices_module, "ensure_invoice_changeable", lock)
+    monkeypatch.setattr(invoices_module, "ensure_invoice_operable", operable)
     return calls
 
 
@@ -171,14 +178,14 @@ class TestTheCorrectionEndpointRefusesNonAsciiDigits:
         # the stand-in has none.
         with pytest.raises(RecordNotFoundError):
             await correct_line_item(uuid.uuid4(), 0, LineItemCorrection(product_code=code), db=None, user=MANAGER)
-        assert locks == ["correct_line_item"]
+        assert locks == ["correct_line_item", "operable:correct_line_item"]
 
     async def test_clearing_the_code_is_unchanged(self, monkeypatch):
         monkeypatch.setattr(invoices_module, "InvoiceRepository", _NoInvoiceRepository)
         locks = _record_lock(monkeypatch)
         with pytest.raises(RecordNotFoundError):
             await correct_line_item(uuid.uuid4(), 0, LineItemCorrection(product_code=""), db=None, user=MANAGER)
-        assert locks == ["correct_line_item"]
+        assert locks == ["correct_line_item", "operable:correct_line_item"]
 
 
 def _invoice(skus: list[str | None]) -> Invoice:
