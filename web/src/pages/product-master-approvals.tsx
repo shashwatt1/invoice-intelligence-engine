@@ -7,6 +7,7 @@ import { ApiError } from "@/api/client";
 import type { CommercialCandidateRow } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
 import { CommercialEvidencePanel } from "@/components/product-master/commercial-evidence-panel";
+import { CrossStoreDifferences } from "@/components/product-master/cross-store-differences";
 import { ReviewStatusBadge } from "@/components/product-master/review-status-badge";
 import { FilterBar } from "@/components/shared/filter-bar";
 import { Pagination } from "@/components/shared/pagination";
@@ -110,6 +111,7 @@ export function ProductMasterApprovalsPage() {
           "and reopened mappings are decided one at a time."
         }
       />
+      <CrossStoreDifferences />
       <p className="t-meta mb-3" data-testid="invoice-proposals-pointer">
         Values submitted from an invoice are reviewed in{" "}
         <Link to="/data-review" className="font-medium underline">Master Data Review</Link>, where they can be found by

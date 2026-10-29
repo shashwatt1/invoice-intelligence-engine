@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { buttonVariants } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { useBulkDecideProposals } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
@@ -44,6 +45,8 @@ export function BulkDecisionDialog({
   const decide = useBulkDecideProposals();
   const { user } = useAuth();
   const [note, setNote] = useState("");
+  const [shared, setShared] = useState(true);
+  const [keepStores, setKeepStores] = useState(false);
   const [failures, setFailures] = useState<Record<string, string>>({});
   const open = action !== null && rows.length > 0;
 
@@ -51,6 +54,8 @@ export function BulkDecisionDialog({
     if (open) {
       setFailures({});
       setNote("");
+      setShared(true);
+      setKeepStores(false);
     }
   }, [open, action]);
 
@@ -64,7 +69,10 @@ export function BulkDecisionDialog({
     decide.mutate(
       {
         action,
-        decision: { proposal_ids: rows.map((row) => row.id), reviewed_by: name, note: note.trim() || null },
+        decision: {
+          proposal_ids: rows.map((row) => row.id), reviewed_by: name, note: note.trim() || null,
+          ...(action === "approve" ? { scope: shared ? "shared" : "store", keep_store_values: shared && keepStores } : {}),
+        },
       },
       {
         onSuccess: (result) => {
@@ -72,7 +80,7 @@ export function BulkDecisionDialog({
           onOpenChange(false);
           toast.success(
             action === "approve"
-              ? `Approved ${result.decided.length} — wrote ${result.decided.length} mapping${result.decided.length === 1 ? "" : "s"}.`
+              ? `Approved ${result.decided.length}${shared ? " for every store" : ""} — wrote ${result.decided.length} mapping${result.decided.length === 1 ? "" : "s"}.`
               : `Rejected ${result.decided.length} — master data untouched.`,
           );
         },
@@ -105,6 +113,7 @@ export function BulkDecisionDialog({
                   Each proposal is approved on its own row and writes its own authoritative units-per-case
                   mapping — exactly as approving it individually would. Every invoice carrying these
                   products will build its EDI from them.
+                  {shared ? " Used for every store, the same products resolve at the other stores too." : ""}
                 </p>
               ) : (
                 <p>The proposals are frozen as rejected. Master data is not touched.</p>
@@ -122,6 +131,30 @@ export function BulkDecisionDialog({
             <span className="text-[0.75rem] font-medium">{action === "approve" ? "Approved by" : "Rejected by"}</span>
             <p className="text-[0.82rem]" data-testid="bulk-reviewer">{name || "—"} · {roleLabel(user?.role)}</p>
           </div>
+          {action === "approve" ? (
+            <div className="space-y-1.5 rounded-md border px-3 py-2" data-testid="bulk-scope">
+              <label className="flex items-start gap-2 text-[0.8rem]">
+                <Checkbox checked={shared} onCheckedChange={(v) => setShared(v === true)} disabled={decide.isPending}
+                          aria-label="Use for every store" className="mt-0.5" />
+                <span>
+                  <span className="font-medium">Use for every store</span>
+                  <span className="block text-[0.72rem] text-muted-foreground">
+                    Refused, with the stores named, if another store already holds a different approved value.
+                  </span>
+                </span>
+              </label>
+              {shared ? (
+                <label className="flex items-start gap-2 text-[0.8rem]">
+                  <Checkbox checked={keepStores} onCheckedChange={(v) => setKeepStores(v === true)}
+                            disabled={decide.isPending} aria-label="Keep other stores' different values" className="mt-0.5" />
+                  <span>
+                    Keep other stores&apos; different values as store overrides
+                    <span className="block text-[0.72rem] text-muted-foreground">Each is recorded with the reason.</span>
+                  </span>
+                </label>
+              ) : null}
+            </div>
+          ) : null}
           <div className="space-y-1">
             <label htmlFor="bulk-note" className="text-[0.75rem] font-medium">
               Note <span className="text-muted-foreground">(optional, recorded on every row)</span>

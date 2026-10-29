@@ -42,6 +42,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -331,8 +332,13 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
   invoiceId: string; item: LineItem; serial: number; by: string; readOnly: boolean;
 }) {
   const cutOff = item.product_code_cut_off ?? null;
-  const missing = !cutOff && (item.product_code_missing ?? false);
+  const unusable = cutOff ? null : item.product_code_unusable ?? null;
+  const missing = !cutOff && ((item.product_code_missing ?? false) || unusable !== null);
   const supplierItem = missing ? item.supplier_item_id ?? null : null;
+  // A vendor item number to remember the UPC by: the row's ITEM number, or the vendor's own
+  // short code printed where a UPC should be.
+  const vendorCode = supplierItem ?? (unusable && /vendor item number/.test(unusable) ? item.product_code ?? null : null);
+  const [remember, setRemember] = useState(true);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   // Validation speaks only once the reviewer has typed: an editor that has just opened,
@@ -355,11 +361,19 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
   const save = () => {
     if (problem || correct.isPending) return;
     correct.mutate(
-      { sortOrder: item.sort_order, correction: { product_code: value, corrected_by: by.trim() || null } },
+      { sortOrder: item.sort_order,
+        correction: { product_code: value, corrected_by: by.trim() || null,
+                      ...(vendorCode && remember ? { remember_vendor_item: true } : {}) } },
       {
         onSuccess: (result) => {
           setEditing(false);
           outcomeToast(result);
+          const link = result.vendor_item_link;
+          if (link) {
+            const others = link.applied_to_invoice_ids.length;
+            toast.success(`Remembered for this vendor: item ${link.vendor_item_code} is ${link.item_code}`
+              + (others ? ` — also filled on ${others} other open invoice${others === 1 ? "" : "s"}.` : "."));
+          }
         },
         onError: (error) => toast.error(error instanceof Error ? error.message : "The UPC was not changed."),
       },
@@ -400,6 +414,16 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
           </Button>
         </div>
         {itemContext}
+        {vendorCode ? (
+          <label className="t-meta flex items-center gap-1.5" data-testid="remember-vendor-item">
+            <Checkbox checked={remember} onCheckedChange={(v) => setRemember(v === true)} disabled={correct.isPending}
+                      aria-label="Remember this UPC for the vendor's item number" />
+            Remember for this vendor&apos;s item {vendorCode}: later invoices get this UPC automatically
+          </label>
+        ) : null}
+        {unusable ? (
+          <div className="t-meta text-danger max-w-64 whitespace-normal">Printed {item.product_code}: {unusable}.</div>
+        ) : null}
         <div className="t-meta max-w-64 whitespace-normal">
           {message ? <span className="text-danger" role="alert">{message} </span> : null}
           {missing

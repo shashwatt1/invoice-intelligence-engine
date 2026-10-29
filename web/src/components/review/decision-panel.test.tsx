@@ -58,6 +58,35 @@ const decided = (id: string, value: number) => ({ proposal: { ...P, id, proposed
 
 beforeEach(() => vi.clearAllMocks());
 
+describe("DecisionPanel — scope", () => {
+  it("approves for every store by default, and for one store when unticked", async () => {
+    const user = userEvent.setup();
+    api.approveProposal.mockResolvedValue(decided("p1", 24));
+    wrap();
+    expect(screen.getByLabelText("Use for every store")).toBeChecked();
+    await user.click(screen.getByLabelText("Use for every store"));
+    await user.click(screen.getByTestId("decision-approve"));
+    await user.click(screen.getByRole("button", { name: "Approve and write mapping" }));
+    await waitFor(() => expect(api.approveProposal).toHaveBeenCalledWith(
+      "p1", { reviewed_by: "barj", note: null, scope: "store", keep_store_values: false, override_reason: null }));
+  });
+
+  it("a store-only value the Product Master governs needs a reason, sent as an override", async () => {
+    const user = userEvent.setup();
+    api.approveProposal.mockResolvedValue(decided("p1", 24));
+    wrap({ ...P, product_master_block: "All stores already governs this item at 12/case" } as ProposalDetail);
+    await user.click(screen.getByLabelText("Use for every store"));
+    expect(screen.getByTestId("decision-approve")).toBeDisabled();
+    await user.type(screen.getByTestId("override-reason"), "this store sells singles");
+    expect(screen.getByTestId("decision-approve")).toBeEnabled();
+    await user.click(screen.getByTestId("decision-approve"));
+    await user.click(screen.getByRole("button", { name: "Approve and write mapping" }));
+    await waitFor(() => expect(api.approveProposal).toHaveBeenCalledWith(
+      "p1", { reviewed_by: "barj", note: null, scope: "store", keep_store_values: false,
+              override_reason: "this store sells singles" }));
+  });
+});
+
 describe("DecisionPanel — units per case", () => {
   it("approves the proposal unchanged when the value is not edited", async () => {
     const user = userEvent.setup();
@@ -66,7 +95,7 @@ describe("DecisionPanel — units per case", () => {
     expect(screen.getByTestId("decision-units")).toHaveValue("24");
     await user.click(screen.getByTestId("decision-approve"));
     await user.click(screen.getByRole("button", { name: "Approve and write mapping" }));
-    await waitFor(() => expect(api.approveProposal).toHaveBeenCalledWith("p1", { reviewed_by: "barj", note: null }));
+    await waitFor(() => expect(api.approveProposal).toHaveBeenCalledWith("p1", { reviewed_by: "barj", note: null, scope: "shared", keep_store_values: false, override_reason: null }));
     expect(api.reviseProposal).not.toHaveBeenCalled();
   });
 
@@ -82,7 +111,7 @@ describe("DecisionPanel — units per case", () => {
     await user.click(screen.getByTestId("decision-approve"));
     expect(screen.getByRole("alertdialog")).toHaveTextContent("Your value 12 replaces the proposed 24");
     await user.click(screen.getByRole("button", { name: "Approve and write mapping" }));
-    await waitFor(() => expect(api.approveProposal).toHaveBeenCalledWith("p2", { reviewed_by: "barj", note: null }));
+    await waitFor(() => expect(api.approveProposal).toHaveBeenCalledWith("p2", { reviewed_by: "barj", note: null, scope: "shared", keep_store_values: false, override_reason: null }));
     expect(api.reviseProposal).toHaveBeenCalledWith("p1", { proposed_value: 12, proposed_by: "barj", note: null });
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/data-review/proposals/p2"));
     expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("Approved 12"));

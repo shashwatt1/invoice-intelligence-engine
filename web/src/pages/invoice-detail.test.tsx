@@ -574,7 +574,9 @@ describe("InvoiceDetailPage — entering a missing UPC", () => {
     await user.clear(input);
     await user.type(input, "028400260921{Enter}");
     await waitFor(() => expect(api.correctLineItem).toHaveBeenCalledWith(
-      "623b4a1c-d91d-4023-b702-d4eb8fc2683e", 0, { product_code: "028400260921", corrected_by: null }));
+      "623b4a1c-d91d-4023-b702-d4eb8fc2683e", 0,
+      // With a supplier ITEM number on the row, the UPC is remembered for the vendor by default.
+      { product_code: "028400260921", corrected_by: null, remember_vendor_item: true }));
     expect(api.correctLineItem).toHaveBeenCalledTimes(1);
   });
 

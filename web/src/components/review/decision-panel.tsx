@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
-import type { ProposalDetail } from "@/api/types";
+import type { ProposalDecision, ProposalDetail } from "@/api/types";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { useDecideProposal, useReviseProposal } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
@@ -44,6 +45,10 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
   const { user } = useAuth();
   const [note, setNote] = useState("");
   const [confirming, setConfirming] = useState<"approve" | "reject" | null>(null);
+  const unitsProposal = proposal.field === "units_per_case";
+  const [shared, setShared] = useState(unitsProposal);
+  const [keepStores, setKeepStores] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
   const editable = isEditable(proposal);
   const [unitsText, setUnitsText] = useState(String(proposal.proposed_value));
   const units = editable ? parseUnits(unitsText) : null;
@@ -52,6 +57,15 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
 
   const name = user?.username ?? "";
   const blocked = proposal.product_master_block ?? null;
+  // A store-only approval the Product Master already governs needs a recorded reason
+  // (a store override); a shared approval makes its own checks on the server.
+  const overriding = unitsProposal && !shared && blocked !== null;
+  const approveBlocked = blocked !== null && !shared && !(overriding && overrideReason.trim());
+  const scope = (): ProposalDecision => (unitsProposal ? {
+    scope: shared ? "shared" : "store",
+    keep_store_values: shared && keepStores,
+    override_reason: !shared && overrideReason.trim() ? overrideReason.trim() : null,
+  } : {});
   const proposed = String(proposal.proposed_value);
   const current = proposal.current_master_value;
 
@@ -85,7 +99,7 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
     }
     try {
       const result = await decide.mutateAsync({
-        proposalId: newId, action: "approve", decision: { reviewed_by: name, note: note.trim() || null },
+        proposalId: newId, action: "approve", decision: { reviewed_by: name, note: note.trim() || null, ...scope() },
       });
       setConfirming(null);
       toast.success(`Approved ${units} — wrote ${result.applied_to ?? "the mapping"}.`);
@@ -105,13 +119,14 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
       return;
     }
     decide.mutate(
-      { proposalId: proposal.id, action, decision: { reviewed_by: name, note: note.trim() || null } },
+      { proposalId: proposal.id, action,
+        decision: { reviewed_by: name, note: note.trim() || null, ...(action === "approve" ? scope() : {}) } },
       {
         onSuccess: (result) => {
           setConfirming(null);
           toast.success(
             action === "approve"
-              ? `Approved — wrote ${result.applied_to ?? "the mapping"}.`
+              ? `Approved${result.shared_mapping_id ? " for every store" : ""} — wrote ${result.applied_to ?? "the mapping"}.`
               : "Rejected — master data untouched.",
           );
         },
@@ -172,10 +187,42 @@ export function DecisionPanel({ proposal }: { proposal: ProposalDetail }) {
         </div>
       </div>
 
+      {unitsProposal ? (
+        <div className="space-y-1.5 rounded-md border px-3 py-2" data-testid="decision-scope">
+          <label className="flex items-start gap-2 text-[0.8rem]">
+            <Checkbox checked={shared} onCheckedChange={(v) => setShared(v === true)} disabled={busy}
+                      aria-label="Use for every store" className="mt-0.5" />
+            <span>
+              <span className="font-medium">Use for every store</span>
+              <span className="block text-[0.72rem] text-muted-foreground">
+                The same product then resolves at the other stores without another mapping. Refused, with the
+                stores named, if one already holds a different approved value.
+              </span>
+            </span>
+          </label>
+          {shared ? (
+            <label className="flex items-start gap-2 text-[0.8rem]">
+              <Checkbox checked={keepStores} onCheckedChange={(v) => setKeepStores(v === true)} disabled={busy}
+                        aria-label="Keep other stores' different values" className="mt-0.5" />
+              <span>Keep other stores&apos; different values as store overrides (each recorded with the reason)</span>
+            </label>
+          ) : overriding ? (
+            <div className="space-y-1">
+              <label htmlFor="override-reason" className="text-[0.75rem] font-medium">
+                Why this store differs <span className="text-muted-foreground">(recorded as a store override)</span>
+              </label>
+              <Input id="override-reason" value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)}
+                     placeholder="e.g. this store sells the cans singly" maxLength={500} disabled={busy}
+                     data-testid="override-reason" />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
-          disabled={!name || busy || blocked !== null || (editable && units === null)}
+          disabled={!name || busy || approveBlocked || (editable && units === null)}
           onClick={() => setConfirming("approve")}
           data-testid="decision-approve"
         >
