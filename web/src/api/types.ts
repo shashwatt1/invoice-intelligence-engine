@@ -15,7 +15,8 @@ export type DocumentStatus =
   | "COMPLETED"
   | "FAILED"
   | "STOPPED"
-  | "BINNED";
+  | "BINNED"
+  | "REFERENCE";
 
 export type InvoiceDecision = "VALIDATED" | "REVIEW_REQUIRED";
 
@@ -1460,4 +1461,63 @@ export interface OpeningCountRequest {
   count_date: string;
   reason: string;
   entries: { item_code: string; quantity: number; description?: string | null }[];
+}
+
+// ---------------------------------------------------------------------------
+// Recycle Bin
+// ---------------------------------------------------------------------------
+
+export type BinEntryStatus = "IN_BIN" | "RESTORED" | "RESTORED_AS_REFERENCE" | "PURGED";
+export type DeletionRequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+
+export interface DeletionRequest {
+  id: string;
+  entry_id: string;
+  requested_at: string;
+  requested_by: string;
+  requested_by_role: UserRole;
+  reason: string;
+  status: DeletionRequestStatus;
+  decided_at: string | null;
+  decided_by: string | null;
+  decision_note: string | null;
+  filename: string | null;
+  invoice_number: string | null;
+  vendor_name: string | null;
+}
+
+export interface RecycleBinEntry {
+  id: string;
+  /** Null once the document was permanently deleted. */
+  document_id: string | null;
+  filename: string;
+  invoice_id: string | null;
+  invoice_number: string | null;
+  vendor_name: string | null;
+  store: StoreRef | null;
+  previous_status: DocumentStatus;
+  binned_at: string;
+  binned_by: string;
+  binned_by_role: UserRole;
+  reason: string;
+  status: BinEntryStatus;
+  closed_at: string | null;
+  closed_by: string | null;
+  close_note: string | null;
+  /** A new upload of the same file made while this was in the bin. */
+  reuploaded_as_document_id: string | null;
+  /** An active document holding the same file or invoice: only an admin can restore it, as a reference copy. */
+  conflicting_document_id: string | null;
+  pending_request: DeletionRequest | null;
+}
+
+export interface RecycleBinSummary {
+  in_bin: number;
+  pending_requests: number;
+}
+
+export interface RestoreResult {
+  entry: RecycleBinEntry;
+  document_status: DocumentStatus;
+  as_reference: boolean;
 }

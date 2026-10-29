@@ -917,3 +917,19 @@ describe("InvoiceDetailPage — line-items table layout", () => {
     expect(region).toContainElement(screen.getAllByTestId("line-item-row")[0]);
   });
 });
+
+describe("InvoiceDetailPage — out of the active workflow", () => {
+  it("shows a binned invoice read-only, with no correction, Retailed or link editing", async () => {
+    mount("MANAGER", { ...redactForRole(rcmInvoice(), "MANAGER"), document_status: "BINNED" });
+    expect(await screen.findByTestId("inactive-notice")).toHaveTextContent("in the Recycle Bin");
+    expect(screen.getByRole("link", { name: "Open the Recycle Bin" })).toHaveAttribute("href", "/recycle-bin");
+    expect(screen.queryByRole("button", { name: /Add link|Change link/ })).toBeNull();
+    expect(screen.queryByText("Correcting as")).toBeNull();
+  });
+
+  it("explains a reference copy and keeps it read-only", async () => {
+    mount("ADMIN", { ...rcmInvoice(), document_status: "REFERENCE" });
+    expect(await screen.findByTestId("inactive-notice")).toHaveTextContent("read-only reference copy");
+    expect(screen.queryByRole("button", { name: /Add link|Change link/ })).toBeNull();
+  });
+});

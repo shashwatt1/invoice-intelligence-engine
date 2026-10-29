@@ -6,11 +6,19 @@
  * state. That single hook is what drives the live processing timeline.
  */
 
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiClient } from "@/api/client";
 
 import {
+  cancelDeletionRequest,
+  decideDeletionRequest,
+  getRecycleBinSummary,
+  listDeletionRequests,
+  listRecycleBin,
+  purgeBinEntry,
+  requestBinDeletion,
+  restoreBinEntry,
   addLineItem,
   approveCommercialCandidate,
   approveProposal,
@@ -86,8 +94,10 @@ import {
   updateStoreIdentity,
   voidLineItem,
 } from "@/api/endpoints";
+import type { RecycleBinParams } from "@/api/endpoints";
 import type {
   BulkProposalDecision,
+  DeletionRequestStatus,
   CaseMappingConfirmation,
   CommercialBulkApprovalRequest,
   CommercialCandidateParams,
@@ -253,7 +263,7 @@ export function useCorrectLineItem(invoiceId: string | undefined) {
 export function useDeleteInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: deleteInvoice,
+    mutationFn: ({ invoiceId, reason }: { invoiceId: string; reason?: string }) => deleteInvoice(invoiceId, reason),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
@@ -511,8 +521,9 @@ export function useStopDocument(documentId: string) {
 export function useMoveDocumentToBin(documentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => moveDocumentToBin(documentId),
+    mutationFn: (reason: string) => moveDocumentToBin(documentId, reason),
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["recycle-bin"] });
       void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -524,13 +535,62 @@ export function useMoveDocumentToBin(documentId: string) {
 export function useDeleteDocument(documentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => deleteDocument(documentId),
+    mutationFn: (reason?: string) => deleteDocument(documentId, reason),
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: ["document", documentId] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
+}
+
+// ---- Recycle Bin ------------------------------------------------------------------------------
+
+export function useRecycleBin(params: RecycleBinParams) {
+  return useQuery({ queryKey: ["recycle-bin", "entries", params], queryFn: () => listRecycleBin(params),
+                    placeholderData: keepPreviousData });
+}
+
+export function useRecycleBinSummary() {
+  return useQuery({ queryKey: ["recycle-bin", "summary"], queryFn: getRecycleBinSummary, staleTime: 30_000 });
+}
+
+export function useDeletionRequests(status: DeletionRequestStatus) {
+  return useQuery({ queryKey: ["recycle-bin", "requests", status], queryFn: () => listDeletionRequests(status) });
+}
+
+function useBinMutation<V, R>(fn: (v: V) => Promise<R>) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSettled: () => {
+      for (const key of ["recycle-bin", "invoices", "dashboard", "document", "invoice"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
+  });
+}
+
+export function useRestoreBinEntry() {
+  return useBinMutation(({ entryId, asReference, note }: { entryId: string; asReference?: boolean; note?: string }) =>
+    restoreBinEntry(entryId, asReference, note));
+}
+
+export function useRequestBinDeletion() {
+  return useBinMutation(({ entryId, reason }: { entryId: string; reason: string }) => requestBinDeletion(entryId, reason));
+}
+
+export function useCancelDeletionRequest() {
+  return useBinMutation((requestId: string) => cancelDeletionRequest(requestId));
+}
+
+export function useDecideDeletionRequest() {
+  return useBinMutation(({ requestId, approve, note }: { requestId: string; approve: boolean; note?: string }) =>
+    decideDeletionRequest(requestId, approve, note));
+}
+
+export function usePurgeBinEntry() {
+  return useBinMutation(({ entryId, reason }: { entryId: string; reason: string }) => purgeBinEntry(entryId, reason));
 }
 
 /** Adds a store to the directory. */

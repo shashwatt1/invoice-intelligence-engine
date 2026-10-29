@@ -29,6 +29,7 @@ vi.mock("@/api/endpoints", () => ({
   listProposals: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 1 })),
   getMappingQueueSummary: vi.fn(async () => ({ unique_products: 0, invoice_occurrences: 0, stores: 0 })),
   getInventoryStatus: vi.fn(async () => ({ enabled: false })),
+  getRecycleBinSummary: vi.fn(async () => ({ in_bin: 0, pending_requests: 0 })),
 }));
 
 import { ApiError } from "@/api/client";
@@ -136,6 +137,7 @@ describe("Sidebar role gating", () => {
     await screen.findByTestId("account");
     expect(rail()).toHaveTextContent("Process invoice");
     expect(rail()).toHaveTextContent("Invoices");
+    expect(rail()).toHaveTextContent("Recycle Bin");          // every role has its own bin view
     expect(rail()).not.toHaveTextContent("Dashboard");
     expect(rail()).not.toHaveTextContent("Requires Mapping");
     expect(rail()).not.toHaveTextContent("Master Data Review");

@@ -5,6 +5,12 @@
 
 import { apiClient, BULK_APPROVAL_PATH, PROCESS_TIMEOUT_MS } from "./client";
 import type {
+  BinEntryStatus,
+  DeletionRequest,
+  DeletionRequestStatus,
+  RecycleBinEntry,
+  RecycleBinSummary,
+  RestoreResult,
   ApiEnvelope,
   BulkDecisionResult,
   BulkProposalDecision,
@@ -243,8 +249,9 @@ export async function correctLineItem(
 
 /** Permanently deletes the invoice, its items, and its source document
  * (cascades at the database level — see DELETE /invoices/{id}). */
-export async function deleteInvoice(invoiceId: string): Promise<void> {
-  await apiClient.delete(`/invoices/${invoiceId}`);
+/** ADMIN only. The reason is kept in the Recycle Bin record of the deletion. */
+export async function deleteInvoice(invoiceId: string, reason?: string): Promise<void> {
+  await apiClient.delete(`/invoices/${invoiceId}`, { params: reason ? { reason } : undefined });
 }
 
 export async function listInvoices(params: InvoiceListParams): Promise<Paginated<HistoryRow>> {
@@ -442,15 +449,60 @@ export async function stopDocument(documentId: string): Promise<DocumentStatusDa
  * Never deletes the source or the invoice; idempotent. The actor is the
  * authenticated session — there is no request body. */
 /** Permanently deletes a failed, stopped or binned run that produced no invoice (admin). */
-export async function deleteDocument(documentId: string): Promise<void> {
-  await apiClient.delete(`/documents/${documentId}`);
+/** ADMIN only. The reason is kept in the Recycle Bin record of the deletion. */
+export async function deleteDocument(documentId: string, reason?: string): Promise<void> {
+  await apiClient.delete(`/documents/${documentId}`, { params: reason ? { reason } : undefined });
 }
 
-export async function moveDocumentToBin(documentId: string): Promise<DocumentStatusData> {
+/** A reason is required; it is kept in the Recycle Bin with who and when. */
+export async function moveDocumentToBin(documentId: string, reason: string): Promise<DocumentStatusData> {
   const { data } = await apiClient.post<ApiEnvelope<DocumentStatusData>>(
-    `/documents/${documentId}/move-to-bin`,
+    `/documents/${documentId}/move-to-bin`, { reason },
   );
   return data.data!;
+}
+
+export interface RecycleBinParams { status?: BinEntryStatus; search?: string; page?: number; page_size?: number }
+
+export async function listRecycleBin(params: RecycleBinParams): Promise<Paginated<RecycleBinEntry>> {
+  const { data } = await apiClient.get<Paginated<RecycleBinEntry>>("/recycle-bin", { params });
+  return data;
+}
+
+export async function getRecycleBinSummary(): Promise<RecycleBinSummary> {
+  const { data } = await apiClient.get<ApiEnvelope<RecycleBinSummary>>("/recycle-bin/summary");
+  return data.data!;
+}
+
+export async function listDeletionRequests(status: DeletionRequestStatus): Promise<Paginated<DeletionRequest>> {
+  const { data } = await apiClient.get<Paginated<DeletionRequest>>("/recycle-bin/deletion-requests",
+    { params: { status, page_size: 100 } });
+  return data;
+}
+
+export async function restoreBinEntry(entryId: string, asReference = false, note?: string): Promise<RestoreResult> {
+  const { data } = await apiClient.post<ApiEnvelope<RestoreResult>>(`/recycle-bin/${entryId}/restore`,
+    { as_reference: asReference, note: note || null });
+  return data.data!;
+}
+
+export async function requestBinDeletion(entryId: string, reason: string): Promise<DeletionRequest> {
+  const { data } = await apiClient.post<ApiEnvelope<DeletionRequest>>(`/recycle-bin/${entryId}/deletion-requests`, { reason });
+  return data.data!;
+}
+
+export async function cancelDeletionRequest(requestId: string): Promise<DeletionRequest> {
+  const { data } = await apiClient.post<ApiEnvelope<DeletionRequest>>(`/recycle-bin/deletion-requests/${requestId}/cancel`);
+  return data.data!;
+}
+
+export async function decideDeletionRequest(requestId: string, approve: boolean, note?: string): Promise<void> {
+  await apiClient.post(`/recycle-bin/deletion-requests/${requestId}/${approve ? "approve" : "reject"}`, { note: note || null });
+}
+
+/** ADMIN only: permanent; the item's record stays. */
+export async function purgeBinEntry(entryId: string, reason: string): Promise<void> {
+  await apiClient.post(`/recycle-bin/${entryId}/purge`, { reason });
 }
 
 /** Read the document now, assign the store later. The invoice is stored

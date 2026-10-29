@@ -5,7 +5,7 @@ import { flushSync } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
-import type { InvoiceDetail, LineItem, ValidationCheck, Vendor } from "@/api/types";
+import type { DocumentStatus, InvoiceDetail, LineItem, ValidationCheck, Vendor } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
 import { PageHeader, SectionHeader } from "@/components/layout/page-header";
 import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
@@ -126,13 +126,35 @@ function DownloadPdiButton({
  * same invoice while refining OCR, extraction, and PDI generation.
  * Requires explicit confirmation; no soft-delete.
  */
+/** In the Recycle Bin, or a read-only reference copy: readable, never changed, exported or counted. */
+function isInactive(status: DocumentStatus): boolean {
+  return status === "BINNED" || status === "REFERENCE";
+}
+
+function InactiveNotice({ status }: { status: DocumentStatus }) {
+  if (!isInactive(status)) return null;
+  return (
+    <div className="surface mb-4 px-5 py-3 text-[0.82rem]" role="status" data-testid="inactive-notice">
+      {status === "BINNED" ? (
+        <>This invoice is in the Recycle Bin, so it is read-only and not counted anywhere.{" "}
+          <Link to="/recycle-bin" className="font-medium underline underline-offset-2">Open the Recycle Bin</Link> to restore it.</>
+      ) : (
+        <>This is a read-only reference copy, restored by an administrator because another invoice holds the same
+          file or invoice. It is never changed, exported, received or counted.</>
+      )}
+    </div>
+  );
+}
+
 function DeleteInvoiceButton({ invoiceId }: { invoiceId: string }) {
   const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
   const navigate = useNavigate();
   const deleteInvoice = useDeleteInvoice();
 
   const confirmDelete = () => {
-    deleteInvoice.mutate(invoiceId, {
+    if (!reason.trim()) return;
+    deleteInvoice.mutate({ invoiceId, reason: reason.trim() }, {
       onSuccess: () => {
         setOpen(false);
         toast.success("Invoice deleted.");
@@ -156,14 +178,20 @@ function DeleteInvoiceButton({ invoiceId }: { invoiceId: string }) {
           <AlertDialogTitle>Delete this invoice?</AlertDialogTitle>
           <AlertDialogDescription>
             This will permanently remove the invoice, all associated invoice items, extracted
-            data, generated exports, and any related records from the database.
+            data, generated exports, and any related records from the database. A record of who
+            deleted it, when and why is kept in the Recycle Bin.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        <div className="space-y-1.5">
+          <label htmlFor="delete-invoice-reason" className="text-sm font-medium">Reason</label>
+          <Input id="delete-invoice-reason" value={reason} maxLength={1000} disabled={deleteInvoice.isPending}
+                 onChange={(event) => setReason(event.target.value)} placeholder="e.g. uploaded twice" />
+        </div>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={deleteInvoice.isPending}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className={buttonVariants({ variant: "destructive" })}
-            disabled={deleteInvoice.isPending}
+            disabled={deleteInvoice.isPending || !reason.trim()}
             onClick={(event) => {
               event.preventDefault(); // keep the dialog open until the request settles
               confirmDelete();
@@ -612,7 +640,7 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
   // the backend (require_manager) — the affordance is hidden below that
   // rank rather than offered and then rejected. A USER's own action on
   // this page is proposing a mapping (CaseMappingCard, unaffected).
-  const canEdit = hasRole("MANAGER");
+  const canEdit = hasRole("MANAGER") && !isInactive(detail.document_status);
   const checks = useMemo(() => detail.validation_report?.checks ?? [], [detail.validation_report]);
   const storePending = detail.store_pending || !detail.store;
   const multiPhoto = detail.photos.length > 1;
@@ -709,7 +737,8 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
 
   return (
     <div className="space-y-4">
-      <ReferenceLinkCard invoiceId={detail.invoice_id} link={detail.reference_link} />
+      <ReferenceLinkCard invoiceId={detail.invoice_id} link={detail.reference_link}
+                         readOnly={isInactive(detail.document_status)} />
       {isAdmin ? <WorkflowTimeline detail={detail} /> : null}
 
       <div className="grid grid-cols-[minmax(0,1fr)_320px] gap-4 max-xl:grid-cols-1">
@@ -938,7 +967,7 @@ export function InvoiceDetailPage() {
   const { data, isPending, isError, error, refetch } = useInvoice(invoiceId);
   const { hasRole } = useAuth();
   const isAdmin = hasRole("ADMIN");
-  const canEdit = hasRole("MANAGER");
+  const canEdit = hasRole("MANAGER") && !(data && isInactive(data.document_status));
   // One name for every correction made from this page; remembered per browser.
   const [by, setBy] = useState(rememberedReviewer);
 
@@ -984,17 +1013,18 @@ export function InvoiceDetailPage() {
             actions={
               <>
                 <StatusBadge status={data.status} size="md" />
-                {["FAILED", "STORE_CONFIRMATION_REQUIRED", "UPLOADED", "OCR_IN_PROGRESS", "OCR_COMPLETED", "AI_PROCESSING"].includes(data.document_status as string) ? (
+                {["FAILED", "STORE_CONFIRMATION_REQUIRED", "UPLOADED", "OCR_IN_PROGRESS", "OCR_COMPLETED", "AI_PROCESSING", "BINNED", "REFERENCE"].includes(data.document_status as string) ? (
                   <StatusBadge status={data.document_status} size="md" />
                 ) : null}
                 <DownloadPdiButton invoiceId={data.invoice_id} allowed={data.pdi_export_allowed}
                                    requiresConfirmation={data.pdi_export_requires_confirmation}
                                    blockedReason={data.pdi_export_blocked_reason} />
-                <RetailedControl invoiceId={data.invoice_id} completion={data.completion} />
+                {isInactive(data.document_status) ? null : <RetailedControl invoiceId={data.invoice_id} completion={data.completion} />}
                 {isAdmin ? <DeleteInvoiceButton invoiceId={data.invoice_id} /> : null}
               </>
             }
           />
+          <InactiveNotice status={data.document_status} />
           <DetailBody detail={data} by={by} setBy={setBy} />
         </>
       )}

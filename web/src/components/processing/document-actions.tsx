@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useDeleteDocument, useMoveDocumentToBin, useStopDocument } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -37,12 +38,13 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
   const bin = useMoveDocumentToBin(status.document_id);
   const { hasRole } = useAuth();
   const [binOpen, setBinOpen] = useState(false);
+  const [binReason, setBinReason] = useState("");
 
   const withdrawn = status.status === "STOPPED" || status.status === "BINNED";
   const canStop = !status.is_terminal;
   // An admin may permanently delete a run that produced no invoice once it is
-  // no longer active (failed, stopped or binned) — the only way to process
-  // the same file again, since duplicate detection counts every stored run.
+  // no longer active (failed, stopped or binned). Moving it to the Recycle Bin
+  // is enough to process the same file again.
   const canDelete = hasRole("ADMIN") && !status.invoice_id
     && ["FAILED", "STOPPED", "BINNED"].includes(status.status);
   // A failed run produced nothing usable: removing it is the expected next
@@ -60,10 +62,13 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
   };
 
   const runBin = () => {
-    bin.mutate(undefined, {
+    if (!binReason.trim()) return;
+    bin.mutate(binReason.trim(), {
       onSuccess: () => {
         setBinOpen(false);
-        toast.success(failed ? "Failed invoice removed (moved to bin)." : "Moved to bin.");
+        setBinReason("");
+        toast.success(failed ? "Failed invoice moved to the Recycle Bin. The same file can be processed again."
+          : "Moved to the Recycle Bin.");
         onBinned?.();
       },
       onError: (error) => toast.error(error instanceof Error ? error.message : "Could not move to bin."),
@@ -114,17 +119,22 @@ export function DocumentActions({ status, onBinned }: { status: DocumentStatusDa
                 <p>
                   It leaves your active list, but nothing is deleted: the source file, the
                   document, {status.invoice_id ? "its invoice, " : ""}and the full processing
-                  history are all preserved and can be recovered.
+                  history are all preserved and can be restored from the Recycle Bin.
                 </p>
-                <p>Recorded against your account.</p>
+                <p>While it is in the bin, the same file can be processed again. Recorded against your account.</p>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-1.5">
+            <label htmlFor="bin-reason" className="text-sm font-medium">Reason</label>
+            <Input id="bin-reason" value={binReason} maxLength={1000} disabled={bin.isPending} autoFocus
+                   onChange={(event) => setBinReason(event.target.value)} placeholder="e.g. wrong photo, uploaded twice" />
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={bin.isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className={buttonVariants({ variant: "destructive" })}
-              disabled={bin.isPending}
+              disabled={bin.isPending || !binReason.trim()}
               onClick={(event) => {
                 event.preventDefault(); // keep the dialog open until the request settles
                 runBin();
@@ -149,11 +159,14 @@ export function DeleteRunButton({ documentId, onDeleted, compact = false }: {
 }) {
   const remove = useDeleteDocument(documentId);
   const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
 
   const run = () => {
-    remove.mutate(undefined, {
+    if (!reason.trim()) return;
+    remove.mutate(reason.trim(), {
       onSuccess: () => {
         setOpen(false);
+        setReason("");
         toast.success("Deleted permanently. The same file can now be processed again.");
         onDeleted?.();
       },
@@ -177,15 +190,20 @@ export function DeleteRunButton({ documentId, onDeleted, compact = false }: {
                   The document, its stored file(s) and its processing history are deleted for good — there is
                   no undo. It produced no invoice, so no invoice, mapping or proposal is affected.
                 </p>
-                <p>Afterwards the same file can be uploaded and processed again.</p>
+                <p>A record of who deleted it, when and why is kept in the Recycle Bin.</p>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-1.5">
+            <label htmlFor="delete-reason" className="text-sm font-medium">Reason</label>
+            <Input id="delete-reason" value={reason} maxLength={1000} disabled={remove.isPending}
+                   onChange={(event) => setReason(event.target.value)} placeholder="e.g. test upload" />
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className={buttonVariants({ variant: "destructive" })}
-              disabled={remove.isPending}
+              disabled={remove.isPending || !reason.trim()}
               onClick={(event) => {
                 event.preventDefault();
                 run();

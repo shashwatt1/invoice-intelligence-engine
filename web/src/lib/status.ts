@@ -41,7 +41,8 @@ export const STATUS_META: Record<DocumentStatus, { label: string; tone: Tone; me
   COMPLETED: { label: "Validated", tone: "success", meaning: "Persisted with every check passed." },
   FAILED: { label: "Failed", tone: "danger", meaning: "A stage failed; the document and its log were kept." },
   STOPPED: { label: "Stopped", tone: "neutral", meaning: "Processing was cancelled; the source and audit trail were kept." },
-  BINNED: { label: "In bin", tone: "neutral", meaning: "Removed from the active workflow; recoverable, nothing was deleted." },
+  BINNED: { label: "In Recycle Bin", tone: "neutral", meaning: "Moved to the Recycle Bin: out of the active workflow, recoverable, nothing deleted." },
+  REFERENCE: { label: "Reference copy", tone: "neutral", meaning: "A read-only copy restored for reference; never changed, exported, received or counted." },
 };
 
 /** Proposal lifecycle. The labels say what each state MEANS for the EDI,

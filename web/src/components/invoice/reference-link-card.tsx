@@ -17,9 +17,13 @@ import { referenceUrlProblem, safeHref } from "@/lib/reference-link";
  * changed or removed by a manager or admin. Opened in a new tab; never fetched
  * or previewed here, and a private chat link still needs the viewer's own access.
  */
-export function ReferenceLinkCard({ invoiceId, link }: { invoiceId: string; link: ReferenceLink | null | undefined }) {
+export function ReferenceLinkCard({ invoiceId, link, readOnly = false }: {
+  invoiceId: string; link: ReferenceLink | null | undefined;
+  /** In the Recycle Bin or a reference copy: the link can be seen, not changed. */
+  readOnly?: boolean;
+}) {
   const { hasRole } = useAuth();
-  const canEdit = hasRole("MANAGER");
+  const canEdit = hasRole("MANAGER") && !readOnly;
   const save = useSaveReferenceLink(invoiceId);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");

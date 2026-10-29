@@ -16,6 +16,7 @@ import { ProductHistoryPage } from "@/pages/product-history";
 import { ProposalDetailPage } from "@/pages/proposal-detail";
 import { ProductMasterApprovalsPage } from "@/pages/product-master-approvals";
 import { ProductMasterReviewPage } from "@/pages/product-master-review";
+import { RecycleBinPage } from "@/pages/recycle-bin";
 import { RequiresMappingPage } from "@/pages/requires-mapping";
 import { SettingsPage } from "@/pages/settings";
 import { StoresPage } from "@/pages/stores";
@@ -49,6 +50,7 @@ export function App() {
         <Route path="/invoices" element={<HistoryPage />} />
         <Route path="/invoices/:invoiceId" element={<InvoiceDetailPage />} />
         <Route path="/documents/:documentId" element={<DocumentStatusPage />} />
+        <Route path="/recycle-bin" element={<RecycleBinPage />} />
 
         {/* Business / review — MANAGER and above */}
         <Route path="/dashboard" element={<RequireRole minimum="MANAGER"><DashboardPage /></RequireRole>} />

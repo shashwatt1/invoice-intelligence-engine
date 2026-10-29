@@ -5,7 +5,6 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { DocumentStatus } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
 import { ActiveFilters, FilterBar, SearchInput } from "@/components/shared/filter-bar";
-import { DeleteRunButton } from "@/components/processing/document-actions";
 import { InvoiceRow, InvoiceTableHead } from "@/components/shared/invoice-table";
 import { Pagination } from "@/components/shared/pagination";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
@@ -26,7 +25,7 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: "REVIEW_REQUIRED", label: "Needs review" },
   { value: "STORE_CONFIRMATION_REQUIRED", label: "Waiting for a store" },
   { value: "FAILED", label: "Failed" },
-  { value: "BINNED", label: "Removed (bin)" },
+  { value: "REFERENCE", label: "Reference copies" },
 ];
 
 const SORT_OPTIONS: { value: string; label: string; sortBy: string; descending: boolean }[] = [
@@ -55,7 +54,6 @@ export function HistoryPage() {
   const navigate = useNavigate();
   const { hasRole } = useAuth();
   const showMapping = hasRole("MANAGER");
-  const isAdmin = hasRole("ADMIN");
   const [search, setSearch] = useSearchParams();
   const [searchInput, setSearchInput] = useState(search.get("q") ?? "");
   const [statusFilter, setStatusFilter] = useState(search.get("status") ?? "ALL");
@@ -168,10 +166,7 @@ export function HistoryPage() {
               <InvoiceTableHead showMapping={showMapping} />
               <TableBody>
                 {data.items.map((row) => (
-                  <InvoiceRow key={row.document_id} row={row} onOpen={() => navigate(rowDestination(row))} showMapping={showMapping}
-                              action={statusFilter === "BINNED" && isAdmin && !row.invoice_id
-                                ? <DeleteRunButton documentId={row.document_id} compact />
-                                : undefined} />
+                  <InvoiceRow key={row.document_id} row={row} onOpen={() => navigate(rowDestination(row))} showMapping={showMapping} />
                 ))}
               </TableBody>
             </Table>

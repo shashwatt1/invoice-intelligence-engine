@@ -11,6 +11,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
+  Trash2,
   Truck,
   UploadCloud,
   Users,
@@ -19,7 +20,13 @@ import type { LucideIcon } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 
 import type { UserRole } from "@/api/types";
-import { useApiHealth, useInventoryStatus, useMappingQueueSummary, usePendingProposalCount } from "@/hooks/use-api";
+import {
+  useApiHealth,
+  useInventoryStatus,
+  useMappingQueueSummary,
+  usePendingProposalCount,
+  useRecycleBinSummary,
+} from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 
@@ -34,7 +41,7 @@ import { cn } from "@/lib/utils";
  * Hiding is presentation only — the API refuses these areas by role.
  */
 type NavItem = {
-  to: string; label: string; icon: LucideIcon; badge?: "pending" | "mapping"; minimum: UserRole;
+  to: string; label: string; icon: LucideIcon; badge?: "pending" | "mapping" | "bin"; minimum: UserRole;
   /** Shown only while the server reports the feature switched on. */
   feature?: "inventory";
 };
@@ -46,6 +53,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, minimum: "MANAGER" },
       { to: "/process", label: "Process invoice", icon: UploadCloud, minimum: "USER" },
       { to: "/invoices", label: "Invoices", icon: FileClock, minimum: "USER" },
+      { to: "/recycle-bin", label: "Recycle Bin", icon: Trash2, badge: "bin", minimum: "USER" },
       { to: "/inventory", label: "Inventory", icon: PackageCheck, minimum: "MANAGER", feature: "inventory" },
     ],
   },
@@ -84,10 +92,17 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     canReview && mappingQueue.isSuccess && mappingQueue.data.unique_products > 0
       ? mappingQueue.data.unique_products
       : null;
-  const badgeCount: Record<"pending" | "mapping", number | null> = { pending: pendingCount, mapping: mappingCount };
-  const badgeTitle: Record<"pending" | "mapping", (n: number) => string> = {
+  // Administrators decide permanent-deletion requests: the Recycle Bin shows how many are waiting.
+  const binSummary = useRecycleBinSummary();
+  const binCount = hasRole("ADMIN") && binSummary.isSuccess && binSummary.data.pending_requests > 0
+    ? binSummary.data.pending_requests : null;
+  const badgeCount: Record<"pending" | "mapping" | "bin", number | null> = {
+    pending: pendingCount, mapping: mappingCount, bin: binCount,
+  };
+  const badgeTitle: Record<"pending" | "mapping" | "bin", (n: number) => string> = {
     pending: (n) => `${n} proposal${n === 1 ? "" : "s"} pending review`,
     mapping: (n) => `${n} product${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} mapping`,
+    bin: (n) => `${n} deletion request${n === 1 ? "" : "s"} waiting for an administrator`,
   };
 
   const inventory = useInventoryStatus({ enabled: canReview });

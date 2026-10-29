@@ -96,9 +96,11 @@ describe("DocumentActions — MOVE TO BIN", () => {
     await user.click(screen.getByTestId("move-to-bin"));
     expect(api.moveDocumentToBin).not.toHaveBeenCalled();
     expect(screen.getByText(/move this document to the bin/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^move to bin$/i })).toBeDisabled();      // a reason is required
+    await user.type(screen.getByLabelText("Reason"), "wrong photo");
 
     await user.click(screen.getByRole("button", { name: /^move to bin$/i }));
-    await waitFor(() => expect(api.moveDocumentToBin).toHaveBeenCalledWith("doc-1"));
+    await waitFor(() => expect(api.moveDocumentToBin).toHaveBeenCalledWith("doc-1", "wrong photo"));
   });
 
   it("is offered even on a completed document", () => {
@@ -117,10 +119,12 @@ describe("DocumentActions — a FAILED run", () => {
     expect(screen.queryByTestId("stop-document")).toBeNull();
     await user.click(screen.getByRole("button", { name: /Remove failed invoice/ }));
     expect(screen.getByRole("alertdialog")).toHaveTextContent("Remove this failed invoice?");
+    await user.type(screen.getByLabelText("Reason"), "OCR failed; retrying");
     await user.click(screen.getByRole("button", { name: "Move to bin" }));
     await waitFor(() => expect(onBinned).toHaveBeenCalled());
-    expect(api.moveDocumentToBin).toHaveBeenCalledWith("doc-1");
-    expect(toast.success).toHaveBeenCalledWith("Failed invoice removed (moved to bin).");
+    expect(api.moveDocumentToBin).toHaveBeenCalledWith("doc-1", "OCR failed; retrying");
+    expect(toast.success).toHaveBeenCalledWith(
+      "Failed invoice moved to the Recycle Bin. The same file can be processed again.");
   });
 });
 
@@ -138,8 +142,10 @@ describe("DocumentActions — permanent delete of an invoice-less run", () => {
     await user.click(screen.getByTestId("delete-document"));
     expect(screen.getByRole("alertdialog")).toHaveTextContent("there is no undo");
     expect(api.deleteDocument).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Delete permanently" })).toBeDisabled();  // a reason is required
+    await user.type(screen.getByLabelText("Reason"), "test upload");
     await user.click(screen.getByRole("button", { name: "Delete permanently" }));
-    await waitFor(() => expect(api.deleteDocument).toHaveBeenCalledWith("doc-1"));
+    await waitFor(() => expect(api.deleteDocument).toHaveBeenCalledWith("doc-1", "test upload"));
     await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/invoices"));
   });
 
@@ -151,6 +157,7 @@ describe("DocumentActions — permanent delete of an invoice-less run", () => {
     wrap(<DocumentActions status={failed} onBinned={onBinned} />);
     expect(screen.getByTestId("move-to-bin")).toBeInTheDocument();
     await user.click(screen.getByTestId("delete-document"));
+    await user.type(screen.getByLabelText("Reason"), "test upload");
     await user.click(screen.getByRole("button", { name: "Delete permanently" }));
     await waitFor(() => expect(onBinned).toHaveBeenCalled());
   });
