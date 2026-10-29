@@ -10,7 +10,7 @@ restored it as a read-only reference copy because an active document holds
 the same invoice) or PURGED (permanently deleted by an administrator). It
 keeps a snapshot of what the document was (file name and hash, invoice
 number, vendor, store), so a PURGED row still explains what was deleted after
-the document itself is gone (document_id becomes NULL). An administrator's
+the document itself is gone (document_id becomes NULL on every entry for it). An administrator's
 direct delete of a document that was never binned is recorded the same way,
 as an entry created already PURGED.
 
@@ -71,8 +71,10 @@ ENTRY_CHECKS = {
         "AND closed_by_user_id IS NULL AND close_note IS NULL) OR "
         f"(status <> '{ENTRY_IN_BIN}' AND closed_at IS NOT NULL AND closed_by IS NOT NULL "
         "AND closed_by_role IS NOT NULL AND closed_at >= binned_at)"),
-    # Only a permanently deleted document leaves its entry without one.
-    "ck_recycle_bin_entries_document": f"status = '{ENTRY_PURGED}' OR document_id IS NOT NULL",
+    # An open entry always keeps its document. A closed entry may lose it: when a document is deleted,
+    # the database clears the link on EVERY entry for it, including earlier RESTORED ones; the
+    # snapshot columns still say what the document was.
+    "ck_recycle_bin_entries_document": f"status <> '{ENTRY_IN_BIN}' OR document_id IS NOT NULL",
 }
 REQUEST_CHECKS = {
     "ck_bin_deletion_requests_status": f"status IN ({_in(REQUEST_STATUSES)})",
@@ -90,7 +92,7 @@ class RecycleBinEntry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("documents.id", ondelete="SET NULL"), nullable=True,
-        doc="NULL only once the document was permanently deleted (PURGED).")
+        doc="NULL once the document was permanently deleted (never while the entry is IN_BIN).")
     # What the document was, kept so a PURGED entry still explains itself.
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_hash: Mapped[str] = mapped_column(String(64), nullable=False)

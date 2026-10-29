@@ -18,7 +18,9 @@ changed, and nothing is binned, restored or deleted here.
     The new REFERENCE status itself needs no schema change (status is VARCHAR).
 
 Foreign keys to documents SET NULL, so a permanently deleted document leaves
-its entry (and the reason it was deleted) behind. Row level security with no
+its entries (and the reason it was deleted) behind. An open entry must keep its
+document; closed entries (including earlier RESTORED ones) may lose the link
+when the document is deleted. Row level security with no
 policies, like the other audit tables.
 
 The downgrade refuses while any bin history or reference copy exists.
@@ -90,7 +92,8 @@ def upgrade() -> None:
             "(status <> 'IN_BIN' AND closed_at IS NOT NULL AND closed_by IS NOT NULL "
             "AND closed_by_role IS NOT NULL AND closed_at >= binned_at)",
             name="ck_recycle_bin_entries_closed"),
-        sa.CheckConstraint("status = 'PURGED' OR document_id IS NOT NULL", name="ck_recycle_bin_entries_document"),
+        # An open entry keeps its document; closed entries may lose it when the document is deleted.
+        sa.CheckConstraint("status <> 'IN_BIN' OR document_id IS NOT NULL", name="ck_recycle_bin_entries_document"),
     )
     op.execute(f"ALTER TABLE {ENTRIES} ENABLE ROW LEVEL SECURITY")
     op.create_index("uq_recycle_bin_entries_open", ENTRIES, ["document_id"], unique=True,
