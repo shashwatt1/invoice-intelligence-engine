@@ -234,9 +234,11 @@ def an_invoice(*items, store_id=RCM.id):
 class TestTheExistingWorkflow:
     async def test_invoice_units_come_from_the_resolution(self, monkeypatch):
         async def fake(session, store_id, codes):
-            return cr.CommercialResolution({CODE: cr.CodeResolution(CODE, cr.PATH_PRODUCT_MASTER_GLOBAL, 12)}, True)
+            # 24 agrees with the printed "24/12 CAN" (a disagreeing shared value is held: see
+            # tests/test_shared_value_safeguards.py).
+            return cr.CommercialResolution({CODE: cr.CodeResolution(CODE, cr.PATH_PRODUCT_MASTER_GLOBAL, 24)}, True)
         monkeypatch.setattr(case_mapping_service, "resolve_store_codes", fake)
-        assert await case_mapping_service.invoice_units_by_item_code(None, an_invoice(item())) == {CODE: 12}
+        assert await case_mapping_service.invoice_units_by_item_code(None, an_invoice(item())) == {CODE: 24}
         assert await case_mapping_service.invoice_units_by_item_code(None, an_invoice(item(), store_id=None)) == {}
 
     def test_a_line_without_an_approved_mapping_blocks_export_and_asks_for_a_mapping(self):
@@ -253,7 +255,7 @@ class TestTheExistingWorkflow:
                 return _Result([mapped, missing])
 
         async def fake(session, store_id, codes):
-            return cr.CommercialResolution({CODE: cr.CodeResolution(CODE, cr.PATH_PRODUCT_MASTER_GLOBAL, 12)}, True)
+            return cr.CommercialResolution({CODE: cr.CodeResolution(CODE, cr.PATH_PRODUCT_MASTER_GLOBAL, 24)}, True)
 
         async def no_pending(*_a, **_k):
             return {}

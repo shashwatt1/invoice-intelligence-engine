@@ -33,7 +33,13 @@ from app.services.product_master.commercial_resolution import (
     PATH_PRODUCT_MASTER_PHYSICAL,
     resolve_store_codes,
 )
-from tests.integration.conftest import PHYSICAL_STORE, RCM_STORE, requires_db, store_id
+from tests.integration.conftest import (
+    PHYSICAL_STORE,
+    RCM_STORE,
+    SOURCE_ONLY_STORE,
+    requires_db,
+    store_id,
+)
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401 — fixture reuse
 from tests.pdf_builder import build_pdf
@@ -209,7 +215,8 @@ class TestCrossStoreDifferences:
         assert shared and shared[0]["store_id"] is None and shared[0]["store_kind"] == "shared"
 
 
-async def _process(api_client, app, items, filename, *, vendor="Synthetic Snacks LLC", number="SY-1"):  # noqa: F811
+async def _process(api_client, app, items, filename, *, vendor="Synthetic Snacks LLC", number="SY-1",  # noqa: F811
+                   store=PHYSICAL_STORE):
     from app.api.v1.invoices import get_pipeline
 
     total = round(sum(i.line_total or 0 for i in items), 2)
@@ -217,7 +224,8 @@ async def _process(api_client, app, items, filename, *, vendor="Synthetic Snacks
         structuring_service=FakeStructuring(extracted_invoice(
             vendor=ExtractedVendor(name=vendor), invoice_number=number, line_items=items,
             subtotal=total, grand_total=total)))
-    accepted = await process_file(api_client, content=build_pdf([filename + " pad " * 300]), filename=filename)
+    accepted = await process_file(api_client, content=build_pdf([filename + " pad " * 300]), filename=filename,
+                                  store=store)
     status = (await api_client.get(accepted["status_url"])).json()["data"]
     return status["invoice_id"]
 
@@ -371,3 +379,67 @@ class TestItemMasterImport:
                                   json={"note": "sheet says 12", "expected_review_version": detail["candidate"]["review_version"]})
         assert r.status_code == 422, r.text
         assert r.json()["error"]["detail"]["reason"] == "shared_value_exists"
+
+
+MICHELOB_UPC, MICHELOB_CODE = "018200967214", "01820096721"
+
+
+def _c18_line():
+    return ExtractedLineItem(description="MICHELOB ULTRA C-18 12OZ", product_code=MICHELOB_UPC, pack_size="C-18 12OZ",
+                             quantity=1.0, unit_price=17.7, line_total=17.7)
+
+
+class TestTheEighteenPackSafeguard:
+    """The replay's two incorrect automatic lines, end to end: a shared 1 never silently prices a C-18 at 18-store."""
+
+    async def _shared_one(self, api_client, db_session):  # noqa: F811
+        p = await _proposal(db_session, PHYSICAL_STORE, 1, code=MICHELOB_CODE)
+        r = await api_client.post(f"/api/v1/proposals/{p.id}/approve", json={"scope": "shared"})
+        assert r.status_code == 200, r.text
+
+    async def _row(self, api_client, invoice_id):  # noqa: F811
+        data = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
+        return data, next(r for r in data["case_mappings"] if r["item_code"] == MICHELOB_CODE)
+
+    async def test_the_other_store_is_asked_once_instead_of_resolving_silently(
+        self, api_client, app, db_session, resolution_on,  # noqa: F811
+    ):
+        await self._shared_one(api_client, db_session)
+        inv = await _process(api_client, app, [_c18_line()], "m.pdf", vendor="Synthetic Beer Co", store=RCM_STORE)
+        data, row = await self._row(api_client, inv)
+        assert (row["mapped"], row["resolution_path"]) == (False, "SHARED_NEEDS_STORE_CONFIRMATION")
+        assert data["pdi_export_allowed"] is False
+        queue = (await api_client.get("/api/v1/mapping-queue")).json()["items"]
+        assert any(g["item_code"] == MICHELOB_CODE and g["store"]["id"] == str(store_id(RCM_STORE)) for g in queue)
+
+        # The store confirms the shared value once; from then on it resolves from it.
+        q = await _proposal(db_session, RCM_STORE, 1, code=MICHELOB_CODE)
+        assert (await api_client.post(f"/api/v1/proposals/{q.id}/approve", json={})).status_code == 200
+        data, row = await self._row(api_client, inv)
+        assert (row["mapped"], row["units_per_case"], row["resolution_path"]) == (True, 1, "PRODUCT_MASTER_GLOBAL")
+
+    async def test_or_records_its_own_18_as_an_override_with_a_reason(
+        self, api_client, app, db_session, resolution_on,  # noqa: F811
+    ):
+        await self._shared_one(api_client, db_session)
+        inv = await _process(api_client, app, [_c18_line()], "n.pdf", vendor="Synthetic Beer Co", store=RCM_STORE)
+        q = await _proposal(db_session, RCM_STORE, 18, code=MICHELOB_CODE)
+        assert (await api_client.post(f"/api/v1/proposals/{q.id}/approve", json={})).status_code == 422
+        r = await api_client.post(f"/api/v1/proposals/{q.id}/approve",
+                                  json={"override_reason": "this store sells the cans singly"})
+        assert r.status_code == 200, r.text
+        _, row = await self._row(api_client, inv)
+        assert (row["mapped"], row["units_per_case"], row["resolution_path"]) == (
+            True, 18, "PRODUCT_MASTER_PHYSICAL_STORE")
+
+    async def test_the_origin_store_itself_is_never_held(self, api_client, app, db_session, resolution_on):  # noqa: F811
+        await self._shared_one(api_client, db_session)
+        inv = await _process(api_client, app, [_c18_line()], "o.pdf", vendor="Synthetic Beer Co")
+        _, row = await self._row(api_client, inv)
+        assert (row["mapped"], row["units_per_case"]) == (True, 1)
+
+    async def test_a_source_identitys_decision_never_becomes_the_shared_value(self, api_client, db_session):  # noqa: F811
+        p = await _proposal(db_session, SOURCE_ONLY_STORE, 1, code=MICHELOB_CODE)
+        r = await api_client.post(f"/api/v1/proposals/{p.id}/approve", json={"scope": "shared"})
+        assert r.status_code == 422 and r.json()["error"]["detail"]["reason"] == "origin_not_physical"
+        assert await _shared_rows(db_session) == []

@@ -13,8 +13,11 @@ the question is "could the system have resolved this line from decisions made
 BEFORE this invoice?" under two policies:
 
   store_only   today's rule: only this store's own earlier decision for the code
-  shared       0038: any store's earlier decision for the code (a shared value),
-               plus vendor item links from earlier UPC entries for the same vendor
+  shared       0038: an earlier decision for the code at any PHYSICAL store (a shared
+               value), plus vendor item links from earlier UPC entries for the same
+               vendor — with the product's safeguards: a source identity's decision
+               is never shared, and a shared value whose line prints a different
+               pack count is held for the store's confirmation (needs_store_confirmation)
 
 Two timelines:
 
@@ -62,17 +65,25 @@ from app.models.product_data_proposal import (  # noqa: E402
     STATUS_APPROVED,
     ProductDataProposal,
 )
+from app.models.store import KIND_PHYSICAL  # noqa: E402
+from app.repositories.store_repository import StoreRepository  # noqa: E402
 from app.services import gtin  # noqa: E402
+from app.services.case_mapping_service import printed_disagreement  # noqa: E402
 from app.services.export_service import normalize_item_code, pdi_items  # noqa: E402
+from app.services.product_master.commercial_resolution import (  # noqa: E402
+    PATH_PRODUCT_MASTER_GLOBAL,
+    CodeResolution,
+)
 from app.services.supplier_item_context import supplier_item_ids  # noqa: E402
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
-REPLAY_VERSION = "mapping-replay-1"
+REPLAY_VERSION = "mapping-replay-2"
 
 # Line outcomes
 AUTO_STORE = "auto_same_store"
 AUTO_SHARED = "auto_shared_value"
 CONFLICT = "conflict_for_review"
+HELD = "needs_store_confirmation"
 MANUAL = "manual_mapping"
 NO_CODE = "no_usable_code"
 NOT_BARCODE = "code_not_exportable"
@@ -88,6 +99,9 @@ class Line:
     exportable: bool
     truth: int | None
     upc_entry: tuple[str, str] | None     # (vendor code, entered code) when a person typed this line's UPC
+    physical: bool = True
+    pack_size: str | None = None
+    description: str | None = None
 
 
 @dataclass
@@ -116,6 +130,7 @@ class PolicyResult:
 
 async def load(session) -> tuple[list[Line], list[tuple[datetime, str, str, int]]]:
     inactive = list(INACTIVE_DOCUMENT_STATUSES)
+    physical_ids = {str(s.id) for s in await StoreRepository(session).list() if s.kind == KIND_PHYSICAL}
     invoices = (await session.execute(
         select(Invoice).join(Document, Document.id == Invoice.document_id)
         .where(Invoice.store_id.isnot(None), Document.status.notin_(inactive))
@@ -139,7 +154,9 @@ async def load(session) -> tuple[list[Line], list[tuple[datetime, str, str, int]
             lines.append(Line(str(inv.id), inv.created_at, str(inv.store_id),
                               str(inv.vendor_id) if inv.vendor_id else None, code,
                               gtin.classify(item.product_sku).exportable,
-                              truth.get((str(inv.store_id), code)) if code else None, entry))
+                              truth.get((str(inv.store_id), code)) if code else None, entry,
+                              physical=str(inv.store_id) in physical_ids, pack_size=item.pack_size,
+                              description=item.description))
     decisions: list[tuple[datetime, str, str, int]] = []
     approved = (await session.execute(select(ProductDataProposal).where(
         ProductDataProposal.entity_type == ENTITY_CASE_MAPPING, ProductDataProposal.status == STATUS_APPROVED,
@@ -152,7 +169,7 @@ async def load(session) -> tuple[list[Line], list[tuple[datetime, str, str, int]
         if (str(m.store_id), m.item_code) not in with_proposal:
             decisions.append((m.created_at, str(m.store_id), m.item_code, m.units_per_case))
     decisions.sort(key=lambda d: (d[0], d[1], d[2]))
-    return lines, decisions
+    return lines, [d + (d[1] in physical_ids,) for d in decisions]
 
 
 def _judge(result: PolicyResult, value: int, truth: int | None) -> None:
@@ -170,17 +187,18 @@ def replay(lines: list[Line], decisions, *, timeline: str) -> dict[str, dict]:
         by_invoice[line.invoice_id].append(line)
     order = sorted(by_invoice, key=lambda i: (by_invoice[i][0].at, i))
 
-    def learn(store: str, code: str, value: int) -> None:
+    def learn(store: str, code: str, value: int, physical: bool) -> None:
         known_store[(store, code)] = value
-        known_code[code][store] = value
+        if physical:                      # only a physical store's decision is ever shared
+            known_code[code][store] = value
 
     for invoice_id in order:
         group = by_invoice[invoice_id]
         at = group[0].at
         if timeline == "recorded":
             while pending and pending[0][0] < at:
-                _, store, code, value = pending.pop(0)
-                learn(store, code, value)
+                _, store, code, value, physical = pending.pop(0)
+                learn(store, code, value, physical)
         for line in group:
             for name, result in policies.items():
                 if line.upc_entry is not None:
@@ -202,11 +220,17 @@ def replay(lines: list[Line], decisions, *, timeline: str) -> dict[str, dict]:
                     result.outcomes[AUTO_STORE] += 1
                     _judge(result, own, line.truth)
                     continue
-                if name == "shared":
+                if name == "shared" and line.physical:
                     values = {v for s, v in known_code.get(line.code, {}).items() if s != line.store_id}
                     if len(values) == 1:
+                        value = next(iter(values))
+                        if printed_disagreement(CodeResolution(line.code, PATH_PRODUCT_MASTER_GLOBAL, value),
+                                                line.pack_size, line.description):
+                            result.outcomes[HELD] += 1
+                            result.manual_work_items.add((line.store_id, line.code))
+                            continue
                         result.outcomes[AUTO_SHARED] += 1
-                        _judge(result, next(iter(values)), line.truth)
+                        _judge(result, value, line.truth)
                         continue
                     if len(values) > 1:
                         result.outcomes[CONFLICT] += 1
@@ -217,7 +241,7 @@ def replay(lines: list[Line], decisions, *, timeline: str) -> dict[str, dict]:
         if timeline == "steady_state":
             for line in group:
                 if line.code and line.truth is not None:
-                    learn(line.store_id, line.code, line.truth)
+                    learn(line.store_id, line.code, line.truth, line.physical)
         for line in group:
             if line.upc_entry is not None and line.vendor_id:
                 known_vendor.setdefault((line.vendor_id, line.upc_entry[0]), line.upc_entry[1])

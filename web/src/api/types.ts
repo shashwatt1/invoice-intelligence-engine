@@ -493,6 +493,7 @@ export type CommercialResolutionPath =
   | "PRODUCT_MASTER_GLOBAL"
   | "LEGACY_FALLBACK"
   | "REQUIRES_MAPPING"
+  | "SHARED_NEEDS_STORE_CONFIRMATION"
   | "CONFLICT";
 
 export interface CaseMappingRow {

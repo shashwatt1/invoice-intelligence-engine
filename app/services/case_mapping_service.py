@@ -25,6 +25,9 @@ from app.services.export_service import (
     suggest_units_per_case,
 )
 from app.services.product_master.commercial_resolution import (
+    PATH_PRODUCT_MASTER_GLOBAL,
+    PATH_SHARED_UNCONFIRMED,
+    CodeResolution,
     CommercialResolution,
     resolve_store_codes,
 )
@@ -123,8 +126,57 @@ async def invoice_units_by_item_code(
     return (await invoice_commercial_resolution(session, invoice)).units
 
 
+def printed_disagreement(line: CodeResolution | None, pack_size: str | None,
+                         description: str | None) -> str | None:
+    """
+    Why a value decided for every store must not be used on this line yet:
+    the store has no value of its own for the item, and the line's printed
+    pack states a different count. None when it may be used.
+
+    The C-18 shape the replay found (MICHELOB ULTRA / TWISTED TEA C-18 12OZ):
+    the shared value says 1 (the case is the selling unit) while one store
+    holds 18. Both readings fit the printed "C-18", so the store decides once
+    — by confirming the shared value or recording its own as an override.
+    """
+    if line is None or line.path != PATH_PRODUCT_MASTER_GLOBAL or line.legacy_units is not None:
+        return None
+    units = line.units_per_case
+    printed, source = suggest_units_per_case(pack_size, description)
+    if source in ("pack_size", "description") and printed is not None and printed != units:
+        return (f"the invoice prints {printed} per case and {line.scope_label or 'the shared value'} says {units}; "
+                "this store has not decided this item — confirm the shared value or record its own")
+    if source == "description_ambiguous":
+        candidates = pack_candidates(description)
+        if candidates and units not in candidates:
+            return (f"the invoice's pack reads as {' or '.join(map(str, candidates))} and "
+                    f"{line.scope_label or 'the shared value'} says {units}; confirm it for this store")
+    return None
+
+
+def guard_printed_packs(resolution: CommercialResolution, items) -> CommercialResolution:
+    """The resolution with every code whose shared value disagrees with a printed pack held back."""
+    held: dict[str, str] = {}
+    for item in items:
+        code = normalize_item_code(item.product_sku)
+        reason = printed_disagreement(resolution.lines.get(code or ""), item.pack_size, item.description)
+        if code and reason and code not in held:
+            held[code] = reason
+    for code, reason in held.items():
+        line = resolution.lines[code]
+        resolution.lines[code] = CodeResolution(
+            code, PATH_SHARED_UNCONFIRMED, None, mapping_id=line.mapping_id, product_id=line.product_id,
+            scope_store_id=line.scope_store_id, scope_label=line.scope_label, legacy_units=None,
+            notes=(reason,) + line.notes,
+        )
+    return resolution
+
+
 async def invoice_commercial_resolution(session: AsyncSession, invoice: Invoice) -> CommercialResolution:
-    """Every item code on this invoice, resolved — with the path each took."""
+    """
+    Every item code on this invoice, resolved — with the path each took, and a
+    shared value held back where this invoice's printed pack disagrees with it
+    and the store never decided the item (guard_printed_packs).
+    """
     if invoice.store_id is None:
         return CommercialResolution()               # STORE_PENDING: no store, no mappings
     codes = [
@@ -132,7 +184,8 @@ async def invoice_commercial_resolution(session: AsyncSession, invoice: Invoice)
         for code in (normalize_item_code(item.product_sku) for item in invoice.items)
         if code
     ]
-    return await resolve_store_codes(session, invoice.store_id, codes)
+    resolution = await resolve_store_codes(session, invoice.store_id, codes)
+    return guard_printed_packs(resolution, pdi_items(invoice))
 
 
 def build_case_mapping_status(

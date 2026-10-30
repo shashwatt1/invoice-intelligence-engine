@@ -27,6 +27,9 @@ Per item code, in this fixed order:
                                      exactly as the live export used it before
   4. REQUIRES_MAPPING                nothing above: the line enters the
                                      existing Requires Mapping workflow
+  -  SHARED_NEEDS_STORE_CONFIRMATION  a shared/global value at a store with no value of its
+                                     own, whose printed pack disagrees — applied per invoice line
+                                     in case_mapping_service, never chosen silently
   -  CONFLICT                        two approved Product Master mappings
                                      disagree (a physical-store override vs the
                                      global mapping, or two in one scope). Nothing is chosen; the
@@ -90,6 +93,10 @@ PATH_PRODUCT_MASTER_GLOBAL = "PRODUCT_MASTER_GLOBAL"
 PATH_LEGACY_FALLBACK = "LEGACY_FALLBACK"
 PATH_REQUIRES_MAPPING = "REQUIRES_MAPPING"
 PATH_CONFLICT = "CONFLICT"
+# A value decided for every store, used at a store that never decided the item itself,
+# where the invoice line's printed pack states a different count (the C-18 shape: printed
+# 18, shared 1). Not used until that store confirms or overrides it (case_mapping_service).
+PATH_SHARED_UNCONFIRMED = "SHARED_NEEDS_STORE_CONFIRMATION"
 PRODUCT_MASTER_PATHS = frozenset({PATH_PRODUCT_MASTER_PHYSICAL, PATH_PRODUCT_MASTER_GLOBAL})
 
 # Where a line's normalized product name came from. Never PDI: the
@@ -354,7 +361,9 @@ async def resolve_store_codes(
             physical=by_scope.get((physical.store_id, c), []) if physical else [],
             global_=by_scope.get((global_.store_id, c), []) if global_ else [],
             legacy_units=legacy.get(c), physical_scope=physical, global_scope=global_,
-            shared=by_scope.get((SHARED_SCOPE_ID, c), []),
+            # A shared value is one decision for every PHYSICAL store; a source identity's
+            # invoice never resolves from it.
+            shared=by_scope.get((SHARED_SCOPE_ID, c), []) if physical else [],
         )
     fallback = sorted(c for c, r in resolution.lines.items() if r.path == PATH_LEGACY_FALLBACK)
     logger.info(

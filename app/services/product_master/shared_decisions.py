@@ -282,6 +282,12 @@ async def set_shared_value(
             detail={"reason": "open_candidate_differs", "item_code": item_code,
                     "candidates": {str(c.id): c.units_accounted_for for c in disagreeing}},
         )
+    if origin_store_id is not None and origin_store_id not in await _physical_labels(session):
+        raise SharedDecisionRefusedError(
+            message=("Only a physical store's decision can become the shared value; this invoice is not "
+                     "assigned to a physical store. Approve it for this store only."),
+            detail={"reason": "origin_not_physical", "store_id": str(origin_store_id)},
+        )
     origin = st.stores.get(origin_store_id) if origin_store_id else None
     if origin is not None and origin.source != "store mapping" and origin.units != units:
         raise SharedDecisionRefusedError(

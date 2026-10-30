@@ -33,6 +33,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice
 from app.repositories.document_repository import document_is_active
+from app.services.case_mapping_service import printed_disagreement
 from app.services.export_service import normalize_item_code, pdi_items
 from app.services.product_master.commercial_resolution import resolve_store_codes
 from app.services.proposal_service import pending_by_item_code
@@ -96,18 +97,23 @@ async def list_unresolved_mapping_groups(
 
     # The same resolution the export gate uses, so a line the export accepts
     # is never listed here and a line it blocks always is.
-    mapped_by_store: dict[uuid.UUID, dict[str, int]] = {
-        store: (await resolve_store_codes(session, store, sorted(codes))).units
+    resolved_by_store = {
+        store: await resolve_store_codes(session, store, sorted(codes))
         for store, codes in codes_by_store.items()
     }
+    mapped_by_store: dict[uuid.UUID, dict[str, int]] = {store: r.units for store, r in resolved_by_store.items()}
 
     occurrences_by_key: dict[tuple[uuid.UUID, str], list[UnresolvedMappingOccurrence]] = {}
     description_by_key: dict[tuple[uuid.UUID, str], str | None] = {}
     for invoice in invoices:
         mapped = mapped_by_store.get(invoice.store_id, {})
+        resolution = resolved_by_store.get(invoice.store_id)
         for item in pdi_items(invoice):
             code = normalize_item_code(item.product_sku)
-            if code is None or code in mapped:
+            if code is None:
+                continue
+            if code in mapped and not printed_disagreement(
+                    resolution.lines.get(code) if resolution else None, item.pack_size, item.description):
                 continue
             key = (invoice.store_id, code)
             occurrences_by_key.setdefault(key, []).append(UnresolvedMappingOccurrence(

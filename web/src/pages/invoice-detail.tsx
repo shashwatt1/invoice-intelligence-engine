@@ -328,8 +328,8 @@ const onlyDigits = (value: string | null | undefined) => (value ?? "").replace(/
  * is revalidated, and export eligibility is recomputed. Nothing is completed,
  * padded or composed automatically. Rows with a complete UPC render as before.
  */
-function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
-  invoiceId: string; item: LineItem; serial: number; by: string; readOnly: boolean;
+function EditableUpc({ invoiceId, item, serial, by, readOnly, vendorName = null }: {
+  invoiceId: string; item: LineItem; serial: number; by: string; readOnly: boolean; vendorName?: string | null;
 }) {
   const cutOff = item.product_code_cut_off ?? null;
   const unusable = cutOff ? null : item.product_code_unusable ?? null;
@@ -363,7 +363,7 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
     correct.mutate(
       { sortOrder: item.sort_order,
         correction: { product_code: value, corrected_by: by.trim() || null,
-                      ...(vendorCode && remember ? { remember_vendor_item: true } : {}) } },
+                      ...(vendorCode && vendorName && remember ? { remember_vendor_item: true } : {}) } },
       {
         onSuccess: (result) => {
           setEditing(false);
@@ -414,11 +414,12 @@ function EditableUpc({ invoiceId, item, serial, by, readOnly }: {
           </Button>
         </div>
         {itemContext}
-        {vendorCode ? (
+        {vendorCode && vendorName ? (
           <label className="t-meta flex items-center gap-1.5" data-testid="remember-vendor-item">
             <Checkbox checked={remember} onCheckedChange={(v) => setRemember(v === true)} disabled={correct.isPending}
                       aria-label="Remember this UPC for the vendor's item number" />
-            Remember for this vendor&apos;s item {vendorCode}: later invoices get this UPC automatically
+            Remember for {vendorName}&apos;s item {vendorCode}: later invoices from this vendor get this UPC
+            automatically. Check the vendor name first.
           </label>
         ) : null}
         {unusable ? (
@@ -888,7 +889,8 @@ function DetailBody({ detail, by, setBy }: { detail: InvoiceDetail; by: string; 
                             ) : null}
                           </TableCell>
                           <TableCell className={cn(CELL, "t-mono pr-1 text-muted-foreground")}>
-                            <EditableUpc invoiceId={detail.invoice_id} item={item} serial={serial} by={by} readOnly={!canEdit} />
+                            <EditableUpc invoiceId={detail.invoice_id} item={item} serial={serial} by={by} readOnly={!canEdit}
+                                         vendorName={detail.vendor ? vendorEyebrow(detail.vendor) : null} />
                           </TableCell>
                           <TableCell className={cn(CELL, "text-right tabular-nums")}>
                             <EditableAmount invoiceId={detail.invoice_id} item={item} field="unit_price" by={by} readOnly={!canEdit}
