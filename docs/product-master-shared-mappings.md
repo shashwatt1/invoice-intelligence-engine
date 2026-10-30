@@ -131,7 +131,12 @@ the EDI and the inventory receipt without anyone deciding it).
 
 `docs/sql/product-master-0038-readiness.sql`: seven `SELECT` statements, no writes, counts / item codes /
 store and vendor names only. Written for revision 0037 (before the migration). Run each block separately in
-the Supabase SQL editor. Tested only on local databases; **never run by me against production.**
+the Supabase SQL editor. **Block 5 below is superseded** by blocks 5b and 8 of
+`docs/sql/product-master-0038-readiness-followup.sql`, which also adds block 9 (C-18 packs), 10 (line list),
+11 (row counts), 12 (retailed invoices with 12-digit codes), 13 / 13b (content and collation-proof schema
+fingerprints for backup comparison) and 14 (lines resting only on the global value). Every block is a
+single read-only `SELECT`; `tests/integration/test_readiness_sql_db.py` keeps the SQL consistent with the
+application's own classifier.
 
 | Block | Establishes | Cannot establish |
 |---|---|---|
@@ -139,7 +144,7 @@ the Supabase SQL editor. Tested only on local databases; **never run by me again
 | 2 candidates by state | How much distributor evidence is approved vs awaiting review. | Whether review is worth doing. |
 | 3 global vs store disagreement | Lines that **become CONFLICT after deploy** (an approved global value that silently won before now waits for a person). Each row is a decision for the data team. | Which value is right; only the paper/distributor can say. |
 | 4 cross-store differences | The items the new "different approved values" panel will list (e.g. the 18-pack pattern). | Whether a difference is a mistake or a genuine store difference. |
-| 5 blocked open invoices | Open, unexported invoices whose lines the new gate blocks, by vendor and code shape. 12-digit check digits are computed; 13/14-digit shapes are bucketed by prefix only (the application performs the full check). | Which are real merchandise vs service (see §6a); invoices already exported are excluded. |
+| 5 blocked open invoices (superseded by 5b / 8) | Open, unexported invoices whose lines the new gate blocks, by vendor and code shape. 12-digit check digits are computed; 13/14-digit shapes are bucketed by prefix only (the application performs the full check). | Which are real merchandise vs service (see §6a); invoices already exported are excluded. |
 | 6 repeated work | How many item codes are mapped separately at 2+ stores today. This is the work shared values remove. | How often it recurs (needs the replay on a copy). |
 | 7 holder present | The Item Sales 47708760 record exists and is not a physical store (the application refuses a physical holder). | The `PRODUCT_MASTER_COMMERCIAL_RESOLUTION` setting (an environment variable, not in the database). |
 

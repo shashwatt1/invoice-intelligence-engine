@@ -35,7 +35,9 @@ WHERE s.display_name IS NOT NULL
 GROUP BY m.item_code HAVING count(DISTINCT m.units_per_case) > 1
 ORDER BY 1;
 
--- 5. Open invoices the new item-code export gate will block (not yet exported, active):
+-- 5. SUPERSEDED by blocks 5b and 8 in product-master-0038-readiness-followup.sql. This block treats every 13/14-digit
+--    code as affected, including valid 0- and 00-prefixed UPC-A wrappers that still export. Do not use its result.
+--    (original wording) Open invoices the new item-code export gate will block (not yet exported, active):
 --    product lines whose printed code is not a barcode PDI can use. By vendor and code shape.
 WITH lines AS (
   SELECT coalesce(v.display_name, v.name, '(no vendor)') AS vendor, i.id AS invoice_id,
