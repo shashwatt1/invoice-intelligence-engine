@@ -296,16 +296,16 @@ class TestStoreBalances:
         assert [(h["movement_type"], Decimal(h["quantity"])) for h in history] == [("OPENING_COUNT", 10), ("RECEIPT", 36)]
         assert history[1]["invoice_number"] == "INV-001"
 
-        # A source identity, and a physical store without a grant, are the same 404 (nothing revealed).
+        # A source identity is a 404 (nothing revealed); an administrator reaches any active physical store.
         source_identity = await api_client.get(f"/api/v1/inventory/stores/{store_id('47708760')}/items")
         assert source_identity.status_code == 404
         assert source_identity.json()["error"]["message"] == "Store not found."
 
         other = await StoreRepository(db_session).create(display_name="AF Other Street")
         await db_session.commit()
-        assert (await api_client.get(f"/api/v1/inventory/stores/{other.id}/items")).status_code == 404
-        await grant(db_session, "ADMIN", other.id)
+        # An administrator needs no grant for an active physical store; an unknown id is still the one 404.
         assert (await api_client.get(f"/api/v1/inventory/stores/{other.id}/items")).json()["total"] == 0
+        assert (await api_client.get(f"/api/v1/inventory/stores/{uuid.uuid4()}/items")).status_code == 404
 
 
 class TestStoreFilters:

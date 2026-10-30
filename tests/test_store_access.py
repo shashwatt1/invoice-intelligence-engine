@@ -2,9 +2,9 @@
 tests/test_store_access.py — per-user physical-store access for inventory (no DB).
 
 The rule: an account uses inventory for a store only while it is active,
-MANAGER or above, the store is physical, and it holds an active grant. There
-is no implicit all-store access for any role. Refusals never reveal whether a
-store exists. Grants and revocations are made by an active ADMIN with a reason
+MANAGER or above and the store is physical; a MANAGER also needs an active
+grant, an ADMIN needs none for any ACTIVE physical store. Refusals never
+reveal whether a store exists. Grants and revocations are made by an active ADMIN with a reason
 and kept as immutable history.
 
 What needs Postgres (grant rows, locks, the partial unique index, revocation
@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.exceptions import PermissionDeniedError, RecordNotFoundError, ValidationError
-from app.models.store import KIND_PHYSICAL, KIND_SOURCE_IDENTITY
+from app.models.store import KIND_PHYSICAL, KIND_SOURCE_IDENTITY, STATUS_ACTIVE
 from app.models.user_store_access import (
     REVOCATION_FIELDS,
     ImmutableGrantError,
@@ -54,9 +54,9 @@ class TestTheRoleRule:
 class _Lookups:
     """Stands in for the grant query and the store repository, and records what was looked up."""
 
-    def __init__(self, monkeypatch, *, grant=True, store_kind=KIND_PHYSICAL, store_exists=True):
+    def __init__(self, monkeypatch, *, grant=True, store_kind=KIND_PHYSICAL, store_exists=True, status=STATUS_ACTIVE):
         self.grant_lookups, self.store_lookups = [], []
-        store = SimpleNamespace(id=STORE_ID, kind=store_kind, label="AF Fixture Store")
+        store = SimpleNamespace(id=STORE_ID, kind=store_kind, label="AF Fixture Store", status=status)
 
         async def active_grant(_session, user_id, store_id):
             self.grant_lookups.append((user_id, store_id))
@@ -82,13 +82,28 @@ class TestEnsureStoreAccess:
         lookups = _Lookups(monkeypatch)
         assert await sa.ensure_store_access(object(), account("MANAGER"), STORE_ID) is lookups.store
 
-    async def test_a_granted_administrator_gets_it_too_and_an_ungranted_one_does_not(self, monkeypatch):
-        _Lookups(monkeypatch)
-        assert (await sa.ensure_store_access(object(), account("ADMIN"), STORE_ID)).id == STORE_ID
+    async def test_an_administrator_needs_no_grant_for_an_active_physical_store(self, monkeypatch):
         lookups = _Lookups(monkeypatch, grant=False)
+        assert (await sa.ensure_store_access(object(), account("ADMIN"), STORE_ID)).id == STORE_ID
+        assert lookups.grant_lookups == []           # no grant is consulted: the role decides
+
+    async def test_a_manager_without_a_grant_is_still_refused(self, monkeypatch):
+        _Lookups(monkeypatch, grant=False)
+        with pytest.raises(RecordNotFoundError):
+            await sa.ensure_store_access(object(), account("MANAGER"), STORE_ID)
+
+    async def test_an_administrator_is_still_refused_a_source_identity_and_an_unknown_store(self, monkeypatch):
+        for kwargs in ({"store_kind": KIND_SOURCE_IDENTITY}, {"store_exists": False}):
+            _Lookups(monkeypatch, grant=True, **kwargs)
+            with pytest.raises(RecordNotFoundError):
+                await sa.ensure_store_access(object(), account("ADMIN"), STORE_ID)
+
+    async def test_an_inactive_store_needs_an_administrators_explicit_grant(self, monkeypatch):
+        _Lookups(monkeypatch, grant=False, status="inactive")
         with pytest.raises(RecordNotFoundError):
             await sa.ensure_store_access(object(), account("ADMIN"), STORE_ID)
-        assert lookups.store_lookups == []          # without a grant the store is never even loaded
+        _Lookups(monkeypatch, grant=True, status="inactive")
+        assert (await sa.ensure_store_access(object(), account("ADMIN"), STORE_ID)).id == STORE_ID
 
     @pytest.mark.parametrize("case", ["no_grant", "source_identity", "unknown_store"])
     async def test_every_refusal_is_the_same_404_and_reveals_nothing(self, monkeypatch, case):
@@ -114,7 +129,8 @@ class TestEnsureStoreAccess:
         assert await sa.has_store_access(object(), account("USER"), STORE_ID) is False
         assert await sa.has_store_access(object(), account("MANAGER"), None) is False
         _Lookups(monkeypatch, grant=False)
-        assert await sa.has_store_access(object(), account("ADMIN"), STORE_ID) is False
+        assert await sa.has_store_access(object(), account("MANAGER"), STORE_ID) is False
+        assert await sa.has_store_access(object(), account("ADMIN"), STORE_ID) is True       # no grant needed
         _Lookups(monkeypatch, store_kind=KIND_SOURCE_IDENTITY)
         assert await sa.has_store_access(object(), account("ADMIN"), STORE_ID) is False
 
@@ -262,7 +278,7 @@ class TestEveryInventoryPathIsAuthorized:
 
     def test_every_store_route_checks_access_and_every_invoice_route_passes_the_account(self):
         routes = self._routes()
-        assert len(routes) == 15, [r[1] for r in routes]
+        assert len(routes) == 16, [r[1] for r in routes]
         for _verb, path, name, body in routes:
             if path.endswith("/approvals"):
                 assert "approval.pending_approvals(db, store_id, user)" in body, name   # authorized in the service
