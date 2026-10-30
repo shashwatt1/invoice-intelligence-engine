@@ -181,7 +181,7 @@ class TestExportGate:
     def test_a_corrected_code_is_eligible_again(self):
         inv = _invoice([_item(0, "0-12000-1263")])
         assert pdi_export_eligibility(inv, _units(inv)).allowed is False
-        inv.items[0].product_sku = "0-12000-12630-0"
+        inv.items[0].product_sku = "0-12000-12630-7"
         assert pdi_export_eligibility(inv, _units(inv)).allowed is True
 
 

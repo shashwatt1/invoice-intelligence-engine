@@ -53,6 +53,8 @@ import {
   getReceiptPreview,
   getVendor,
   listCommercialCandidates,
+  listCrossStoreDifferences,
+  resolveCrossStoreDifference,
   listIdentityUnresolved,
   listInventoryItems,
   listInventoryStores,
@@ -124,6 +126,7 @@ import type {
   StoreIdentityUpdate,
   UserRole,
   VendorListParams,
+  DifferenceResolutionRequest,
 } from "@/api/types";
 
 export function useDashboard() {
@@ -988,4 +991,26 @@ export function useSupplyOptions({ enabled = true }: { enabled?: boolean } = {})
 export function useSupply(params: SupplyParams, { enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({ queryKey: ["inventory", "supply", params], queryFn: () => listSupply(params), enabled,
                     placeholderData: (prev) => prev });
+}
+
+/** Items whose approved units-per-case disagree between stores or with the shared value. */
+export function useCrossStoreDifferences() {
+  return useQuery({
+    queryKey: ["product-master", "differences"],
+    queryFn: listCrossStoreDifferences,
+  });
+}
+
+/** Settle one difference: one shared value, explicit store exceptions. */
+export function useResolveCrossStoreDifference() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ itemCode, body }: { itemCode: string; body: DifferenceResolutionRequest }) =>
+      resolveCrossStoreDifference(itemCode, body),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["product-master"] });
+      void queryClient.invalidateQueries({ queryKey: ["proposals"] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+  });
 }

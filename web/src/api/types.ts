@@ -290,6 +290,8 @@ export interface LineItem {
   product_code_cut_off?: string | null;
   /** True when this product row has no resolved UPC (the export gate's test); a manager enters it. */
   product_code_missing?: boolean;
+  /** Why the row's code cannot be sent as a PDI item code (a vendor item number, a non-UPC barcode). */
+  product_code_unusable?: string | null;
   /** The supplier's own item number (e.g. Frito-Lay ITEM), display context only — never a UPC. */
   supplier_item_id?: string | null;
   /** The product's normalized name: the Product Master canonical description when one exists,
@@ -491,6 +493,7 @@ export type CommercialResolutionPath =
   | "PRODUCT_MASTER_GLOBAL"
   | "LEGACY_FALLBACK"
   | "REQUIRES_MAPPING"
+  | "SHARED_NEEDS_STORE_CONFIRMATION"
   | "CONFLICT";
 
 export interface CaseMappingRow {
@@ -548,6 +551,8 @@ export interface LineItemCorrection {
   /** Who and why — recorded on the row's history. */
   corrected_by?: string | null;
   note?: string | null;
+  /** With product_code: confirm the UPC for this vendor's item number, so later invoices get it. */
+  remember_vendor_item?: boolean;
 }
 
 /** One manual change in a row's or the invoice's history. */
@@ -620,7 +625,16 @@ export interface InvoiceTotalsCorrectionResult {
   pdi_export_blocked_reason: string | null;
 }
 
+/** The vendor item link a UPC entry confirmed, and the vendor's other open invoices it filled. */
+export interface VendorItemRemembered {
+  vendor_item_code: string;
+  item_code: string;
+  link_id: string;
+  applied_to_invoice_ids: string[];
+}
+
 export interface LineItemCorrectionResult {
+  vendor_item_link?: VendorItemRemembered | null;
   item: {
     sort_order: number;
     description: string;
@@ -823,14 +837,25 @@ export interface ProposalDetail extends ProposalRow {
 }
 
 /** The reviewer is always the signed-in account; the server ignores any name sent. */
+/** "store": this store only. "shared": the value every physical store resolves from. */
+export type DecisionScope = "store" | "shared";
+
 export interface ProposalDecision {
   reviewed_by?: string;
   note?: string | null;
+  scope?: DecisionScope;
+  /** Store scope: record this store's value as a deliberate exception to the shared value. */
+  override_reason?: string | null;
+  /** Shared scope: stores already holding a different value keep it as a recorded override. */
+  keep_store_values?: boolean;
 }
 
 export interface ProposalDecisionResult {
   proposal: ProposalDetail;
   applied_to: string | null;
+  shared_mapping_id?: string | null;
+  overrides_recorded?: number;
+  notes?: string[];
 }
 
 /** Body of POST /proposals/bulk-approve and /bulk-reject — the table's
@@ -839,6 +864,8 @@ export interface BulkProposalDecision {
   proposal_ids: string[];
   reviewed_by?: string;
   note?: string | null;
+  scope?: DecisionScope;
+  keep_store_values?: boolean;
 }
 
 export interface BulkDecisionOutcome {
@@ -1080,10 +1107,14 @@ export interface CommercialCandidateRow {
   product_name_variants: ProductNameVariant[];
   canonical_identifier: string | null;
   pdi_item_code: string | null;
-  store_id: string;
+  /** null: a shared value for every physical store. */
+  store_id: string | null;
   store_label: string;
   store_identity_status: string;
-  store_kind?: "physical" | "source_identity";
+  store_kind?: "physical" | "source_identity" | "shared";
+  /** A store's deliberate exception to the shared value. */
+  override_reason?: string | null;
+  source_system?: string | null;
   store_source_identity?: SourceIdentityRef | null;
   commercial_unit_basis: string;
   units_accounted_for: number | null;
@@ -1520,4 +1551,36 @@ export interface RestoreResult {
   entry: RecycleBinEntry;
   document_status: DocumentStatus;
   as_reference: boolean;
+}
+
+/** One store's approved units-per-case for an item, and where it is recorded. */
+export interface StoreValue {
+  store_id: string;
+  store: string;
+  units: number;
+  source: string;
+  override_reason?: string | null;
+}
+
+/** An item whose approved values disagree between stores or with the shared value. */
+export interface CrossStoreDifference {
+  item_code: string;
+  shared_units: number | null;
+  distinct_values: number[];
+  stores: StoreValue[];
+  overrides: StoreValue[];
+}
+
+export interface DifferenceResolutionRequest {
+  units: number;
+  keep_store_ids: string[];
+  note: string;
+}
+
+export interface DifferenceResolutionResult {
+  item_code: string;
+  units: number;
+  shared_mapping_id: string;
+  adopted_store_ids: string[];
+  kept_store_ids: string[];
 }

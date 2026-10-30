@@ -126,6 +126,7 @@ class ProductDataProposalRepository:
         source_file: str | None = None,
         source_sheet: str | None = None,
         source_row: int | None = None,
+        vendor_id: uuid.UUID | None = None,
     ) -> ProductDataProposal:
         """
         Record a new PENDING proposal.
@@ -146,6 +147,8 @@ class ProductDataProposalRepository:
                 ProductDataProposal.entity_key == entity_key,
                 ProductDataProposal.field == field,
                 ProductDataProposal.status == STATUS_PENDING,
+                (ProductDataProposal.vendor_id == vendor_id) if vendor_id is not None
+                else ProductDataProposal.vendor_id.is_(None),
             )
         )
         for row in existing.scalars():
@@ -168,6 +171,7 @@ class ProductDataProposalRepository:
             reason=reason,
             proposed_by=proposed_by,
             status=STATUS_PENDING,
+            vendor_id=vendor_id,
         )
         self._session.add(proposal)
         await self._session.flush()

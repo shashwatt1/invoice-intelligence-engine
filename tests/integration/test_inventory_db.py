@@ -54,7 +54,7 @@ from tests.pdf_builder import build_pdf
 pytestmark = requires_db
 
 STORE = "86357232"
-LAGER, ALE, SHORTED = "999000000015", "999000000022", "999000000039"
+LAGER, ALE, SHORTED = "999000000014", "999000000021", "999000000038"
 LAGER_CODE, ALE_CODE = "99900000001", "99900000002"
 
 
@@ -278,7 +278,7 @@ class TestStoreBalances:
 
         counts_url = f"/api/v1/inventory/stores/{received.store_id}/opening-counts"
         body = {"count_date": "2026-10-01", "reason": "full shelf count, two people",
-                "entries": [{"item_code": "999000000015", "quantity": 10, "description": "NORTHWIND LAGER 12PK"}]}
+                "entries": [{"item_code": "999000000014", "quantity": 10, "description": "NORTHWIND LAGER 12PK"}]}
         r = await api_client.post(counts_url, json=body)
         assert r.status_code == 201 and r.json()["data"] == {"recorded": 1}
         again = await api_client.post(counts_url, json=body)

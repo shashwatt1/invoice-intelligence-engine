@@ -109,7 +109,7 @@ def world(app, monkeypatch):
                 lines[c] = cr.CodeResolution(c, cr.PATH_REQUIRES_MAPPING, None)
         return cr.CommercialResolution(lines, enabled=True)
 
-    async def approve(_db, p, *, reviewed_by, note=None):
+    async def approve(_db, p, *, reviewed_by, note=None, **_scope):
         calls.append(("approve", p.id, reviewed_by))
         p.status, p.reviewed_by = "APPROVED", reviewed_by
         return SimpleNamespace(proposal=p, applied_to=f"product_case_mappings:{p.store_id}:{p.entity_key}")
@@ -118,7 +118,7 @@ def world(app, monkeypatch):
         calls.append(("reject", p.id, reviewed_by))
         p.status, p.reviewed_by = "REJECTED", reviewed_by
 
-    async def decide_many(_db, ps, *, approve_them, reviewed_by, note=None):
+    async def decide_many(_db, ps, *, approve_them, reviewed_by, note=None, **_scope):
         calls.append(("decide_many", [p.id for p in ps], approve_them, reviewed_by))
         for p in ps:
             p.status, p.reviewed_by = ("APPROVED" if approve_them else "REJECTED"), reviewed_by

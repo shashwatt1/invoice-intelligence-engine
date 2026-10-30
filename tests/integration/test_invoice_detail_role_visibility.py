@@ -178,7 +178,9 @@ class TestManagerResponseShape:
 
         # EDI readiness.
         assert data["pdi_export_allowed"] is False
-        assert "mapping" in data["pdi_export_blocked_reason"].lower()
+        # The fixture prints 8-digit vendor ITEM numbers where a UPC belongs: since 0038 that blocks
+        # export before the mapping gate is reached (a vendor number is never sent as an item code).
+        assert "cannot be sent as a pdi item code" in data["pdi_export_blocked_reason"].lower()
 
     async def test_manager_response_never_contains_admin_developer_diagnostics(
         self, app, api_client, db_session  # noqa: F811
@@ -230,7 +232,9 @@ class TestUserResponseShape:
         assert all(row["mapped"] is False for row in data["case_mappings"])
 
         assert data["pdi_export_allowed"] is False
-        assert "mapping" in data["pdi_export_blocked_reason"].lower()
+        # The fixture prints 8-digit vendor ITEM numbers where a UPC belongs: since 0038 that blocks
+        # export before the mapping gate is reached (a vendor number is never sent as an item code).
+        assert "cannot be sent as a pdi item code" in data["pdi_export_blocked_reason"].lower()
 
     async def test_user_response_never_contains_admin_developer_diagnostics(
         self, app, api_client, db_session  # noqa: F811

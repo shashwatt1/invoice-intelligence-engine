@@ -107,6 +107,8 @@ function ResolutionNote({ row }: { row: CaseMappingRow }) {
     return <div className="t-meta truncate" data-testid="resolution-note">Product Master · store override ({scope})</div>;
   if (row.resolution_path === "PRODUCT_MASTER_GLOBAL")
     return <div className="t-meta truncate" data-testid="resolution-note" title={scope}>Product Master · Global</div>;
+  if (row.resolution_path === "SHARED_NEEDS_STORE_CONFIRMATION")
+    return <div className="text-warning truncate text-[0.72rem]" data-testid="resolution-note" title={row.resolution_notes?.join("; ")}>Shared value differs from the printed pack — confirm it for this store</div>;
   if (row.resolution_path === "CONFLICT")
     return <div className="text-danger truncate text-[0.72rem]" data-testid="resolution-note" title={row.resolution_notes?.join("; ")}>Store override and global mapping disagree — needs a decision</div>;
   if (row.resolution_path === "LEGACY_FALLBACK" && row.resolution_notes?.length)

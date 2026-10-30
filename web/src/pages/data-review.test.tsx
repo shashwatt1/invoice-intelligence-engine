@@ -226,11 +226,12 @@ describe("bulk approve", () => {
 
     await waitFor(() => expect(bulkApprove).toHaveBeenCalledTimes(1));
     expect(bulkApprove).toHaveBeenCalledWith({
-      proposal_ids: [A.id, B.id], reviewed_by: "barj", note: null,
+      // Approvals default to the shared value every store uses (0038).
+      proposal_ids: [A.id, B.id], reviewed_by: "barj", note: null, scope: "shared", keep_store_values: false,
     });
     await waitFor(() => expect(screen.queryByTestId("bulk-decision-dialog")).not.toBeInTheDocument());
     expect(screen.queryByTestId("bulk-toolbar")).not.toBeInTheDocument();
-    expect(toast.success).toHaveBeenCalledWith("Approved 2 — wrote 2 mappings.");
+    expect(toast.success).toHaveBeenCalledWith("Approved 2 for every store — wrote 2 mappings.");
   });
 
   it("reports a refused batch row by row and claims nothing", async () => {

@@ -57,10 +57,10 @@ pytestmark = requires_db
 
 NEW, OLD = "86357232", "47708760"
 
-LABATT = ("062067051468", "06206705146")     # mapped in BOTH stores, differently
-ULTRA = ("018200239865", "01820023986")      # typed items/case in the new store's reference
-BUD30 = ("018200110302", "01820011030")      # mapped in the OLD store only; retail evidence here
-BUSCH = ("018200008011", "01820000801")      # nothing in the new store; the document says 2/12
+LABATT = ("062067051463", "06206705146")     # mapped in BOTH stores, differently
+ULTRA = ("018200239861", "01820023986")      # typed items/case in the new store's reference
+BUD30 = ("018200110306", "01820011030")      # mapped in the OLD store only; retail evidence here
+BUSCH = ("018200008016", "01820000801")      # nothing in the new store; the document says 2/12
 BEATBOX = ("850059195932", "85005919593")    # nothing anywhere
 
 LINES = [

@@ -59,6 +59,10 @@ VALID_STATUSES = frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED})
 
 ENTITY_CASE_MAPPING = "case_mapping"
 FIELD_UNITS_PER_CASE = "units_per_case"
+# A vendor's item number -> the PDI item code of the product it names (0038).
+# entity_key is the vendor item number; vendor_id says whose number it is.
+ENTITY_VENDOR_ITEM = "vendor_item"
+FIELD_ITEM_CODE = "item_code"
 
 # How a proposed value was arrived at. A reviewer weighs these very
 # differently, so the vocabulary is deliberately specific.
@@ -69,10 +73,12 @@ SOURCE_BEER_INVENTORY_EXPLICIT = "beer_inventory_explicit"   # a typed items/cas
 SOURCE_BEER_INVENTORY_PACKAGE = "beer_inventory_package"     # decoded from a package string
 SOURCE_OPERATOR_ENTERED = "operator_entered"          # typed with no supporting suggestion
 SOURCE_LEGACY_MIGRATED = "legacy_migrated"            # predates this table; grandfathered
+SOURCE_CONFLICT_RESOLUTION = "conflict_resolution"    # a reviewer settled a cross-store difference
+SOURCE_UPC_ENTRY = "upc_entry"                        # a reviewer typed the UPC for a vendor item
 VALID_SOURCES = frozenset({
     SOURCE_REFERENCE_DERIVED, SOURCE_DOCUMENT_DERIVED, SOURCE_DOCUMENT_AMBIGUOUS,
     SOURCE_BEER_INVENTORY_EXPLICIT, SOURCE_BEER_INVENTORY_PACKAGE,
-    SOURCE_OPERATOR_ENTERED, SOURCE_LEGACY_MIGRATED,
+    SOURCE_OPERATOR_ENTERED, SOURCE_LEGACY_MIGRATED, SOURCE_CONFLICT_RESOLUTION, SOURCE_UPC_ENTRY,
 })
 
 LEGACY_REVIEWER = "system:legacy-migration"
@@ -104,6 +110,10 @@ class ProductDataProposal(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source_sheet: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
     invoice_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    vendor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("vendors.id", ondelete="RESTRICT"), nullable=True,
+        doc="For a vendor_item proposal: the vendor whose item number it is (0038).",
+    )
     evidence: Mapped[Any | None] = mapped_column(
         JSONB, nullable=True,
         doc="Whatever supported the value: ratio, avg_cost, package string, candidates.",

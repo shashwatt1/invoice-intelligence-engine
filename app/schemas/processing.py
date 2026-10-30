@@ -321,6 +321,12 @@ class LineItemCorrection(BaseModel):
     # Who and why. The author recorded in the history is always the signed-in
     # account; `corrected_by` is still accepted so existing clients keep working.
     corrected_by: str | None = Field(default=None, max_length=128, description="Accepted for compatibility and ignored: the signed-in account is recorded as the author.")
+    remember_vendor_item: bool = Field(
+        default=False,
+        description=("With product_code: confirm the typed UPC for this vendor's item number on the row, so "
+                     "later invoices from the vendor carrying that item number get it automatically "
+                     "(vendor item crosswalk, 0038). Needs the row's supplier item number and the invoice's vendor."),
+    )
     note: str | None = Field(default=None, max_length=500)
 
     # API field name -> ORM column. The column predates the extraction
@@ -489,6 +495,16 @@ class LineItemCorrectionResult(BaseModel):
     review_reasons: list[str] = Field(default_factory=list)
     pdi_export_allowed: bool
     pdi_export_blocked_reason: str | None = None
+    vendor_item_link: VendorItemRemembered | None = None
+
+
+class VendorItemRemembered(BaseModel):
+    """The vendor item link a UPC entry confirmed, and where else it was applied."""
+
+    vendor_item_code: str
+    item_code: str
+    link_id: uuid.UUID
+    applied_to_invoice_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -599,9 +615,26 @@ class ProposalDecision(BaseModel):
         description="Ignored. The reviewer is always the signed-in account; accepted so older clients keep working.",
     )
     note: str | None = Field(default=None, max_length=2000)
+    scope: Literal["store", "shared"] = Field(
+        default="store",
+        description=("Approve for the proposal's store only, or as the shared value every physical store "
+                     "resolves from (Product Master, 0038). Ignored on reject."),
+    )
+    override_reason: str | None = Field(
+        default=None, max_length=500,
+        description="Store scope only: record this store's value as a deliberate exception to the shared value.",
+    )
+    keep_store_values: bool = Field(
+        default=False,
+        description=("Shared scope only: stores that already hold a different approved value keep it, each "
+                     "recorded as a store override. Without it such an approval is refused."),
+    )
 
 
 class ProposalDecisionResult(BaseModel):
+    shared_mapping_id: uuid.UUID | None = Field(default=None, description="The shared value set or confirmed.")
+    overrides_recorded: int = 0
+    notes: list[str] = Field(default_factory=list)
     proposal: ProposalDetail
     applied_to: str | None = Field(
         default=None, description="e.g. 'product_case_mappings:01820011030' on approval."
@@ -610,6 +643,10 @@ class ProposalDecisionResult(BaseModel):
 
 class BulkProposalDecision(BaseModel):
     """Body of POST /proposals/bulk-approve and /bulk-reject — the review table's fast path."""
+
+    scope: Literal["store", "shared"] = Field(
+        default="store", description="As on a single approval; applies to every units-per-case row.")
+    keep_store_values: bool = Field(default=False, description="As on a single approval.")
 
     proposal_ids: list[uuid.UUID] = Field(
         min_length=1, max_length=200,
@@ -982,6 +1019,12 @@ class LineItemData(BaseModel):
             "evidence. product_code keeps the raw printed value, which is never completed "
             "automatically; export stays blocked until a person corrects it."
         ),
+    )
+    product_code_unusable: str | None = Field(
+        default=None,
+        description=("Why this row's code may not be sent as a PDI item code (a vendor item number, a 13/14-digit "
+                     "code that is not a UPC-A, a wrong check digit) — None when it may. Export stays blocked "
+                     "until a person enters the UPC."),
     )
     product_code_missing: bool = Field(
         default=False,

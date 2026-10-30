@@ -221,6 +221,9 @@ class InvoiceRepository:
             invoice_id=invoice_id,
             description=item.description or "(no description)",
             product_sku=item.product_code,
+            # The vendor's own item number, kept apart from the barcode (0038): the
+            # key the vendor item crosswalk is looked up by. Never exported.
+            supplier_item_id=(item.supplier_item_id or None) and item.supplier_item_id[:64],
             quantity=item.quantity if item.quantity is not None else Decimal("0"),
             # unit_price is NOT coerced to zero. When extraction reports null it
             # is saying "I could not read this", and a stored 0.00 would be

@@ -84,6 +84,9 @@ import type {
   VendorDetail,
   VendorListParams,
   VendorRow,
+  CrossStoreDifference,
+  DifferenceResolutionRequest,
+  DifferenceResolutionResult,
 } from "./types";
 
 /** Sets the httpOnly session cookie on success; never returns a token in
@@ -775,5 +778,20 @@ export async function listSupply(params: SupplyParams): Promise<Paginated<Supply
 
 export async function getSupplyOptions(): Promise<SupplyOptions> {
   const { data } = await apiClient.get<ApiEnvelope<SupplyOptions>>("/inventory/supply/options");
+  return data.data!;
+}
+
+// ---- shared values: cross-store differences (0038) ----------------------------------------
+
+export async function listCrossStoreDifferences(): Promise<CrossStoreDifference[]> {
+  const { data } = await apiClient.get<ApiEnvelope<CrossStoreDifference[]>>("/product-master/differences");
+  return data.data ?? [];
+}
+
+export async function resolveCrossStoreDifference(
+  itemCode: string, body: DifferenceResolutionRequest,
+): Promise<DifferenceResolutionResult> {
+  const { data } = await apiClient.post<ApiEnvelope<DifferenceResolutionResult>>(
+    `/product-master/differences/${encodeURIComponent(itemCode)}/resolve`, body);
   return data.data!;
 }

@@ -40,7 +40,7 @@ from tests.pdf_builder import build_pdf
 pytestmark = requires_db
 
 A, B = PHYSICAL_STORE, RCM_STORE   # two physical stores
-UPC_RAW, UPC = "062067051468", "06206705146"          # LABATT BLUE 30 — in both stores' data
+UPC_RAW, UPC = "062067051463", "06206705146"          # LABATT BLUE 30 — in both stores' data
 
 
 async def process_for(api_client, app, store, items, filename, pad, **totals):  # noqa: F811

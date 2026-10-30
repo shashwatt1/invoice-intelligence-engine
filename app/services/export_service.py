@@ -32,6 +32,7 @@ from typing import Any
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
+from app.services.gtin import classify as classify_printed_code
 from app.services.printed_code import printed_code_incompleteness
 
 EXPORT_SCHEMA_VERSION = "1.0"
@@ -346,9 +347,8 @@ _NON_DIGITS = re.compile(r"\D")
 
 def normalize_item_code(product_code: str | None) -> str | None:
     """
-    Reduce a printed product code to its canonical digits: non-digits
-    stripped, a 12-digit UPC-A's trailing check digit dropped, truncated
-    to the PDI item-code width. Returns None when there is no usable code.
+    The key a printed product code is mapped, counted and exported under.
+    Returns None when there is no usable code.
 
     Public because it is also the key of the units-per-case mapping table
     (app/models/product_case_mapping.py). A mapping must be found again
@@ -356,17 +356,16 @@ def normalize_item_code(product_code: str | None) -> str | None:
     vendor printed it ("0-48500-20603-4" vs "048500206034"), which only
     holds if the lookup key and the emitted EDI code come from the same
     function — so they do.
+
+    Classification lives in app.services.gtin. For an 11-digit code, a
+    12-digit UPC-A and a short vendor number the key is exactly what it
+    always was. A 13-digit "0"+UPC-A or a 14-digit "00"+UPC-A now keys on
+    the UPC-A it carries; any other 13/14/15+-digit value keeps every digit
+    instead of being cut to 11 (two EAN-13s can no longer collapse onto one
+    key). Whether a key may be WRITTEN to PDI is a separate question —
+    see items_with_unusable_item_code().
     """
-    if not product_code:
-        return None
-    digits = _NON_DIGITS.sub("", product_code)
-    if not digits or not digits.strip("0"):
-        # "000000000000" is a placeholder some vendors print on charge
-        # rows; it identifies nothing and must not key a mapping.
-        return None
-    if len(digits) == 12:
-        digits = digits[:-1]
-    return digits[:PDI_ITEM_CODE_WIDTH]
+    return classify_printed_code(product_code).key
 
 
 def _pdi_item_code(product_code: str | None) -> str:
@@ -388,6 +387,11 @@ def _pdi_item_code(product_code: str | None) -> str:
     digits = normalize_item_code(product_code)
     if digits is None:
         return "00000" + " " * (PDI_ITEM_CODE_WIDTH - 5)
+    if len(digits) > PDI_ITEM_CODE_WIDTH:
+        # The export gate refuses these lines first (items_with_unusable_item_code);
+        # a fixed-width field must never silently overflow or be cut to fit.
+        raise ValueError(f"{len(digits)}-digit code cannot be written to PDI's "
+                         f"{PDI_ITEM_CODE_WIDTH}-digit item code")
     return digits.rjust(PDI_ITEM_CODE_WIDTH, "0")
 
 
@@ -884,6 +888,28 @@ def items_with_incomplete_printed_code(invoice: Invoice) -> list[str]:
         if printed_code_incompleteness(item.product_sku) is not None
     ]
 
+def items_with_unusable_item_code(invoice: Invoice) -> list[tuple[str, str]]:
+    """
+    (description, why) for product rows whose code keys the line but may not
+    be written to PDI as its item code: a vendor's own item number, a
+    13-digit EAN or 14-digit case code that is not a UPC-A, or a barcode
+    whose check digit does not match. Exporting any of them would hand PDI
+    an item code that matches no product, or the wrong one.
+
+    Fixed by entering the product's UPC on the line — once per vendor item
+    when the reviewer confirms it for the vendor (the vendor item crosswalk),
+    after which later invoices from that vendor carry it automatically.
+    Scoped like items_with_unresolved_identity: rows with no code at all are
+    that gate's concern, not this one's.
+    """
+    found: list[tuple[str, str]] = []
+    for item in pdi_items(invoice):
+        printed = classify_printed_code(item.product_sku)
+        if printed.key is not None and not printed.exportable:
+            found.append((item.description or "(no description)", printed.reason or "not a barcode"))
+    return found
+
+
 def items_with_unresolved_identity(invoice: Invoice) -> list[str]:
     """
     Descriptions, in document order, of product rows that would become a
@@ -1003,6 +1029,21 @@ def pdi_export_eligibility(
                 f"{', …' if count > 3 else ''}). Enter the full UPC from the "
                 "invoice before exporting — a partial code is never completed "
                 "automatically."
+            ),
+        )
+
+    unusable = items_with_unusable_item_code(invoice)
+    if unusable:
+        count = len(unusable)
+        shown = ", ".join(f"{desc} — {why}" for desc, why in unusable[:3])
+        return PdiExportEligibility(
+            allowed=False,
+            requires_confirmation=False,
+            blocked_reason=(
+                f"{count} product{'s' if count != 1 else ''} "
+                f"{'carry' if count != 1 else 'carries'} a code that cannot be sent as a PDI item code "
+                f"({shown}{', …' if count > 3 else ''}). Enter the product's UPC on the line — "
+                "a vendor item number or partial barcode is never exported as one."
             ),
         )
 

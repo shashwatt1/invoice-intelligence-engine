@@ -1,0 +1,12 @@
+{
+  "_about": "TEMPLATE ONLY. No PDI/CStorePro item-master export has been seen yet; every column name below is a placeholder to replace with the real header text before the first preview. Keep units_per_case only if the export has an explicit pack/units column whose meaning (sellable units per PDI case item) has been confirmed with the PDI administrator.",
+  "source_system": "item_master:pdi",
+  "upc": "UPC",
+  "description": "Description",
+  "units_per_case": "Units Per Case",
+  "vendor_item_code": "Vendor Item Number",
+  "vendor": "Vendor",
+  "header_row": 1,
+  "barcode_convention": "FULL_BARCODE",
+  "representation": "TEXT"
+}

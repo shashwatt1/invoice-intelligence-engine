@@ -57,9 +57,16 @@ class TestResolutionOrder:
         assert (r.path, r.units_per_case, r.mapping_id) == (cr.PATH_PRODUCT_MASTER_GLOBAL, 12, "src")
         assert (r.scope_store_id, r.scope_label) == ("store-47708760", "Global (distributor evidence, held under Item Sales · 47708760)")
 
-    def test_the_approved_product_master_value_is_used_over_a_different_legacy_value_and_said_so(self):
+    def test_a_global_value_never_silently_overrules_the_stores_own_different_value(self):
+        # Changed in 0038: a store's approved legacy value and a value decided for
+        # every store disagree, so a person decides; nothing is chosen.
         r = resolve(global_=[scoped(units=12)], legacy_units=24)
-        assert (r.path, r.units_per_case, r.legacy_units) == (cr.PATH_PRODUCT_MASTER_GLOBAL, 12, 24)
+        assert (r.path, r.units_per_case, r.legacy_units) == (cr.PATH_CONFLICT, None, 24)
+        assert "this store's own mapping says 24" in r.notes[0]
+
+    def test_the_stores_own_product_master_value_is_used_over_its_legacy_row_and_said_so(self):
+        r = resolve(physical=[scoped(mid="phys", units=12)], legacy_units=24)
+        assert (r.path, r.units_per_case) == (cr.PATH_PRODUCT_MASTER_PHYSICAL, 12)
         assert r.notes == ("legacy mapping says 24; the approved Product Master value is used",)
 
     @pytest.mark.parametrize("state", [STATE_REVIEW_REQUIRED, "PENDING", STATE_REJECTED])
@@ -227,9 +234,11 @@ def an_invoice(*items, store_id=RCM.id):
 class TestTheExistingWorkflow:
     async def test_invoice_units_come_from_the_resolution(self, monkeypatch):
         async def fake(session, store_id, codes):
-            return cr.CommercialResolution({CODE: cr.CodeResolution(CODE, cr.PATH_PRODUCT_MASTER_GLOBAL, 12)}, True)
+            # 24 agrees with the printed "24/12 CAN" (a disagreeing shared value is held: see
+            # tests/test_shared_value_safeguards.py).
+            return cr.CommercialResolution({CODE: cr.CodeResolution(CODE, cr.PATH_PRODUCT_MASTER_GLOBAL, 24)}, True)
         monkeypatch.setattr(case_mapping_service, "resolve_store_codes", fake)
-        assert await case_mapping_service.invoice_units_by_item_code(None, an_invoice(item())) == {CODE: 12}
+        assert await case_mapping_service.invoice_units_by_item_code(None, an_invoice(item())) == {CODE: 24}
         assert await case_mapping_service.invoice_units_by_item_code(None, an_invoice(item(), store_id=None)) == {}
 
     def test_a_line_without_an_approved_mapping_blocks_export_and_asks_for_a_mapping(self):
@@ -246,7 +255,7 @@ class TestTheExistingWorkflow:
                 return _Result([mapped, missing])
 
         async def fake(session, store_id, codes):
-            return cr.CommercialResolution({CODE: cr.CodeResolution(CODE, cr.PATH_PRODUCT_MASTER_GLOBAL, 12)}, True)
+            return cr.CommercialResolution({CODE: cr.CodeResolution(CODE, cr.PATH_PRODUCT_MASTER_GLOBAL, 24)}, True)
 
         async def no_pending(*_a, **_k):
             return {}
@@ -307,3 +316,52 @@ class TestNormalizedProductName:
         assert calls <= {"execute"}, calls
         assert not any(isinstance(n, ast.Assign) and any(isinstance(t, ast.Attribute) for t in n.targets)
                        for n in ast.walk(ast.parse(source))), "no attribute of any record is assigned"
+
+
+def shared_value(units=24, state=STATE_APPROVED, mid="shared-1"):
+    return cr.ScopedMapping(mid, "p1", state, "CASE_IS_SELLING_UNIT" if units == 1 else "UNIT_IS_SELLING_UNIT", units)
+
+
+def override(units, reason="sells singles here", mid="phys-o"):
+    basis = "CASE_IS_SELLING_UNIT" if units == 1 else "UNIT_IS_SELLING_UNIT"
+    return cr.ScopedMapping(mid, "p1", STATE_APPROVED, basis, units, override_reason=reason)
+
+
+class TestSharedValues:
+    """0038: one reviewed value for every store, with explicit store exceptions."""
+
+    def test_a_shared_value_resolves_a_store_that_never_mapped_the_code(self):
+        r = resolve(shared=[shared_value(24)])
+        assert (r.path, r.units_per_case, r.mapping_id) == (cr.PATH_PRODUCT_MASTER_GLOBAL, 24, "shared-1")
+        assert (r.scope_store_id, r.scope_label) == (cr.SHARED_SCOPE_ID, cr.SHARED_SCOPE_LABEL)
+
+    def test_a_shared_value_agreeing_with_the_stores_own_value_is_used(self):
+        r = resolve(shared=[shared_value(24)], legacy_units=24)
+        assert (r.path, r.units_per_case) == (cr.PATH_PRODUCT_MASTER_GLOBAL, 24)
+
+    def test_a_shared_value_disagreeing_with_the_stores_own_value_is_a_conflict(self):
+        # The Michelob Ultra / Twisted Tea C-18 shape: one store says 18, the shared value 1.
+        r = resolve(shared=[shared_value(1)], legacy_units=18)
+        assert (r.path, r.units_per_case) == (cr.PATH_CONFLICT, None)
+
+    def test_an_unapproved_shared_value_is_never_used(self):
+        r = resolve(shared=[shared_value(24, state=STATE_REVIEW_REQUIRED)], legacy_units=12)
+        assert (r.path, r.units_per_case) == (cr.PATH_LEGACY_FALLBACK, 12)
+
+    def test_shared_and_distributor_global_must_agree(self):
+        assert resolve(shared=[shared_value(24)], global_=[scoped(units=24)]).path == cr.PATH_PRODUCT_MASTER_GLOBAL
+        r = resolve(shared=[shared_value(24)], global_=[scoped(units=12)])
+        assert (r.path, r.units_per_case) == (cr.PATH_CONFLICT, None)
+
+    def test_a_store_override_with_a_reason_wins_over_a_different_shared_value(self):
+        r = resolve(shared=[shared_value(1)], physical=[override(18)], legacy_units=18)
+        assert (r.path, r.units_per_case) == (cr.PATH_PRODUCT_MASTER_PHYSICAL, 18)
+        assert any("store override (sells singles here)" in n for n in r.notes)
+
+    def test_a_different_store_value_without_a_reason_stays_a_conflict(self):
+        r = resolve(shared=[shared_value(1)], physical=[scoped(mid="phys", units=18)])
+        assert r.path == cr.PATH_CONFLICT
+
+    def test_two_approved_shared_values_are_a_conflict(self):
+        r = resolve(shared=[shared_value(24, mid="a"), shared_value(24, mid="b")])
+        assert r.path == cr.PATH_CONFLICT

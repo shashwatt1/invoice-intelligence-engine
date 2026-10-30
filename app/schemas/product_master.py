@@ -60,13 +60,16 @@ class CommercialCandidateRow(BaseModel):
     product_name_variants: list[ProductNameVariant] = Field(default_factory=list)
     canonical_identifier: str | None
     pdi_item_code: str | None
-    store_id: uuid.UUID
+    store_id: uuid.UUID | None          # None: a shared value for every physical store (0038)
     store_label: str
     store_identity_status: str
     # The Store Master classification: a source identity is a source system's
-    # identifier (e.g. Item Sales 47708760), not a physical store.
+    # identifier (e.g. Item Sales 47708760), not a physical store. "shared" for
+    # a shared value.
     store_kind: str = "physical"
     store_source_identity: SourceIdentityRef | None = None
+    override_reason: str | None = None  # a store's deliberate exception to the shared value
+    source_system: str | None = None    # distributor_price_sheet | invoice_review | item_master:<name>
     commercial_unit_basis: str
     units_accounted_for: int | None
     case_cost: float | None
@@ -215,3 +218,57 @@ class IdentityUnresolvedRow(BaseModel):
     description: str | None
     reason: str
     units_statement: str | None = None
+
+
+class StoreValueOut(BaseModel):
+    store_id: uuid.UUID
+    store: str
+    units: int
+    source: str                      # store mapping | store Product Master mapping | store override
+    override_reason: str | None = None
+
+
+class CrossStoreDifference(BaseModel):
+    """An item code whose approved units-per-case values disagree between stores or with the shared value."""
+
+    item_code: str
+    shared_units: int | None
+    distinct_values: list[int]
+    stores: list[StoreValueOut]
+    overrides: list[StoreValueOut] = Field(default_factory=list)
+
+
+class DifferenceResolutionRequest(BaseModel):
+    units: int = Field(ge=1, le=9999, description="The value every store uses unless kept as an override.")
+    keep_store_ids: list[uuid.UUID] = Field(
+        default_factory=list, max_length=100,
+        description="Stores that keep their own differing value, each recorded as a store override.")
+    note: str = Field(min_length=1, max_length=1000, description="Why this value; kept with every record written.")
+
+
+class DifferenceResolutionResult(BaseModel):
+    item_code: str
+    units: int
+    shared_mapping_id: uuid.UUID
+    adopted_store_ids: list[uuid.UUID]
+    kept_store_ids: list[uuid.UUID]
+
+
+class VendorItemLinkOut(BaseModel):
+    id: uuid.UUID
+    vendor_id: uuid.UUID
+    vendor: str | None
+    vendor_item_code: str
+    vendor_item_code_raw: str
+    item_code: str
+    upc: str | None
+    state: str
+    confirmed_by: str
+    confirmed_at: datetime
+    retired_at: datetime | None = None
+    retired_by: str | None = None
+    retire_reason: str | None = None
+
+
+class VendorItemRetireRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
