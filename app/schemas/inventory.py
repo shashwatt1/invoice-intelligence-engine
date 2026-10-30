@@ -81,26 +81,69 @@ class StoreInventoryEntry(BaseModel):
     """One physical store on the Inventory page. `overview` is null exactly when `access_granted` is false."""
 
     store: StoreRef
-    access_granted: bool = Field(description="The signed-in account holds an active grant for this store.")
+    access_granted: bool = Field(
+        description=("The signed-in account may use this store: an administrator for any active physical store, "
+                     "a manager through an active grant."))
     overview: InventoryOverview | None = None
 
 
 class InventoryAllStores(BaseModel):
     stores: list[StoreInventoryEntry]
-    total_physical: int = Field(description="Stores listed (granted or not).")
-    not_granted: int = Field(description="Listed stores the account has no grant for (administrators only).")
+    total_physical: int = Field(description="Stores listed.")
+    not_granted: int = Field(default=0, description="Listed stores the account may not open (none for an administrator).")
 
 
 class ZeroStartRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500,
                         description="Why the store starts at zero; kept with the baseline for good.")
     initialization_date: date | None = Field(
-        default=None, description="The date the store starts at zero. Defaults to today; never in the future.")
+        default=None, description="The date a store with no receipts starts at zero. Defaults to today; never in the future.")
+    confirm: bool = Field(default=False, description="The administrator confirmed what the preview showed.")
+    acknowledge_prior_stock: bool = Field(
+        default=False,
+        description=("Required when the store already has movements or posted receipts: the administrator "
+                     "confirms it held no stock of these products before its first receipt."))
+
+
+class ZeroStartPreviewOut(BaseModel):
+    """What starting a store at zero would do — nothing is written to produce it."""
+
+    already_started: bool
+    has_history: bool = Field(description="Movements or posted receipts exist, so stock may have existed before them.")
+    products: int = Field(description="Distinct products at the store: with a movement, or listed by its catalogue.")
+    catalogue_only_products: int = Field(
+        default=0, description="Of those, products its catalogue lists that have no movement yet.")
+    counted_products: int = Field(description="Products with a person-entered opening count: kept as they are.")
+    products_to_initialize: int = Field(description="Products that would start at an explicit zero.")
+    posted_receipts: int
+    first_receipt_date: date | None = None
+    effective_date: date = Field(description="The date products start at zero.")
+    basis: str
+    opening_required_after: int
+    available_units_after: Decimal
 
 
 class ZeroStartResult(BaseModel):
     created: bool = Field(description="False when the store already had a zero start: nothing was written.")
     baseline: InventoryBaselineOut
+    products_initialized: int = Field(default=0, description="Products that start at an explicit zero as a result.")
+
+
+class ResolvedValueOut(BaseModel):
+    """A reference value with where it came from. `value` is null unless status is RESOLVED."""
+
+    value: int | str | None = None
+    status: str = Field(description="RESOLVED, MISSING (no reviewed source says anything) or HELD (needs a person).")
+    source: str | None = Field(default=None, description="The resolution path or description source.")
+    scope: str | None = Field(default=None, description="Where it was approved: a store, all stores, the master.")
+    approval: str | None = Field(default=None, description="APPROVED, STORE_CONFIRMED or CONFIRMED.")
+    mapping_id: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class ItemReferenceOut(BaseModel):
+    units_per_case: ResolvedValueOut
+    description: ResolvedValueOut
 
 
 class InventoryItemRow(BaseModel):
@@ -119,6 +162,10 @@ class InventoryItemRow(BaseModel):
     opening_source: str | None = Field(
         default=None, description="OPENING_COUNT (the product's own count), STORE_BASELINE (the store's zero "
                                   "start), or null when there is no start yet.")
+    description_from_reference: bool = Field(
+        default=False, description="The description is the reviewed commercial one because the store's own was missing.")
+    reference: ItemReferenceOut | None = Field(
+        default=None, description="Reviewed commercial reference values; informational, never part of a balance.")
 
 
 class MovementRow(BaseModel):

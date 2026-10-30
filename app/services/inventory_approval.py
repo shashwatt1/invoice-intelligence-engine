@@ -9,9 +9,9 @@ The only way stock enters the ledger from an invoice:
      mark rested on and a snapshot of the proposed lines. No movement is
      written. Marking needs no store grant — Retailed is unchanged — and a
      submission is only a proposal.
-  2. Approve or reject. A MANAGER/ADMIN with an active grant for the
-     receipt's store (no implicit ADMIN access; self-approval allowed and
-     recorded as such) approves it, optionally adjusting accepted quantities
+  2. Approve or reject. A MANAGER with an active grant for the receipt's
+     store, or an ADMIN (implicit access to every active physical store;
+     self-approval allowed and recorded as such) approves it, optionally adjusting accepted quantities
      (whole sellable units; any difference from proposed needs a reason), or
      rejects it with a reason. Approval re-checks everything under the
      invoice and receipt locks — the submission is still pending, the invoice
