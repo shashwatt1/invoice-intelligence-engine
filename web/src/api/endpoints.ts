@@ -79,6 +79,8 @@ import type {
   StoreIdentityUpdate,
   StoreInvoiceRow,
   StoreRef,
+  ZeroStartPreview,
+  ZeroStartRequest,
   ZeroStartResult,
   UserAccount,
   UserRole,
@@ -723,9 +725,14 @@ export async function getInventoryAllStores(): Promise<InventoryAllStores> {
   return data.data!;
 }
 
-export async function startStoreAtZero(
-  storeId: string, body: { reason: string; initialization_date?: string },
-): Promise<ZeroStartResult> {
+export async function getZeroStartPreview(storeId: string, initializationDate?: string): Promise<ZeroStartPreview> {
+  const { data } = await apiClient.get<ApiEnvelope<ZeroStartPreview>>(
+    `/inventory/stores/${storeId}/zero-start/preview`,
+    { params: initializationDate ? { initialization_date: initializationDate } : undefined });
+  return data.data!;
+}
+
+export async function startStoreAtZero(storeId: string, body: ZeroStartRequest): Promise<ZeroStartResult> {
   const { data } = await apiClient.post<ApiEnvelope<ZeroStartResult>>(`/inventory/stores/${storeId}/zero-start`, body);
   return data.data!;
 }

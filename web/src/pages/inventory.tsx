@@ -8,6 +8,7 @@ import type {
   InventoryItemStatus,
   InventoryOverview,
   OpeningState,
+  ResolvedValue,
   StoreInventoryEntry,
   StoreInvoiceReceiptFilter,
   StoreInvoiceRow,
@@ -36,7 +37,7 @@ import {
 } from "@/hooks/use-api";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { useAuth } from "@/hooks/use-auth";
-import { formatUnits, ITEM_STATUS, RECEIPT_STATUS, receivableReason, staleReason } from "@/lib/inventory";
+import { formatUnits, ITEM_STATUS, RECEIPT_STATUS, receivableReason, staleReason, UNITS_SOURCE } from "@/lib/inventory";
 import { cn } from "@/lib/utils";
 
 const ITEM_PAGE_SIZE = 50;
@@ -237,9 +238,8 @@ function StoreGrid({ entries, notGranted, onOpen }: { entries: StoreInventoryEnt
       </FilterBar>
       {notGranted > 0 ? (
         <p className="mb-3 text-xs text-muted-foreground" data-testid="not-granted-note">
-          {notGranted} store{notGranted === 1 ? " is" : "s are"} listed without figures because your account has no
-          access grant for {notGranted === 1 ? "it" : "them"}. Grant yourself access under Users to see
-          {notGranted === 1 ? " its" : " their"} inventory.
+          {notGranted} store{notGranted === 1 ? " is" : "s are"} listed without figures because your account cannot
+          open {notGranted === 1 ? "it" : "them"}.
         </p>
       ) : null}
       {!visible.length ? (
@@ -272,8 +272,7 @@ function StoreCard({ entry, onOpen }: { entry: StoreInventoryEntry; onOpen: () =
       <div data-testid="store-card" data-access="none" className="surface flex flex-col gap-4 p-5">
         {header}
         <p className="t-meta">
-          No figures: your account has no access grant for this store. Inventory is shown only for stores you are
-          granted.
+          No figures: your account cannot open this store.
         </p>
         <StatusPill size="xs" tone="neutral" label="No access for your account" />
       </div>
@@ -328,8 +327,17 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
         <ErrorState error={overview.error} onRetry={() => void overview.refetch()} />
       ) : o ? (
         <>
+          <div className="flex flex-wrap items-center gap-2" data-testid="opening-state">
+            <StatusPill tone={OPENING_PILL[openingState(o)].tone} meaning={OPENING_PILL[openingState(o)].meaning}
+                        label={openingState(o) === "COUNTED"
+                          ? `Counted · ${o.opening_counted_products ?? 0} product${o.opening_counted_products === 1 ? "" : "s"}`
+                          : OPENING_PILL[openingState(o)].label} />
+            <span className="t-meta">
+              {o.on_hand_units == null ? "Available units unknown" : `${formatUnits(o.on_hand_units)} available units`}
+            </span>
+          </div>
           <MetricStrip items={[
-            { key: "tracked", label: "Products tracked", value: o.tracked_products, hint: "with any movement here" },
+            { key: "tracked", label: "Products tracked", value: o.tracked_products, hint: "in the catalogue or moved" },
             { key: "opening", label: "Opening stock required", value: o.opening_required, tone: o.opening_required ? "warning" : "neutral",
               hint: "no audited count yet" },
             { key: "out", label: "Out of stock", value: o.out_of_stock, tone: o.out_of_stock ? "danger" : "neutral" },
@@ -347,8 +355,12 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs"
                  data-testid="opening-not-set">
               <span>
-                <strong className="font-semibold">Opening count not entered.</strong> This store&apos;s stock is unknown,
-                not zero. Record physical opening counts{isAdmin ? ", or declare that the store started at zero" : ""}.
+                <strong className="font-semibold">Opening count not entered.</strong>{" "}
+                {o.opening_required > 0
+                  ? `${o.opening_required} of ${o.tracked_products} products need an opening count. `
+                  : ""}
+                This store&apos;s stock is unknown, not zero. Record physical opening counts
+                {isAdmin ? ", or declare that the store started at zero (it is shown as a zero start, never as counted)" : ""}.
                 Receipts are still recorded.
               </span>
               {isAdmin ? (
@@ -367,9 +379,10 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
           ) : null}
           {o.baseline ? (
             <p className="text-xs text-muted-foreground" data-testid="baseline-note">
-              Inventory started at zero on {formatDate(o.baseline.baseline_date)}
-              {o.baseline.basis === "EARLIEST_POSTED_RECEIPT" ? " (the store's first received invoice)" : ""}: products
-              without their own opening count start there, and every approved receipt counts.
+              Zero start (declared, not counted) from {formatDate(o.baseline.baseline_date)}
+              {o.baseline.basis === "EARLIEST_POSTED_RECEIPT" ? " (the store's first received invoice)" : ""}: all{" "}
+              {o.tracked_products} product{o.tracked_products === 1 ? "" : "s"} without their own opening count start at an
+              explicit zero there, and every approved receipt counts once.
             </p>
           ) : null}
         </>
@@ -396,6 +409,24 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
       {zeroStart && <ZeroStartDialog storeId={storeId} storeLabel={storeLabel} onClose={() => setZeroStart(false)} />}
       {counting && <OpeningCountDialog storeId={storeId} storeLabel={storeLabel} onClose={() => setCounting(false)} />}
     </div>
+  );
+}
+
+/**
+ * A product's reviewed units per case with where it came from. Reference only: no inventory figure uses it.
+ * A held value (conflicting or ambiguous) is not shown as a number; it needs a decision in Product Master.
+ */
+function UnitsPerCase({ value }: { value: ResolvedValue | undefined }) {
+  if (!value || value.status === "MISSING") return <span className="text-muted-foreground" title="No approved source">—</span>;
+  if (value.status === "HELD") {
+    return <StatusPill size="xs" tone="warning" label="Needs review" meaning={value.notes.join(" · ") || "Held for review."} />;
+  }
+  const source = UNITS_SOURCE[value.source ?? ""] ?? value.source ?? "";
+  return (
+    <span title={[source, value.scope, value.notes.join(" · ")].filter(Boolean).join(" — ")}>
+      {value.value}
+      <div className="text-xs text-muted-foreground">{value.approval === "APPROVED" ? (value.scope?.startsWith("All") ? "shared" : "store") : "store mapping"}</div>
+    </span>
   );
 }
 
@@ -471,6 +502,7 @@ function ProductsTab({ storeId }: { storeId: string }) {
               <TableRow>
                 <TableHead>Product</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Units / case</TableHead>
                 <TableHead className="text-right">Opening count</TableHead>
                 <TableHead className="text-right">Received since</TableHead>
                 <TableHead className="text-right">On hand</TableHead>
@@ -488,6 +520,9 @@ function ProductsTab({ storeId }: { storeId: string }) {
                       <div className="font-mono text-xs text-muted-foreground">{row.item_code}</div>
                     </TableCell>
                     <TableCell><StatusPill tone={meta.tone} label={meta.label} meaning={meta.meaning} /></TableCell>
+                    <TableCell className="text-right tabular-nums" data-testid="units-per-case">
+                      <UnitsPerCase value={row.reference?.units_per_case} />
+                    </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {row.opening_quantity !== null ? (
                         <>{formatUnits(row.opening_quantity)}<div className="text-xs text-muted-foreground">

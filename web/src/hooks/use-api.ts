@@ -45,6 +45,7 @@ import {
   getDocumentStatus,
   getInventoryAllStores,
   getInventoryOverview,
+  getZeroStartPreview,
   startStoreAtZero,
   getInventoryStatus,
   getInvoice,
@@ -129,6 +130,7 @@ import type {
   UserRole,
   VendorListParams,
   DifferenceResolutionRequest,
+  ZeroStartRequest,
 } from "@/api/types";
 
 export function useDashboard() {
@@ -876,12 +878,19 @@ export function useInventoryAllStores({ enabled = true }: { enabled?: boolean } 
   return useQuery({ queryKey: ["inventory", "all-stores"], queryFn: getInventoryAllStores, enabled });
 }
 
+/** What a zero start would do to a store: effective date, products initialized, available units after. */
+export function useZeroStartPreview(storeId: string, initializationDate?: string) {
+  return useQuery({
+    queryKey: ["inventory", storeId, "zero-start-preview", initializationDate ?? null],
+    queryFn: () => getZeroStartPreview(storeId, initializationDate),
+  });
+}
+
 /** Declares a zero start for one store; writes one baseline row, never a movement or a receipt. */
 export function useStartStoreAtZero() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ storeId, body }: { storeId: string; body: { reason: string; initialization_date?: string } }) =>
-      startStoreAtZero(storeId, body),
+    mutationFn: ({ storeId, body }: { storeId: string; body: ZeroStartRequest }) => startStoreAtZero(storeId, body),
     onSettled: () => void queryClient.invalidateQueries({ queryKey: ["inventory"] }),
   });
 }

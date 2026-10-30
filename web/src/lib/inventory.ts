@@ -67,6 +67,13 @@ export const MOVEMENT_LABEL: Record<string, string> = {
 };
 
 /** "1,234" for a whole number of units, else the decimal as sent. */
+/** Where a reviewed units-per-case came from, in the words a reviewer uses. */
+export const UNITS_SOURCE: Record<string, string> = {
+  PRODUCT_MASTER_PHYSICAL_STORE: "store mapping (approved)",
+  PRODUCT_MASTER_GLOBAL: "shared mapping (approved)",
+  LEGACY_FALLBACK: "store's confirmed case mapping",
+};
+
 export function formatUnits(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "—";
   const n = Number(value);
