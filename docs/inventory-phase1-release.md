@@ -205,7 +205,7 @@ Nothing below has been run. Each step is a separate, deliberate action.
    - Neither check is a full application smoke test. Treat deploying ahead of 0035 as a fallback
      that fails safe, not as the plan: apply 0035 first.
 6. **Smoke test:** correct, add and void a line on a test invoice; export PDI for a validated invoice.
-7. **Grant store access explicitly** (no account has any by default, ADMIN included). Each grant is
+7. **Grant store access explicitly** (no manager has any by default; administrators need none for active physical stores). Each grant is
    audited (who, role, when, why); an administrator may grant their own account, recorded as such:
    ```
    python scripts/grant_store_access.py grant --actor <active ADMIN> --username <MANAGER or ADMIN> \
@@ -246,9 +246,12 @@ inventory only while all of these hold, checked on every request (nothing is cac
 - the account is active (`get_current_user` refuses inactive accounts: 401);
 - its role is MANAGER or ADMIN (USER is refused, grant or not: 403);
 - the store is a physical store;
-- the account holds an active grant for that store in `user_store_access`.
+- a MANAGER holds an active grant for that store in `user_store_access`; an ADMIN needs no grant for
+  any **active** physical store (an administrator's explicit grant to an inactive store is still
+  honoured).
 
-There is no implicit all-store access for any role, ADMIN included.
+Superseded: this release originally gave no role implicit access, ADMIN included. Administrators now
+reach every active physical store without grants (see `docs/inventory-store-visibility.md`).
 
 - **Every inventory route** resolves its store through `app.services.store_access`. A store id that
   is unknown, a source identity, or not granted gets the same 404 (`Store not found.`, echoing only
@@ -318,8 +321,8 @@ A receipt is never posted directly; `POST /inventory/invoices/{id}/receipt` no l
   There is no backfill: invoices marked Retailed before the flag was on have no submission.
 - **Flags.** The workflow needs both `INVENTORY_ENABLED` and `EDI_EXPORT_LEDGER` (rollout step 8).
   Retailed itself is unchanged: without inventory it is an attestation only.
-- **Approve or reject** (`POST …/receipt/approve`, `POST …/receipt/reject`, MANAGER/ADMIN with an
-  active grant for the receipt's store; no implicit ADMIN access).
+- **Approve or reject** (`POST …/receipt/approve`, `POST …/receipt/reject`, MANAGER with an
+  active grant for the receipt's store, or an ADMIN, who needs no grant for an active physical store).
   - Self-approval is allowed; submitter and approver are recorded separately (`self_approved`).
   - Approval re-checks under the invoice and receipt locks that the submission is still pending
     and the invoice still Retailed under the same attestation. It also re-checks that nothing
