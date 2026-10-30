@@ -64,6 +64,43 @@ class InventoryOverview(BaseModel):
     pending_approvals: int = Field(default=0, description="Receipt submissions awaiting approval at this store.")
     baseline: InventoryBaselineOut | None = Field(
         default=None, description="The store's zero start, if an administrator initialized one.")
+    opening_state: str = Field(
+        default="NOT_SET",
+        description=("NOT_SET: no zero start and no counts — the store's stock is unknown, NOT zero. "
+                     "ZERO_START: an administrator declared a zero start; not a physical count. "
+                     "COUNTED: people entered physical opening counts."))
+    opening_counted_products: int = Field(default=0, description="Products with a person-entered opening count.")
+    opening_last_counted_on: date | None = Field(default=None, description="Date of the latest opening count.")
+    opening_last_counted_by: str | None = Field(default=None, description="Who recorded the latest opening count.")
+    on_hand_units: Decimal | None = Field(
+        default=None,
+        description="Units on hand across products that have an on-hand figure; null when none does (not zero).")
+
+
+class StoreInventoryEntry(BaseModel):
+    """One physical store on the Inventory page. `overview` is null exactly when `access_granted` is false."""
+
+    store: StoreRef
+    access_granted: bool = Field(description="The signed-in account holds an active grant for this store.")
+    overview: InventoryOverview | None = None
+
+
+class InventoryAllStores(BaseModel):
+    stores: list[StoreInventoryEntry]
+    total_physical: int = Field(description="Stores listed (granted or not).")
+    not_granted: int = Field(description="Listed stores the account has no grant for (administrators only).")
+
+
+class ZeroStartRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500,
+                        description="Why the store starts at zero; kept with the baseline for good.")
+    initialization_date: date | None = Field(
+        default=None, description="The date the store starts at zero. Defaults to today; never in the future.")
+
+
+class ZeroStartResult(BaseModel):
+    created: bool = Field(description="False when the store already had a zero start: nothing was written.")
+    baseline: InventoryBaselineOut
 
 
 class InventoryItemRow(BaseModel):

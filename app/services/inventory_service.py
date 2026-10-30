@@ -596,6 +596,68 @@ async def store_balances(session: AsyncSession, store_id: uuid.UUID) -> list[Ite
     return fold_balances(rows, baseline.baseline_date if baseline else None)
 
 
+# ---- a store's opening state (derived; nothing is stored for it) ---------------------------------
+
+# Three different facts that must never be confused. Nothing here writes anything.
+OPENING_NOT_SET = "NOT_SET"          # no zero start and no person-entered count: the store's stock is UNKNOWN
+OPENING_ZERO_START = "ZERO_START"    # an administrator declared a zero start (store_inventory_baselines): NOT a physical count
+OPENING_COUNTED = "COUNTED"          # people entered physical opening counts (audited OPENING_COUNT movements)
+OPENING_STATES = (OPENING_NOT_SET, OPENING_ZERO_START, OPENING_COUNTED)
+
+
+def opening_state(has_baseline: bool, counted_products: int) -> str:
+    """
+    A physical count outranks a declared zero start; a declared zero start outranks nothing at all.
+    A store with receipts but neither is still NOT_SET: its on-hand figures are not established.
+    """
+    if counted_products > 0:
+        return OPENING_COUNTED
+    return OPENING_ZERO_START if has_baseline else OPENING_NOT_SET
+
+
+@dataclass
+class OpeningSummary:
+    counted_products: int = 0
+    last_counted_on: date | None = None
+    last_counted_by: str | None = None
+
+
+async def opening_summaries(session: AsyncSession, store_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, OpeningSummary]:
+    """
+    Per store: how many products have a person-entered opening count, the latest count date and who
+    recorded the latest one. Two grouped reads for any number of stores; stores with none are absent.
+    """
+    ids = list(dict.fromkeys(store_ids))
+    if not ids:
+        return {}
+    grouped = (await session.execute(
+        select(InventoryMovement.store_id, func.count(func.distinct(InventoryMovement.item_code)),
+               func.max(InventoryMovement.business_date))
+        .where(InventoryMovement.store_id.in_(ids), InventoryMovement.movement_type == MOVEMENT_OPENING_COUNT)
+        .group_by(InventoryMovement.store_id)
+    )).all()
+    summaries = {sid: OpeningSummary(int(n), last_on) for sid, n, last_on in grouped}
+    if summaries:
+        latest = (await session.execute(
+            select(InventoryMovement.store_id, InventoryMovement.actor_username)
+            .where(InventoryMovement.store_id.in_(list(summaries)), InventoryMovement.movement_type == MOVEMENT_OPENING_COUNT)
+            .order_by(InventoryMovement.store_id, InventoryMovement.created_at.desc(), InventoryMovement.id.desc())
+            .distinct(InventoryMovement.store_id)
+        )).all()
+        for sid, actor in latest:
+            summaries[sid].last_counted_by = actor
+    return summaries
+
+
+def on_hand_units(balances: Sequence[ItemBalance]) -> Decimal | None:
+    """
+    Units on hand across products that HAVE an on-hand figure (never below zero per product).
+    None when no product has one — the store's stock is not established, which is not the same as zero.
+    """
+    known = [b.on_hand for b in balances if b.on_hand is not None]
+    return sum((max(v, Decimal("0")) for v in known), Decimal("0")) if known else None
+
+
 async def item_movements(session: AsyncSession, store_id: uuid.UUID, item_code: str) -> list[InventoryMovement]:
     return list((await session.execute(
         select(InventoryMovement)
