@@ -39,6 +39,7 @@ import type {
   SupplyRow,
   InventoryItemRow,
   InventoryMovementRow,
+  InventoryAllStores,
   InventoryOverview,
   InvoiceDateCorrection,
   InvoiceDateCorrectionResult,
@@ -78,6 +79,7 @@ import type {
   StoreIdentityUpdate,
   StoreInvoiceRow,
   StoreRef,
+  ZeroStartResult,
   UserAccount,
   UserRole,
   VendorDecision,
@@ -713,6 +715,18 @@ export async function getInventoryStatus(): Promise<{ enabled: boolean }> {
 /** The physical stores the signed-in account holds an inventory grant for (the server decides). */
 export async function listInventoryStores(): Promise<StoreRef[]> {
   const { data } = await apiClient.get<ApiEnvelope<StoreRef[]>>("/inventory/stores");
+  return data.data!;
+}
+
+export async function getInventoryAllStores(): Promise<InventoryAllStores> {
+  const { data } = await apiClient.get<ApiEnvelope<InventoryAllStores>>("/inventory/overview");
+  return data.data!;
+}
+
+export async function startStoreAtZero(
+  storeId: string, body: { reason: string; initialization_date?: string },
+): Promise<ZeroStartResult> {
+  const { data } = await apiClient.post<ApiEnvelope<ZeroStartResult>>(`/inventory/stores/${storeId}/zero-start`, body);
   return data.data!;
 }
 

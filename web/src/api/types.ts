@@ -1300,6 +1300,36 @@ export interface InventoryOverview {
   pending_approvals: number;
   /** The store's zero start, if an administrator initialized one. */
   baseline?: InventoryBaseline | null;
+  /**
+   * NOT_SET: no zero start and no counts — stock is unknown, not zero. ZERO_START: an administrator
+   * declared a zero start (not a physical count). COUNTED: people entered physical opening counts.
+   */
+  opening_state?: OpeningState;
+  opening_counted_products?: number;
+  opening_last_counted_on?: string | null;
+  opening_last_counted_by?: string | null;
+  /** Units on hand across products that have an on-hand figure; null when none does (not zero). */
+  on_hand_units?: number | null;
+}
+
+export type OpeningState = "NOT_SET" | "ZERO_START" | "COUNTED";
+
+/** One physical store on the Inventory page; `overview` is null exactly when access_granted is false. */
+export interface StoreInventoryEntry {
+  store: StoreRef;
+  access_granted: boolean;
+  overview: InventoryOverview | null;
+}
+
+export interface InventoryAllStores {
+  stores: StoreInventoryEntry[];
+  total_physical: number;
+  not_granted: number;
+}
+
+export interface ZeroStartResult {
+  created: boolean;
+  baseline: InventoryBaseline;
 }
 
 /** Products without their own opening count start at zero on baseline_date. */

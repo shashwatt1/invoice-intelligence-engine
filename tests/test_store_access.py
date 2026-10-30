@@ -262,7 +262,7 @@ class TestEveryInventoryPathIsAuthorized:
 
     def test_every_store_route_checks_access_and_every_invoice_route_passes_the_account(self):
         routes = self._routes()
-        assert len(routes) == 13, [r[1] for r in routes]
+        assert len(routes) == 15, [r[1] for r in routes]
         for _verb, path, name, body in routes:
             if path.endswith("/approvals"):
                 assert "approval.pending_approvals(db, store_id, user)" in body, name   # authorized in the service
@@ -279,6 +279,10 @@ class TestEveryInventoryPathIsAuthorized:
                 assert "store_access.accessible_stores(db, user)" in body, name
                 if path == "/inventory/supply":
                     assert "store_access.ensure_store_access(db, user, store_id)" in body, name
+            elif path == "/inventory/overview":
+                # Every physical store the account may see; figures only for granted ones (zero-start, below,
+                # is a {store_id} route and is checked by the branch above).
+                assert "store_access.visible_physical_stores(db, user)" in body, name
             else:
                 assert path == "/inventory/stores" and "store_access.accessible_stores(db, user)" in body
 

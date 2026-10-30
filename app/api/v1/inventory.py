@@ -19,7 +19,7 @@ submits it, and POST .../receipt/approve posts a pending submission
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -27,14 +27,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.dependencies import require_manager
+from app.core.dependencies import require_admin, require_manager
 from app.core.exceptions import RecordNotFoundError, ValidationError
+from app.core.logging import get_logger
 from app.database.session import get_db
 from app.models.invoice import Invoice
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.inventory import (
+    InventoryAllStores,
     InventoryBaselineOut,
     InventoryItemRow,
     InventoryOverview,
@@ -50,14 +52,18 @@ from app.schemas.inventory import (
     ReceiptReversalOut,
     ReceiptReversalRequest,
     ReceiptSummary,
+    StoreInventoryEntry,
     StoreInvoiceRow,
     SubmissionOut,
     SupplyOptions,
     SupplyRow,
     SupplyVendorOption,
+    ZeroStartRequest,
+    ZeroStartResult,
 )
 from app.schemas.processing import StoreRef
 from app.services import inventory_approval as approval
+from app.services import inventory_baseline as baselines
 from app.services import inventory_service as inventory
 from app.services import store_access
 from app.services.export_service import pdi_items
@@ -73,6 +79,7 @@ async def _enabled(db: AsyncSession = Depends(get_db)) -> None:
                                   detail={"feature": "inventory", "reason": "inventory_schema_not_migrated"})
 
 
+_logger = get_logger(__name__)
 router = APIRouter(tags=["Inventory"], dependencies=[Depends(_enabled)])
 # Outside the gate: whether to offer Inventory at all (the sidebar asks).
 status_router = APIRouter(tags=["Inventory"])
@@ -133,14 +140,13 @@ async def stores(db: AsyncSession = Depends(get_db),
     return APIResponse(data=[StoreRef.from_store(s) for s in await store_access.accessible_stores(db, user)])
 
 
-@router.get("/inventory/stores/{store_id}/overview", response_model=APIResponse[InventoryOverview],
-            summary="A physical store's inventory at a glance")
-async def overview(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
-                   user: User = Depends(require_manager)) -> APIResponse[InventoryOverview]:
-    store = await store_access.ensure_store_access(db, user, store_id)
+async def _overview_out(db: AsyncSession, store, opening: inventory.OpeningSummary | None = None) -> InventoryOverview:
+    """One authorized store's overview. The caller has already checked the grant."""
     balances = await inventory.store_balances(db, store.id)
     baseline = await inventory.store_baseline(db, store.id)
-    return APIResponse(data=InventoryOverview(
+    if opening is None:
+        opening = (await inventory.opening_summaries(db, [store.id])).get(store.id) or inventory.OpeningSummary()
+    return InventoryOverview(
         store=StoreRef.from_store(store), tracked_products=len(balances),
         opening_required=sum(1 for b in balances if b.status == inventory.STATUS_OPENING_REQUIRED),
         out_of_stock=sum(1 for b in balances if b.status == inventory.STATUS_OUT_OF_STOCK),
@@ -149,7 +155,74 @@ async def overview(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
         recent_receipts=[_receipt(r) for r in await inventory.recent_receipts(db, store.id)],
         pending_approvals=await approval.pending_count(db, store.id),
         baseline=InventoryBaselineOut.model_validate(baseline, from_attributes=True) if baseline else None,
-    ))
+        opening_state=inventory.opening_state(baseline is not None, opening.counted_products),
+        opening_counted_products=opening.counted_products, opening_last_counted_on=opening.last_counted_on,
+        opening_last_counted_by=opening.last_counted_by, on_hand_units=inventory.on_hand_units(balances),
+    )
+
+
+@router.get("/inventory/overview", response_model=APIResponse[InventoryAllStores],
+            summary="Every physical store this account can see, with its inventory summary")
+async def all_stores(db: AsyncSession = Depends(get_db),
+                     user: User = Depends(require_manager)) -> APIResponse[InventoryAllStores]:
+    """
+    The Inventory page's store list. A configured physical store is listed whether or not it has invoices,
+    receipts or movements. A MANAGER sees the stores granted to them; an ADMIN also sees every other active
+    physical store as an entry without figures (`access_granted` false) so a missing grant is visible.
+    Figures are computed only for stores the account holds a grant for.
+    """
+    listed = await store_access.visible_physical_stores(db, user)
+    opening = await inventory.opening_summaries(db, [s.id for s, granted in listed if granted])
+    entries = [
+        StoreInventoryEntry(
+            store=StoreRef.from_store(store), access_granted=granted,
+            overview=await _overview_out(db, store, opening.get(store.id) or inventory.OpeningSummary())
+            if granted else None)
+        for store, granted in listed
+    ]
+    return APIResponse(data=InventoryAllStores(
+        stores=entries, total_physical=len(entries), not_granted=sum(1 for e in entries if not e.access_granted)))
+
+
+@router.get("/inventory/stores/{store_id}/overview", response_model=APIResponse[InventoryOverview],
+            summary="A physical store's inventory at a glance")
+async def overview(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
+                   user: User = Depends(require_manager)) -> APIResponse[InventoryOverview]:
+    store = await store_access.ensure_store_access(db, user, store_id)
+    return APIResponse(data=await _overview_out(db, store))
+
+
+@router.post("/inventory/stores/{store_id}/zero-start", response_model=APIResponse[ZeroStartResult],
+             summary="Start a store's inventory at zero (ADMIN; once per store, idempotent)")
+async def zero_start(store_id: uuid.UUID, payload: ZeroStartRequest, db: AsyncSession = Depends(get_db),
+                     user: User = Depends(require_admin)) -> APIResponse[ZeroStartResult]:
+    """
+    Declare that this store starts tracking at zero on a date. It is NOT a physical count: the store is shown
+    as "Zero start", products without their own opening count start at zero on that date and every approved
+    receipt counts. Writes one store_inventory_baselines row and nothing else — no movement, no receipt, no
+    balance change for a product that has its own count. Repeating it writes nothing and returns the existing
+    start (`created` false). Needs the administrator's grant for the store, like every store route.
+    """
+    store = await store_access.ensure_store_access(db, user, store_id)
+    if not await inventory.baseline_schema_ready(db):
+        raise ValidationError(message="Migration 0036 (store_inventory_baselines) is not applied.",
+                              detail={"reason": "schema_missing"})
+    why = baselines.require_reason(payload.reason)
+    today = datetime.now(UTC).date()
+    when = payload.initialization_date or today
+    if when > today:
+        raise ValidationError(message="The start date cannot be in the future.",
+                              detail={"field": "initialization_date", "reason": "future_date"})
+    result = await baselines.initialize_store(db, store.id, actor=user, reason=why, initialization_date=when)
+    if result.outcome == baselines.FAILED:
+        raise ValidationError(message=result.detail, detail={"field": "initialization_date", "reason": "after_first_receipt"})
+    created = result.outcome == baselines.INITIALIZED
+    baseline = await inventory.store_baseline(db, store.id)
+    await db.commit()
+    _logger.info("inventory_zero_start", store_id=str(store.id), actor=user.username, created=created,
+                 baseline_date=str(baseline.baseline_date) if baseline else None)
+    return APIResponse(data=ZeroStartResult(
+        created=created, baseline=InventoryBaselineOut.model_validate(baseline, from_attributes=True)))
 
 
 @router.get("/inventory/stores/{store_id}/items", response_model=PaginatedResponse[InventoryItemRow],

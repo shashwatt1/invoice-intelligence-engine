@@ -32,6 +32,7 @@ const getInventoryStatus = vi.fn();
 const listStores = vi.fn();
 const listInventoryStores = vi.fn();
 const getInventoryOverview = vi.fn();
+const getInventoryAllStores = vi.fn();
 const listInventoryItems = vi.fn();
 const listStoreInvoices = vi.fn();
 const getReceiptPreview = vi.fn();
@@ -46,6 +47,7 @@ vi.mock("@/api/endpoints", async (importOriginal) => ({
   listStores: (...a: unknown[]) => listStores(...a),
   listInventoryStores: (...a: unknown[]) => listInventoryStores(...a),
   getInventoryOverview: (...a: unknown[]) => getInventoryOverview(...a),
+  getInventoryAllStores: (...a: unknown[]) => getInventoryAllStores(...a),
   listInventoryItems: (...a: unknown[]) => listInventoryItems(...a),
   listStoreInvoices: (...a: unknown[]) => listStoreInvoices(...a),
   getReceiptPreview: (...a: unknown[]) => getReceiptPreview(...a),
@@ -127,6 +129,15 @@ beforeEach(() => {
     store: MIDLER, tracked_products: 2, opening_required: 1, out_of_stock: 0, in_stock: 1,
     last_recorded_at: "2026-10-09T12:00:00Z", recent_receipts: [], pending_approvals: 1,
   });
+  // The all-stores list: the stores `listInventoryStores` says are granted, each with the figures
+  // `getInventoryOverview` gives (read through its implementation so the call log stays the store view's).
+  getInventoryAllStores.mockImplementation(async () => {
+    const granted = (await listInventoryStores()) as StoreDirectoryEntry[];
+    const stores = await Promise.all(granted.map(async (g) => ({
+      store: g, access_granted: true, overview: await getInventoryOverview.getMockImplementation()!(g.id),
+    })));
+    return { stores, total_physical: stores.length, not_granted: 0 };
+  });
   listInventoryItems.mockResolvedValue({
     success: true, total: 2, page: 1, page_size: 50, request_id: null,
     items: [
@@ -161,6 +172,7 @@ describe("Inventory page", () => {
     expect(getInventoryOverview).not.toHaveBeenCalled();
     expect(listInventoryItems).not.toHaveBeenCalled();
     expect(listInventoryStores).not.toHaveBeenCalled();
+    expect(getInventoryAllStores).not.toHaveBeenCalled();
   });
 
   it("shows a card for each store the server says this account may use, never the whole directory", async () => {
@@ -171,9 +183,9 @@ describe("Inventory page", () => {
     expect(cards.map((c) => within(c).getByText(/AF/).textContent)).toEqual(["AF NV Midler"]);
     expect(await within(cards[0]).findByText("1 awaiting approval")).toBeInTheDocument();
     expect(within(cards[0]).getByText("Need opening count")).toBeInTheDocument();
-    expect(listInventoryStores).toHaveBeenCalled();
+    expect(getInventoryAllStores).toHaveBeenCalled();
     expect(listStores).not.toHaveBeenCalled();
-    expect(getInventoryOverview.mock.calls.map((c) => c[0])).toEqual(["midler"]);
+    expect(getInventoryOverview).not.toHaveBeenCalled();     // the grid is one request, not one per store
   });
 
   it("opens a store from its card, and goes back to all stores", async () => {
@@ -223,16 +235,14 @@ describe("Inventory page", () => {
     renderPage("/inventory?store=other");
     expect(await screen.findByTestId("store-grid")).toBeInTheDocument();
     expect(screen.queryByTestId("store-header")).not.toBeInTheDocument();
-    await waitFor(() => expect(getInventoryOverview).toHaveBeenCalled());
-    expect(getInventoryOverview.mock.calls.map((c) => c[0])).toEqual(["midler"]);
+    expect(getInventoryOverview).not.toHaveBeenCalled();     // no store view opened, and the grid is one request
     expect(listInventoryItems).not.toHaveBeenCalled();
   });
 
   it("never treats a source identity as a store, even when the URL names one", async () => {
     renderPage("/inventory?store=src-47708760");
     expect(await screen.findByTestId("store-grid")).toBeInTheDocument();
-    await waitFor(() => expect(getInventoryOverview).toHaveBeenCalled());
-    expect(getInventoryOverview.mock.calls.map((c) => c[0])).toEqual(["midler"]);
+    expect(getInventoryOverview).not.toHaveBeenCalled();     // no store view opened, and the grid is one request
     expect(listInventoryItems).not.toHaveBeenCalled();
   });
 

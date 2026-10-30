@@ -35,7 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import PermissionDeniedError, RecordNotFoundError, ValidationError
-from app.models.store import KIND_PHYSICAL, Store
+from app.models.store import KIND_PHYSICAL, STATUS_ACTIVE, Store
 from app.models.user import ROLE_RANK, User, UserRole
 from app.models.user_store_access import UserStoreAccess
 from app.repositories.store_repository import StoreRepository
@@ -108,6 +108,39 @@ async def accessible_stores(session: AsyncSession, user) -> list[Store]:
         return []
     stores = [s for s in await StoreRepository(session).list() if s.id in granted and s.kind == KIND_PHYSICAL]
     return sorted(stores, key=lambda s: (s.label.lower(), str(s.id)))
+
+
+async def visible_physical_stores(session: AsyncSession, user) -> list[tuple[Store, bool]]:
+    """
+    Every physical store the Inventory page lists for `user`, with whether they hold an
+    active grant for it: [(store, granted)], by label.
+
+      * MANAGER: only the stores they are granted. A store they hold no grant for is not
+        listed, and nothing about it is revealed.
+      * ADMIN: every ACTIVE physical store, granted or not. An administrator already sees
+        every store in the Store Directory and is the person who grants access; listing an
+        ungranted store (name and address only) shows that the grant is missing instead of
+        letting the page look complete. Its inventory still needs a grant: every
+        store-scoped route checks it (ensure_store_access) exactly as before.
+      * below MANAGER, or inactive: nothing.
+
+    Whether a store has invoices, receipts or movements is irrelevant here: a configured
+    physical store is listed.
+    """
+    if not has_inventory_role(user):
+        return []
+    granted = set((await session.execute(
+        select(UserStoreAccess.store_id).where(UserStoreAccess.user_id == user.id,
+                                               UserStoreAccess.revoked_at.is_(None))
+    )).scalars().all())
+    sees_all_active = str(getattr(user, "role", None)) == UserRole.ADMIN.value
+    listed: list[tuple[Store, bool]] = []
+    for store in await StoreRepository(session).list():
+        if store.kind != KIND_PHYSICAL:
+            continue
+        if store.id in granted or (sees_all_active and store.status == STATUS_ACTIVE):
+            listed.append((store, store.id in granted))
+    return sorted(listed, key=lambda pair: (pair[0].label.lower(), str(pair[0].id)))
 
 
 # ---- administration -------------------------------------------------------------------------
