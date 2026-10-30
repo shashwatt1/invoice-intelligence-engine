@@ -71,3 +71,13 @@ GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT count(*) AS codes_mapped_at_2plus_stores, coalesce(sum(n - 1), 0) AS redundant_store_mappings
 FROM (SELECT item_code, count(DISTINCT store_id) AS n FROM product_case_mappings
       GROUP BY item_code HAVING count(DISTINCT store_id) > 1) x;
+
+-- 7. Is the global-mapping holder present? (Item Sales 47708760 must exist and must NOT be a physical store;
+--    it is only the provenance of the distributor seed. Shared values do not need it, the seeded ones do.)
+SELECT s.id IS NOT NULL AS holder_exists,
+       (s.display_name IS NOT NULL OR s.address_line_1 IS NOT NULL) AS holder_looks_physical_REFUSED_IF_TRUE,
+       (SELECT count(*) FROM master_commercial_mappings g WHERE g.store_id = s.id) AS seeded_mappings_held
+FROM (SELECT 1) one
+LEFT JOIN store_identifiers i ON i.source_system = 'item_sales' AND i.identifier_type = 'store_code'
+                              AND i.identifier_value = '47708760'
+LEFT JOIN stores s ON s.id = i.store_id;

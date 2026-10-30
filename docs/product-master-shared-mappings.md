@@ -85,10 +85,36 @@ Writing to a non-local database needs `--allow-remote` and approval.
   Requires Mapping under the correct key instead of matching a wrong mapping. Inventory movements already
   posted under an old truncated key stay as history; check readiness query 5 for affected open invoices.
 * Lines with vendor numbers or non-UPC codes that exported before are now blocked until a UPC is entered.
-  In the local corpus: Red Cliff Petroleum (fuel, 36 lines), UniFirst (uniform service, 10), Red Bull (7),
-  M&N (10). Rows that are not merchandise (fuel, service) should be typed as charges.
+  In the local corpus: Red Cliff Petroleum (merchandise, 36 lines), UniFirst (uniform service, 10), Red Bull (7),
+  M&N (10). See §6a for the policy per category.
 * `scripts/backfill_supplier_item_ids.py` copies vendor item numbers from stored responses onto existing
   lines (fail-closed, dry run by default). Optional; the crosswalk also falls back to the raw response.
+
+## 6a. Policy for the invoice categories the new export gate blocks
+
+Evidence: the four vendors' local invoices (line types, printed code shape, descriptions) and the PDI
+contract. PDI's detail records are **merchandise items keyed by an 11-digit item code**; fuel, deposits and
+service charges sit outside the item records (`PDI_DATA_CONTRACT.md` §2.2–2.3, Q7), and the application
+already excludes `charge`, `duplicate` and `voided` lines from the file (`NON_PDI_LINE_TYPES`).
+
+| Vendor (local sample) | What the lines are | Policy |
+|---|---|---|
+| **Red Cliff Petroleum** (36 lines, 8-digit vendor item numbers) | Packaged snack merchandise (cremes, cookies) supplied by a petroleum distributor — **not fuel** (an earlier note in this work said fuel; the descriptions show otherwise). | **Legitimate PDI product lines.** Blocked until each item's UPC is entered once with "Remember for this vendor". No padding, no guess. |
+| **Red Bull** (7 lines, 4/6-digit vendor numbers) | Beverage merchandise. | Same as Red Cliff: legitimate; enter each UPC once; the crosswalk then covers later invoices. |
+| **M&N Distribution** (20 lines) | Imported candy and snacks. 9 lines print 13-digit **EAN-13** codes or 14-digit case codes; some print no code; one has a wrong check digit. | Legitimate products. A 13-digit code that is a UPC-A with a leading 0 passes. A real EAN-13 or case GTIN has **no 11-digit PDI item code**: stays blocked until the store's PDI item exists and its UPC-A/item code is entered (crosswalk). No-code lines: enter the UPC. Wrong check digit: re-read the paper and correct it. |
+| **UniFirst** (14 product + 2 charge lines, short vendor numbers, no pack) | Uniform/mat/towel **rental service** — not merchandise for resale. | **Not a PDI product invoice.** It stays blocked and is simply not exported to PDI. The application has no documented PDI representation for a service invoice; none is invented. |
+
+What is **not** done, deliberately: no UPC is derived from a vendor number, vendor numbers are never padded
+into the item code again, and lines are not silently retyped as charges (that would move merchandise out of
+the EDI and the inventory receipt without anyone deciding it).
+
+**One business decision (UniFirst):**
+
+| Option | Consequence |
+|---|---|
+| A. Do not export UniFirst to PDI (recommended) | Nothing to build. The invoice stays blocked with a clear reason; its costs are handled outside PDI as they are for other non-merchandise bills. |
+| B. Void its lines so the invoice exports empty | Misstates the invoice (voided lines leave the subtotal) and exports a header with no detail. Not recommended. |
+| C. Add a service-invoice representation | Needs PDI to confirm how service bills are received; unknown today. Build only after that answer. |
 
 ## 7. Rollout (each step approved and performed by the release owner)
 
@@ -100,6 +126,40 @@ Writing to a non-local database needs `--allow-remote` and approval.
    `COMMERCIAL_SOURCE_IDENTITY` is no longer needed for shared values (still used for the distributor seed).
 5. Optional: backfill supplier item ids (dry run, then `--apply --allow-remote`).
 6. Settle any differences listed in Product Master → Approvals.
+
+## 7a. The production readiness SQL — what each block shows
+
+`docs/sql/product-master-0038-readiness.sql`: seven `SELECT` statements, no writes, counts / item codes /
+store and vendor names only. Written for revision 0037 (before the migration). Run each block separately in
+the Supabase SQL editor. Tested only on local databases; **never run by me against production.**
+
+| Block | Establishes | Cannot establish |
+|---|---|---|
+| 1 revision | Production is at 0037 (0038 afterwards). | Which code version Render runs. |
+| 2 candidates by state | How much distributor evidence is approved vs awaiting review. | Whether review is worth doing. |
+| 3 global vs store disagreement | Lines that **become CONFLICT after deploy** (an approved global value that silently won before now waits for a person). Each row is a decision for the data team. | Which value is right; only the paper/distributor can say. |
+| 4 cross-store differences | The items the new "different approved values" panel will list (e.g. the 18-pack pattern). | Whether a difference is a mistake or a genuine store difference. |
+| 5 blocked open invoices | Open, unexported invoices whose lines the new gate blocks, by vendor and code shape. 12-digit check digits are computed; 13/14-digit shapes are bucketed by prefix only (the application performs the full check). | Which are real merchandise vs service (see §6a); invoices already exported are excluded. |
+| 6 repeated work | How many item codes are mapped separately at 2+ stores today. This is the work shared values remove. | How often it recurs (needs the replay on a copy). |
+| 7 holder present | The Item Sales 47708760 record exists and is not a physical store (the application refuses a physical holder). | The `PRODUCT_MASTER_COMMERCIAL_RESOLUTION` setting (an environment variable, not in the database). |
+
+**Reading the results.** Block 3 rows must be understood **before** deploy: each is a line that will stop
+exporting until settled (that is the intended no-silent-choice behaviour, not a fault). Block 5 rows are
+invoices the data team cannot export until UPCs are entered; if a large invoice share appears there, plan
+UPC entry time before rollout, and decide UniFirst-type invoices per §6a. Zero rows in 3–5 means the deploy
+changes nothing for current open work.
+
+## 7b. Release checklist
+
+Must be true before anyone applies 0038 (none of it can be claimed from local results):
+
+- [ ] **Backup evidence**: a verified production backup or restore point, with the evidence in hand (still open from the inventory release).
+- [ ] Blocks 1–7 run and reviewed; block 7 shows the holder present and not physical.
+- [ ] Block 3 and 4 rows have an owner and a plan; block 5 invoices triaged (UPC entry vs §6a decision).
+- [ ] `alembic upgrade 0037:0038 --sql` reviewed by the release owner; the SQL is additive.
+- [ ] `PRODUCT_MASTER_COMMERCIAL_RESOLUTION=true` confirmed in Render (shared values only take effect with it on); `COMMERCIAL_SOURCE_IDENTITY=47708760` still set for the distributor seed.
+- [ ] Branch reviewed by a person, pushed and merged by the release owner; CI green.
+- [ ] After deploy: re-run block 1 (0038), open Product Master → Approvals and confirm the differences panel matches block 4; process or open one known invoice and confirm the UPC entry shows the remember option.
 
 ## 8. Rollback
 
@@ -133,6 +193,6 @@ a replay on a production copy.
 
 1. Confirm the 2026-10-08 rule still holds: one units-per-case per product for every store, with
    explicit store exceptions.
-2. Whether fuel (Red Cliff) and service (UniFirst) invoices should be exported to PDI at all.
+2. UniFirst (rental service): not exported to PDI (§6a, option A) unless PDI defines a service-invoice format.
 3. Whether the PDI/CStorePro item-master export can be obtained, and whether its units column is
    authoritative (today every imported value still needs review).
