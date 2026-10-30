@@ -443,3 +443,51 @@ class TestTheEighteenPackSafeguard:
         r = await api_client.post(f"/api/v1/proposals/{p.id}/approve", json={"scope": "shared"})
         assert r.status_code == 422 and r.json()["error"]["detail"]["reason"] == "origin_not_physical"
         assert await _shared_rows(db_session) == []
+
+
+class TestTheProductionShapeSeededHolderValue:
+    """Production block 9: the C-18 packs are APPROVED global rows held under Item Sales 47708760 (the seed)."""
+
+    async def _seed_holder_value(self, db_session, monkeypatch, units=1):
+        from app.models.product_master import MasterCommercialMapping
+        from app.services.product_master import shared_decisions
+
+        monkeypatch.setattr(get_settings(), "commercial_source_identity", SOURCE_ONLY_STORE)
+        product, _ = await shared_decisions.find_or_create_product(db_session, MICHELOB_CODE)
+        db_session.add(MasterCommercialMapping(
+            product_id=product.id, store_id=store_id(SOURCE_ONLY_STORE), pdi_item_code=MICHELOB_CODE,
+            commercial_unit_basis="CASE_IS_SELLING_UNIT" if units == 1 else "UNIT_IS_SELLING_UNIT",
+            units_accounted_for=units, approval_state="APPROVED", source_snapshot={}, evidence={},
+            source_system="distributor_price_sheet"))
+        await db_session.commit()
+
+    async def test_a_store_without_its_own_value_is_held_on_a_printed_c18(
+        self, api_client, app, db_session, resolution_on, monkeypatch,  # noqa: F811
+    ):
+        await self._seed_holder_value(db_session, monkeypatch)
+        inv = await _process(api_client, app, [_c18_line()], "h1.pdf", vendor="Synthetic Beer Co", store=RCM_STORE)
+        data = (await api_client.get(f"/api/v1/invoices/{inv}")).json()["data"]
+        row = next(r for r in data["case_mappings"] if r["item_code"] == MICHELOB_CODE)
+        assert (row["mapped"], row["resolution_path"]) == (False, "SHARED_NEEDS_STORE_CONFIRMATION")
+        assert data["pdi_export_allowed"] is False
+
+    async def test_a_store_that_already_holds_the_same_value_is_not_held(
+        self, api_client, app, db_session, resolution_on, monkeypatch,  # noqa: F811
+    ):
+        await self._seed_holder_value(db_session, monkeypatch)
+        await _legacy(db_session, RCM_STORE, 1, code=MICHELOB_CODE)         # PB Wolf / Midler in production
+        inv = await _process(api_client, app, [_c18_line()], "h2.pdf", vendor="Synthetic Beer Co", store=RCM_STORE)
+        row = next(r for r in (await api_client.get(f"/api/v1/invoices/{inv}")).json()["data"]["case_mappings"]
+                   if r["item_code"] == MICHELOB_CODE)
+        assert (row["mapped"], row["units_per_case"], row["resolution_path"]) == (True, 1, "PRODUCT_MASTER_GLOBAL")
+
+    async def test_a_line_that_prints_no_pack_resolves_from_the_holder_value(
+        self, api_client, app, db_session, resolution_on, monkeypatch,  # noqa: F811
+    ):
+        await self._seed_holder_value(db_session, monkeypatch)
+        line = ExtractedLineItem(description="MICHELOB ULTRA", product_code=MICHELOB_UPC, pack_size=None,
+                                 quantity=1.0, unit_price=17.7, line_total=17.7)
+        inv = await _process(api_client, app, [line], "h3.pdf", vendor="Synthetic Beer Co", store=RCM_STORE)
+        row = next(r for r in (await api_client.get(f"/api/v1/invoices/{inv}")).json()["data"]["case_mappings"]
+                   if r["item_code"] == MICHELOB_CODE)
+        assert (row["mapped"], row["units_per_case"]) == (True, 1)
