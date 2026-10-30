@@ -10,7 +10,7 @@ import uuid
 
 from app.api.v1.invoices import get_pipeline
 from app.services.pipeline_service import InvoiceProcessingPipeline
-from tests.integration.conftest import PHYSICAL_STORE, requires_db, store_id
+from tests.integration.conftest import PHYSICAL_STORE, SOURCE_ONLY_STORE, requires_db, store_id
 from tests.integration.fakes import FakeStructuring, extracted_invoice
 from tests.integration.test_api_db import api_client, process_file  # noqa: F401
 from tests.integration.test_inventory_db import (  # noqa: F401
@@ -89,5 +89,8 @@ class TestSupplyHistory:
         assert both.status_code == 422
         assert (await api_client.get(URL, params={"delivered_from": "not-a-date"})).status_code == 422
         assert (await api_client.get(URL, params={"vendor_id": str(uuid.uuid4())})).status_code == 404
-        # A store without a grant is the same 404 as everywhere in inventory.
-        assert (await api_client.get(URL, params={"store_id": str(store_id(PHYSICAL_STORE))})).status_code == 404
+        # An unknown store and a source identity are the same 404 as everywhere in inventory; an administrator
+        # needs no grant for an active physical store.
+        assert (await api_client.get(URL, params={"store_id": str(uuid.uuid4())})).status_code == 404
+        assert (await api_client.get(URL, params={"store_id": str(store_id(SOURCE_ONLY_STORE))})).status_code == 404
+        assert (await api_client.get(URL, params={"store_id": str(store_id(PHYSICAL_STORE))})).status_code == 200

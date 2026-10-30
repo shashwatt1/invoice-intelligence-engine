@@ -1,9 +1,10 @@
 """
 Store inventory baselines — app/services/inventory_baseline.py
 
-Records a store's zero start (store_inventory_baselines, 0036). Used only by
-scripts/initialize_inventory_baselines.py, run by an administrator; there is
-no API route that writes a baseline.
+Records a store's zero start (store_inventory_baselines, 0036). Written by an
+administrator through POST /inventory/stores/{id}/zero-start or
+scripts/initialize_inventory_baselines.py. `zero_start_preview` says, before
+anything is written, exactly what a zero start would do to this store.
 
 For one physical store:
   * already has a baseline  → SKIPPED (nothing is ever overwritten);
@@ -30,7 +31,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -38,13 +39,20 @@ from app.core.exceptions import PermissionDeniedError, ValidationError
 from app.models.inventory import (
     BASELINE_EARLIEST_RECEIPT,
     BASELINE_INITIALIZATION_DATE,
+    MOVEMENT_OPENING_COUNT,
     RECEIPT_POSTED,
     InventoryReceipt,
     StoreInventoryBaseline,
 )
 from app.models.store import KIND_PHYSICAL, Store
 from app.models.user import User, UserRole
-from app.services.inventory_service import baseline_schema_ready
+from app.services.inventory_service import (
+    baseline_schema_ready,
+    fold_balances,
+    movement_rows,
+    on_hand_units,
+    store_catalogue,
+)
 
 INITIALIZED = "INITIALIZED"
 SKIPPED = "SKIPPED"
@@ -90,6 +98,59 @@ async def earliest_posted_receipt(session: AsyncSession, store_id: uuid.UUID) ->
         .order_by(InventoryReceipt.received_on, InventoryReceipt.created_at, InventoryReceipt.id)
         .limit(1)
     )).scalars().first()
+
+
+@dataclass(frozen=True)
+class ZeroStartPreview:
+    """What a zero start would do to one store, computed from the ledger without writing anything."""
+    already_started: bool
+    has_history: bool                       # any movement or POSTED receipt: stock may exist before the first receipt
+    products: int                           # distinct products: with a movement, or listed by the store's catalogue
+    catalogue_only_products: int            # of those, listed by the catalogue and not yet moved
+    counted_products: int                   # of those, with a person-entered opening count (kept as they are)
+    products_to_initialize: int             # products with no count of their own: they start at zero
+    posted_receipts: int
+    first_receipt_date: date | None
+    effective_date: date                    # the date products start at zero
+    basis: str                              # EARLIEST_POSTED_RECEIPT or INITIALIZATION_DATE
+    opening_required_after: int
+    available_units_after: object           # Decimal; the store's on-hand total with the start applied
+
+
+async def zero_start_preview(session: AsyncSession, store_id: uuid.UUID, *, today: date,
+                             initialization_date: date | None = None) -> ZeroStartPreview:
+    """
+    The effect of starting `store_id` at zero, for the confirmation dialog. For a store with a POSTED receipt
+    the start date is that receipt's arrival date (so every receipt counts exactly once and none is skipped);
+    otherwise it is `initialization_date` (default today). A store that already has a baseline reports it.
+    """
+    rows = await movement_rows(session, store_id)
+    catalogue = await store_catalogue(session, store_id)
+    existing = (await session.execute(
+        select(StoreInventoryBaseline).where(StoreInventoryBaseline.store_id == store_id))).scalars().first()
+    receipt = await earliest_posted_receipt(session, store_id)
+    posted = (await session.execute(
+        select(func.count()).select_from(InventoryReceipt)
+        .where(InventoryReceipt.store_id == store_id, InventoryReceipt.status == RECEIPT_POSTED))).scalar() or 0
+    if existing is not None:
+        effective, basis = existing.baseline_date, existing.basis
+    elif receipt is not None:
+        effective, basis = receipt.received_on, BASELINE_EARLIEST_RECEIPT
+    else:
+        effective, basis = initialization_date or today, BASELINE_INITIALIZATION_DATE
+    counted = {r["item_code"] for r in rows if r["movement_type"] == MOVEMENT_OPENING_COUNT}
+    moved = {r["item_code"] for r in rows}
+    products = moved | set(catalogue)
+    after = fold_balances(rows, effective, catalogue)     # the same population the overview folds
+    return ZeroStartPreview(
+        already_started=existing is not None, has_history=bool(rows) or posted > 0,
+        products=len(products), catalogue_only_products=len(set(catalogue) - moved),
+        counted_products=len(counted), products_to_initialize=len(products - counted),
+        posted_receipts=int(posted), first_receipt_date=receipt.received_on if receipt else None,
+        effective_date=effective, basis=basis,
+        opening_required_after=sum(1 for b in after if b.on_hand is None),
+        available_units_after=on_hand_units(after, True),
+    )
 
 
 async def initialize_store(

@@ -40,6 +40,7 @@ from app.schemas.inventory import (
     InventoryBaselineOut,
     InventoryItemRow,
     InventoryOverview,
+    ItemReferenceOut,
     LineChangeOut,
     MovementRow,
     OpeningCountRequest,
@@ -52,12 +53,14 @@ from app.schemas.inventory import (
     ReceiptReversalOut,
     ReceiptReversalRequest,
     ReceiptSummary,
+    ResolvedValueOut,
     StoreInventoryEntry,
     StoreInvoiceRow,
     SubmissionOut,
     SupplyOptions,
     SupplyRow,
     SupplyVendorOption,
+    ZeroStartPreviewOut,
     ZeroStartRequest,
     ZeroStartResult,
 )
@@ -67,6 +70,7 @@ from app.services import inventory_baseline as baselines
 from app.services import inventory_service as inventory
 from app.services import store_access
 from app.services.export_service import pdi_items
+from app.services.product_master.reference_resolution import STATUS_RESOLVED, resolve_references
 from app.services.receiving_eligibility import receiving_eligibility
 
 
@@ -157,7 +161,7 @@ async def _overview_out(db: AsyncSession, store, opening: inventory.OpeningSumma
         baseline=InventoryBaselineOut.model_validate(baseline, from_attributes=True) if baseline else None,
         opening_state=inventory.opening_state(baseline is not None, opening.counted_products),
         opening_counted_products=opening.counted_products, opening_last_counted_on=opening.last_counted_on,
-        opening_last_counted_by=opening.last_counted_by, on_hand_units=inventory.on_hand_units(balances),
+        opening_last_counted_by=opening.last_counted_by, on_hand_units=inventory.on_hand_units(balances, baseline is not None),
     )
 
 
@@ -167,9 +171,8 @@ async def all_stores(db: AsyncSession = Depends(get_db),
                      user: User = Depends(require_manager)) -> APIResponse[InventoryAllStores]:
     """
     The Inventory page's store list. A configured physical store is listed whether or not it has invoices,
-    receipts or movements. A MANAGER sees the stores granted to them; an ADMIN also sees every other active
-    physical store as an entry without figures (`access_granted` false) so a missing grant is visible.
-    Figures are computed only for stores the account holds a grant for.
+    receipts or movements. A MANAGER sees the stores granted to them; an ADMIN sees every active physical
+    store without needing a grant. Figures are computed for every listed store (the same rule opens each one).
     """
     listed = await store_access.visible_physical_stores(db, user)
     opening = await inventory.opening_summaries(db, [s.id for s, granted in listed if granted])
@@ -192,37 +195,85 @@ async def overview(store_id: uuid.UUID, db: AsyncSession = Depends(get_db),
     return APIResponse(data=await _overview_out(db, store))
 
 
+def _zero_preview_out(p: baselines.ZeroStartPreview) -> ZeroStartPreviewOut:
+    return ZeroStartPreviewOut(**vars(p))
+
+
+async def _require_baseline_schema(db: AsyncSession) -> None:
+    if not await inventory.baseline_schema_ready(db):
+        raise ValidationError(message="Migration 0036 (store_inventory_baselines) is not applied.",
+                              detail={"reason": "schema_missing"})
+
+
+def _checked_date(initialization_date: date | None) -> tuple[date, date]:
+    today = datetime.now(UTC).date()
+    when = initialization_date or today
+    if when > today:
+        raise ValidationError(message="The start date cannot be in the future.",
+                              detail={"field": "initialization_date", "reason": "future_date"})
+    return today, when
+
+
+@router.get("/inventory/stores/{store_id}/zero-start/preview", response_model=APIResponse[ZeroStartPreviewOut],
+            summary="What starting a store at zero would do (ADMIN; writes nothing)")
+async def zero_start_preview(store_id: uuid.UUID, initialization_date: date | None = Query(default=None),
+                             db: AsyncSession = Depends(get_db),
+                             user: User = Depends(require_admin)) -> APIResponse[ZeroStartPreviewOut]:
+    store = await store_access.ensure_store_access(db, user, store_id)
+    await _require_baseline_schema(db)
+    today, when = _checked_date(initialization_date)
+    return APIResponse(data=_zero_preview_out(await baselines.zero_start_preview(
+        db, store.id, today=today, initialization_date=when)))
+
+
 @router.post("/inventory/stores/{store_id}/zero-start", response_model=APIResponse[ZeroStartResult],
              summary="Start a store's inventory at zero (ADMIN; once per store, idempotent)")
 async def zero_start(store_id: uuid.UUID, payload: ZeroStartRequest, db: AsyncSession = Depends(get_db),
                      user: User = Depends(require_admin)) -> APIResponse[ZeroStartResult]:
     """
-    Declare that this store starts tracking at zero on a date. It is NOT a physical count: the store is shown
-    as "Zero start", products without their own opening count start at zero on that date and every approved
-    receipt counts. Writes one store_inventory_baselines row and nothing else — no movement, no receipt, no
-    balance change for a product that has its own count. Repeating it writes nothing and returns the existing
-    start (`created` false). Needs the administrator's grant for the store, like every store route.
+    Declare that this store starts tracking at zero. It is NOT a physical count: the store is shown as
+    "Zero start", every product without its own opening count starts at an explicit zero on the start date
+    (so it stops needing an opening count) and every approved receipt counts, exactly once. Writes one
+    store_inventory_baselines row and nothing else — no movement, no receipt, no balance change for a product
+    that has its own count. Repeating it writes nothing and returns the existing start (`created` false).
+
+    The start date is the arrival date of the store's earliest POSTED receipt when it has one, otherwise the
+    requested date (default today). A store that already has movements or posted receipts may have held stock
+    before them, so it additionally needs `acknowledge_prior_stock`; the acknowledgement is kept with the
+    baseline's reason. Needs the administrator's access to the store, like every store route.
     """
     store = await store_access.ensure_store_access(db, user, store_id)
-    if not await inventory.baseline_schema_ready(db):
-        raise ValidationError(message="Migration 0036 (store_inventory_baselines) is not applied.",
-                              detail={"reason": "schema_missing"})
+    await _require_baseline_schema(db)
     why = baselines.require_reason(payload.reason)
-    today = datetime.now(UTC).date()
-    when = payload.initialization_date or today
-    if when > today:
-        raise ValidationError(message="The start date cannot be in the future.",
-                              detail={"field": "initialization_date", "reason": "future_date"})
-    result = await baselines.initialize_store(db, store.id, actor=user, reason=why, initialization_date=when)
+    today, when = _checked_date(payload.initialization_date)
+    preview = await baselines.zero_start_preview(db, store.id, today=today, initialization_date=when)
+    if not preview.already_started:
+        if not payload.confirm:
+            raise ValidationError(message="Confirm the zero start before it is recorded.",
+                                  detail={"field": "confirm", "reason": "confirmation_required"})
+        if preview.has_history and not payload.acknowledge_prior_stock:
+            raise ValidationError(
+                message=("This store already has receipts or movements, so it may have held stock before them. "
+                         "Count it, or confirm it held none before its first receipt."),
+                detail={"field": "acknowledge_prior_stock", "reason": "prior_stock_acknowledgement_required",
+                        "posted_receipts": preview.posted_receipts, "products": preview.products,
+                        "first_receipt_date": str(preview.first_receipt_date) if preview.first_receipt_date else None})
+    kept_reason = (f"Prior stock acknowledged ({preview.posted_receipts} posted receipt(s), {preview.products} "
+                   f"product(s) with movements; first receipt {preview.first_receipt_date}): {why}"
+                   if preview.has_history else why)
+    result = await baselines.initialize_store(db, store.id, actor=user, reason=kept_reason, initialization_date=when)
     if result.outcome == baselines.FAILED:
         raise ValidationError(message=result.detail, detail={"field": "initialization_date", "reason": "after_first_receipt"})
     created = result.outcome == baselines.INITIALIZED
     baseline = await inventory.store_baseline(db, store.id)
     await db.commit()
     _logger.info("inventory_zero_start", store_id=str(store.id), actor=user.username, created=created,
-                 baseline_date=str(baseline.baseline_date) if baseline else None)
+                 baseline_date=str(baseline.baseline_date) if baseline else None,
+                 products_initialized=preview.products_to_initialize if created else 0,
+                 prior_stock_acknowledged=bool(created and preview.has_history))
     return APIResponse(data=ZeroStartResult(
-        created=created, baseline=InventoryBaselineOut.model_validate(baseline, from_attributes=True)))
+        created=created, baseline=InventoryBaselineOut.model_validate(baseline, from_attributes=True),
+        products_initialized=preview.products_to_initialize if created else 0))
 
 
 @router.get("/inventory/stores/{store_id}/items", response_model=PaginatedResponse[InventoryItemRow],
@@ -235,6 +286,9 @@ async def items(
     page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db), user: User = Depends(require_manager),
 ) -> PaginatedResponse[InventoryItemRow]:
+    # Search matches the item code and the primary description (the store's own). Reviewed reference values are
+    # resolved afterwards, for the returned page only, so a description that exists only as a reference is shown
+    # but not searchable (docs/inventory-store-visibility.md, "Known limitation — search").
     store = await store_access.ensure_store_access(db, user, store_id)
     rows = await inventory.store_balances(db, store.id)
     term = (search or "").strip().lower()
@@ -244,8 +298,23 @@ async def items(
         rows = [b for b in rows if b.status == status]
     rows = _sorted_items(rows, sort)
     start = (page - 1) * page_size
-    return PaginatedResponse(items=[InventoryItemRow(**vars(b)) for b in rows[start:start + page_size]],
+    page_rows = rows[start:start + page_size]
+    references = await resolve_references(db, store.id, [b.item_code for b in page_rows])
+    return PaginatedResponse(items=[_item_row(b, references.get(b.item_code)) for b in page_rows],
                              total=len(rows), page=page, page_size=page_size)
+
+
+def _item_row(balance, reference) -> InventoryItemRow:
+    """A balance as the API shows it, with reviewed reference values beside it (never inside its figures)."""
+    row = InventoryItemRow(**vars(balance))
+    if reference is None:
+        return row
+    row.reference = ItemReferenceOut(
+        units_per_case=ResolvedValueOut(**vars(reference.units_per_case) | {"notes": list(reference.units_per_case.notes)}),
+        description=ResolvedValueOut(**vars(reference.description) | {"notes": list(reference.description.notes)}))
+    if not (row.description or "").strip() and reference.description.status == STATUS_RESOLVED:
+        row.description, row.description_from_reference = str(reference.description.value), True
+    return row
 
 
 def _sorted_items(rows: list, sort: str) -> list:

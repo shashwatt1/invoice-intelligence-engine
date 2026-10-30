@@ -73,6 +73,7 @@ from app.models.inventory import (
 )
 from app.models.invoice import Invoice
 from app.models.store import Store
+from app.models.store_product_reference import StoreProductReference
 from app.repositories.document_repository import document_is_active
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.store_repository import StoreRepository
@@ -211,11 +212,18 @@ OPENING_SOURCE_COUNT = "OPENING_COUNT"        # the product's own audited openin
 OPENING_SOURCE_BASELINE = "STORE_BASELINE"    # the store's zero start (no count for this product)
 
 
-def fold_balances(rows: Sequence[Any], baseline_date: date | None = None) -> list[ItemBalance]:
+def fold_balances(rows: Sequence[Any], baseline_date: date | None = None,
+                  catalogue: Mapping[str, str | None] | None = None) -> list[ItemBalance]:
     """
     Per item code, from movements summed by (item_code, movement_type,
     business_date): the opening point, what moved after it, and the on-hand
     balance. Sorted by item code.
+
+    `catalogue` ({item_code: description}) names products the store carries that
+    have no movement yet. They are balances with nothing moved: with a store
+    baseline they start at an explicit zero (on hand 0, out of stock), without
+    one they need an opening count. No movement is created for them, and a product
+    that also has movements is one balance, not two.
 
     A product's own opening count comes first: movements on or before its
     count date are already in it. Otherwise, with a store baseline, the
@@ -225,6 +233,8 @@ def fold_balances(rows: Sequence[Any], baseline_date: date | None = None) -> lis
     """
     items: dict[str, ItemBalance] = {}
     openings: dict[str, tuple[date, Decimal]] = {}
+    for code, described in (catalogue or {}).items():
+        items.setdefault(code, ItemBalance(code, described))
     for row in rows:
         balance = items.setdefault(row["item_code"], ItemBalance(row["item_code"]))
         balance.description = row.get("description") or balance.description
@@ -583,17 +593,38 @@ async def store_baseline(session: AsyncSession, store_id: uuid.UUID) -> StoreInv
     )).scalars().first()
 
 
-async def store_balances(session: AsyncSession, store_id: uuid.UUID) -> list[ItemBalance]:
-    """Every product with a movement at this store, folded into balances (with its baseline, if any)."""
-    rows = (await session.execute(
+async def movement_rows(session: AsyncSession, store_id: uuid.UUID):
+    """The store's movements summed by (item, type, day): the input fold_balances works from."""
+    return (await session.execute(
         select(InventoryMovement.item_code, InventoryMovement.movement_type, InventoryMovement.business_date,
                func.sum(InventoryMovement.quantity).label("quantity"),
                func.max(InventoryMovement.description).label("description"))
         .where(InventoryMovement.store_id == store_id)
         .group_by(InventoryMovement.item_code, InventoryMovement.movement_type, InventoryMovement.business_date)
     )).mappings().all()
+
+
+async def store_catalogue(session: AsyncSession, store_id: uuid.UUID) -> dict[str, str | None]:
+    """
+    The products this store's own POS lists (store_product_references, from its Item Sales export), keyed by
+    the same normalized item code movements use. Products the store carries before any stock event. Empty
+    until that export has been imported for the store.
+    """
+    rows = (await session.execute(
+        select(StoreProductReference.item_code, StoreProductReference.description)
+        .where(StoreProductReference.store_id == store_id)
+    )).all()
+    return dict(rows)
+
+
+async def store_balances(session: AsyncSession, store_id: uuid.UUID) -> list[ItemBalance]:
+    """
+    Every product at this store — those with a movement and those the store's catalogue lists that have none
+    yet — folded into balances (with its baseline, if any).
+    """
+    rows = await movement_rows(session, store_id)
     baseline = await store_baseline(session, store_id)
-    return fold_balances(rows, baseline.baseline_date if baseline else None)
+    return fold_balances(rows, baseline.baseline_date if baseline else None, await store_catalogue(session, store_id))
 
 
 # ---- a store's opening state (derived; nothing is stored for it) ---------------------------------
@@ -649,13 +680,16 @@ async def opening_summaries(session: AsyncSession, store_ids: Sequence[uuid.UUID
     return summaries
 
 
-def on_hand_units(balances: Sequence[ItemBalance]) -> Decimal | None:
+def on_hand_units(balances: Sequence[ItemBalance], has_baseline: bool = False) -> Decimal | None:
     """
     Units on hand across products that HAVE an on-hand figure (never below zero per product).
     None when no product has one — the store's stock is not established, which is not the same as zero.
+    A store that started at zero (`has_baseline`) has established stock even with no product yet: zero.
     """
     known = [b.on_hand for b in balances if b.on_hand is not None]
-    return sum((max(v, Decimal("0")) for v in known), Decimal("0")) if known else None
+    if not known:
+        return Decimal("0") if has_baseline else None
+    return sum((max(v, Decimal("0")) for v in known), Decimal("0"))
 
 
 async def item_movements(session: AsyncSession, store_id: uuid.UUID, item_code: str) -> list[InventoryMovement]:

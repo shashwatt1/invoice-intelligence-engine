@@ -10,12 +10,18 @@ The rule, checked fresh on every request (nothing is cached):
   * its role is MANAGER or above (USER never has inventory, grant or not);
   * the store is a physical store (a source identity is never an inventory
     store);
-  * the account holds an active grant for that store (user_store_access).
-There is no implicit all-store access for any role, ADMIN included.
+  * a MANAGER holds an active grant for that store (user_store_access); an
+    ADMIN needs no grant for any ACTIVE physical store (an administrator
+    administers every store). An administrator's explicit grant to an inactive
+    store is still honoured, so history granted before a store was
+    deactivated stays reachable.
 
 Refusals never reveal whether a store exists: an unknown store, a source
 identity and a store the account has no grant for all get the same 404.
 Invoice-linked callers map that to their own uniform "not found".
+
+Granting and revoking stay audited actions (a reason, immutable history) and
+change nothing for an ADMIN, who does not need them.
 
 Grants and revocations are made only by an active ADMIN (the ADMIN API or
 scripts/grant_store_access.py), each with a reason, and are recorded as
@@ -53,6 +59,16 @@ def has_inventory_role(user) -> bool:
     )
 
 
+def is_admin(user) -> bool:
+    """An active ADMIN: the one role with implicit access to every active physical store."""
+    return has_inventory_role(user) and str(getattr(user, "role", None)) == UserRole.ADMIN.value
+
+
+def _implicit_access(user, store: Store | None) -> bool:
+    """An administrator's access without a grant: any ACTIVE, physical store (never a source identity)."""
+    return store is not None and is_admin(user) and store.kind == KIND_PHYSICAL and store.status == STATUS_ACTIVE
+
+
 def store_not_found(store_id: uuid.UUID) -> RecordNotFoundError:
     """The one refusal for an unknown, non-physical or ungranted store: it reveals nothing about the store."""
     return RecordNotFoundError(message="Store not found.", detail={"store_id": str(store_id)})
@@ -75,10 +91,10 @@ async def has_store_access(session: AsyncSession, user, store_id: uuid.UUID | No
     """Whether `user` may use inventory for `store_id` now. Never raises for an ungranted store."""
     if store_id is None or not has_inventory_role(user):
         return False
-    if await _active_grant(session, user.id, store_id) is None:
-        return False
     store = await StoreRepository(session).get(store_id)
-    return store is not None and store.kind == KIND_PHYSICAL
+    if store is None or store.kind != KIND_PHYSICAL:
+        return False
+    return _implicit_access(user, store) or await _active_grant(session, user.id, store_id) is not None
 
 
 async def ensure_store_access(session: AsyncSession, user, store_id: uuid.UUID) -> Store:
@@ -88,44 +104,36 @@ async def ensure_store_access(session: AsyncSession, user, store_id: uuid.UUID) 
     same 404 (store_not_found).
     """
     _require_inventory_role(user)
-    if await _active_grant(session, user.id, store_id) is None:
-        raise store_not_found(store_id)
     store = await StoreRepository(session).get(store_id)
     if store is None or store.kind != KIND_PHYSICAL:
+        raise store_not_found(store_id)
+    if not _implicit_access(user, store) and await _active_grant(session, user.id, store_id) is None:
         raise store_not_found(store_id)
     return store
 
 
 async def accessible_stores(session: AsyncSession, user) -> list[Store]:
-    """The physical stores `user` may use in inventory, by label. Empty below MANAGER or without grants."""
-    if not has_inventory_role(user):
-        return []
-    granted = set((await session.execute(
-        select(UserStoreAccess.store_id).where(UserStoreAccess.user_id == user.id,
-                                               UserStoreAccess.revoked_at.is_(None))
-    )).scalars().all())
-    if not granted:
-        return []
-    stores = [s for s in await StoreRepository(session).list() if s.id in granted and s.kind == KIND_PHYSICAL]
-    return sorted(stores, key=lambda s: (s.label.lower(), str(s.id)))
+    """
+    The physical stores `user` may use in inventory, by label. A MANAGER: the stores they are granted. An
+    ADMIN: every active physical store (plus any inactive one they were explicitly granted). Empty below MANAGER.
+    """
+    return [store for store, _ in await visible_physical_stores(session, user)]
 
 
 async def visible_physical_stores(session: AsyncSession, user) -> list[tuple[Store, bool]]:
     """
-    Every physical store the Inventory page lists for `user`, with whether they hold an
-    active grant for it: [(store, granted)], by label.
+    Every physical store the Inventory page lists for `user`: [(store, usable)], by label.
 
       * MANAGER: only the stores they are granted. A store they hold no grant for is not
         listed, and nothing about it is revealed.
-      * ADMIN: every ACTIVE physical store, granted or not. An administrator already sees
-        every store in the Store Directory and is the person who grants access; listing an
-        ungranted store (name and address only) shows that the grant is missing instead of
-        letting the page look complete. Its inventory still needs a grant: every
-        store-scoped route checks it (ensure_store_access) exactly as before.
-      * below MANAGER, or inactive: nothing.
+      * ADMIN: every ACTIVE physical store, with no grant needed, plus any inactive physical
+        store they were explicitly granted. `usable` is true for all of them.
+      * below MANAGER: nothing.
 
-    Whether a store has invoices, receipts or movements is irrelevant here: a configured
-    physical store is listed.
+    `usable` is kept (rather than dropped) so callers state outright that a listed store may be
+    opened; the same rule decides every store route (ensure_store_access). Whether a store has
+    invoices, receipts or movements is irrelevant: a configured physical store is listed. A
+    source identity (for example the unresolved Item Sales code) is never a physical store.
     """
     if not has_inventory_role(user):
         return []
@@ -133,13 +141,12 @@ async def visible_physical_stores(session: AsyncSession, user) -> list[tuple[Sto
         select(UserStoreAccess.store_id).where(UserStoreAccess.user_id == user.id,
                                                UserStoreAccess.revoked_at.is_(None))
     )).scalars().all())
-    sees_all_active = str(getattr(user, "role", None)) == UserRole.ADMIN.value
     listed: list[tuple[Store, bool]] = []
     for store in await StoreRepository(session).list():
         if store.kind != KIND_PHYSICAL:
             continue
-        if store.id in granted or (sees_all_active and store.status == STATUS_ACTIVE):
-            listed.append((store, store.id in granted))
+        if store.id in granted or _implicit_access(user, store):
+            listed.append((store, True))
     return sorted(listed, key=lambda pair: (pair[0].label.lower(), str(pair[0].id)))
 
 

@@ -3,7 +3,7 @@ tests/integration/test_store_access_db.py — per-user physical-store access, ag
 
 The rule (app.services.store_access): an account uses inventory for a store
 only while it is active, MANAGER or above, the store is physical, and it holds
-an active grant. ADMIN included — there is no implicit all-store access.
+an active grant — except an ADMIN, who needs none for an active physical store.
 An unknown, non-physical or ungranted store is one and the same 404, and so
 is an invoice or receipt at a store the account cannot use. Grants and
 revocations are immutable history; every change takes effect on the next
@@ -100,12 +100,24 @@ class TestEveryStoreRoute:
             for method, path, body in store_routes(sid):
                 assert_store_not_found(await manager.request(method, path, json=body), sid)
         assert (await manager.get("/api/v1/inventory/stores")).json()["data"] == []
-        # ADMIN is not exempt: granted B only, refused on A.
-        a = store_id(PHYSICAL_STORE)
-        for method, path, body in store_routes(a):
-            assert_store_not_found(await api_client.request(method, path, json=body), a)
         assert await ledger_counts(db_session) == (0, 0)
         assert (await db_session.execute(select(func.count()).select_from(InventoryMovement))).scalar() == 0
+
+    async def test_an_administrator_needs_no_grant_for_an_active_physical_store_but_not_for_other_ids(
+        self, received, api_client, db_session,  # noqa: F811
+    ):
+        """ADMIN reaches every active physical store without a grant; an unknown id or a source identity is still the one 404."""
+        a = store_id(PHYSICAL_STORE)
+        assert await active_grants(db_session, "ADMIN", a) == 0
+        for method, path, body in store_routes(a):
+            if method == "GET":
+                assert (await api_client.request(method, path, json=body)).status_code == 200, path
+        listed = (await api_client.get("/api/v1/inventory/stores")).json()["data"]
+        assert {s["id"] for s in listed} == {str(a), str(received.store_id)}        # both active physical stores
+        for sid in (uuid.uuid4(), store_id(SOURCE_ONLY_STORE)):
+            for method, path, body in store_routes(sid):
+                assert_store_not_found(await api_client.request(method, path, json=body), sid)
+        assert await ledger_counts(db_session) == (0, 0)
 
     async def test_a_grant_opens_exactly_that_store(self, received, manager, db_session):  # noqa: F811
         a, b = store_id(PHYSICAL_STORE), received.store_id

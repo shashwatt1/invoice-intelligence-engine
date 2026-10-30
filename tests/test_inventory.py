@@ -342,6 +342,11 @@ def endpoint(app, monkeypatch):
         return {}
 
     monkeypatch.setattr(inv, "opening_summaries", no_openings)
+
+    async def no_references(*_a, **_k):
+        return {}
+
+    monkeypatch.setattr(api, "resolve_references", no_references)       # reviewed reference values need the database
     monkeypatch.setattr(inv, "recent_receipts", none_list)
     monkeypatch.setattr(inv, "item_movements", none_list)
 

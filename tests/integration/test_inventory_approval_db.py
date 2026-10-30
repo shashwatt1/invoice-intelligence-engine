@@ -44,6 +44,7 @@ from app.models.invoice import Invoice
 from app.models.user import User
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
+from app.repositories.store_repository import StoreRepository
 from app.repositories.user_repository import UserRepository
 from app.services import inventory_approval as approval
 from app.services import inventory_service, store_access
@@ -315,6 +316,10 @@ class TestDeletion:
         actor = await users.get(KNOWN_USERS["ADMIN"])
         await store_access.revoke_store_access(db_session, user_id=actor.id, store_id=received.store_id, actor=actor,
                                                reason="test: no longer works this store")
+        # An administrator needs no grant for an ACTIVE physical store, so revoking alone changes nothing;
+        # once the store is inactive the explicit grant is what would have kept it reachable.
+        store = await StoreRepository(db_session).get(received.store_id)
+        store.status = "inactive"
         await db_session.commit()
         r = await api_client.delete(url)
         assert r.status_code == 409 and r.json()["error"]["detail"]["blocked_by"] == "no_store_access"

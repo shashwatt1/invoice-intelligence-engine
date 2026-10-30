@@ -1330,6 +1330,50 @@ export interface InventoryAllStores {
 export interface ZeroStartResult {
   created: boolean;
   baseline: InventoryBaseline;
+  /** Products that now start at an explicit zero as a result. */
+  products_initialized: number;
+}
+
+/** What starting a store at zero would do; nothing is written to produce it. */
+export interface ZeroStartPreview {
+  already_started: boolean;
+  /** Movements or posted receipts exist, so stock may have existed before them. */
+  has_history: boolean;
+  products: number;
+  /** Of `products`, those the store's catalogue lists that have no stock movement yet. */
+  catalogue_only_products: number;
+  counted_products: number;
+  products_to_initialize: number;
+  posted_receipts: number;
+  first_receipt_date: string | null;
+  effective_date: string;
+  basis: "EARLIEST_POSTED_RECEIPT" | "INITIALIZATION_DATE";
+  opening_required_after: number;
+  available_units_after: DecimalString;
+}
+
+export interface ZeroStartRequest {
+  reason: string;
+  initialization_date?: string;
+  confirm: boolean;
+  acknowledge_prior_stock?: boolean;
+}
+
+/** A reviewed reference value with its provenance. `value` is null unless status is RESOLVED. */
+export interface ResolvedValue {
+  value: number | string | null;
+  /** RESOLVED; MISSING (no reviewed source says anything); HELD (a person must decide). */
+  status: "RESOLVED" | "MISSING" | "HELD";
+  source: string | null;
+  scope: string | null;
+  approval: "APPROVED" | "STORE_CONFIRMED" | "CONFIRMED" | null;
+  mapping_id: string | null;
+  notes: string[];
+}
+
+export interface ItemReference {
+  units_per_case: ResolvedValue;
+  description: ResolvedValue;
 }
 
 /** Products without their own opening count start at zero on baseline_date. */
@@ -1356,6 +1400,10 @@ export interface InventoryItemRow {
   last_movement: string | null;
   /** OPENING_COUNT: the product's own count. STORE_BASELINE: the store's zero start. Null: no start yet. */
   opening_source?: "OPENING_COUNT" | "STORE_BASELINE" | null;
+  /** The description is the reviewed commercial one because the store's own was missing. */
+  description_from_reference?: boolean;
+  /** Reviewed commercial reference values: informational, never part of a balance. */
+  reference?: ItemReference | null;
 }
 
 export type InventoryItemSort = "code" | "name" | "on_hand_desc" | "on_hand_asc" | "received_desc" | "recent";

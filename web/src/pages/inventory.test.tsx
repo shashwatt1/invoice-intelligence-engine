@@ -296,7 +296,7 @@ describe("Inventory page", () => {
     expect(within(rows[0]).getByText(/store start 09 Oct 2026/)).toBeInTheDocument();
     expect(within(rows[0]).getAllByText("30")).toHaveLength(2);                 // received 30, on hand 30
     expect(within(rows[1]).queryByText(/store start/)).not.toBeInTheDocument();
-    expect(screen.getByTestId("baseline-note")).toHaveTextContent("Inventory started at zero on 09 Oct 2026");
+    expect(screen.getByTestId("baseline-note")).toHaveTextContent("Zero start (declared, not counted) from 09 Oct 2026");
     expect(screen.getByTestId("baseline-note")).toHaveTextContent("first received invoice");
   });
 
