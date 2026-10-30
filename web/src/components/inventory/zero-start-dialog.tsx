@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
@@ -14,7 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { useStartStoreAtZero, useZeroStartPreview } from "@/hooks/use-api";
 import { formatDate } from "@/lib/format";
-import { formatUnits, todayIso } from "@/lib/inventory";
+import { formatUnits } from "@/lib/inventory";
 
 /**
  * Declares that a store starts tracking at zero — an administrator's statement, NOT a physical count. Before
@@ -24,21 +24,43 @@ import { formatUnits, todayIso } from "@/lib/inventory";
  * acknowledgement; counting it instead is the other choice. It writes one baseline (who, when, why) and
  * nothing else: no movement, no receipt, and no change to a product that has its own count. Asking again for
  * a store that already has one changes nothing.
+ *
+ * The start date is the server's call. The dialog never sends the browser's own "today" (a calendar that can be
+ * a day ahead of the server's UTC date, which the server rightly refuses as the future): it sends a date only
+ * when the person picks one, and otherwise the server applies its default. A failed preview shows the server's
+ * own message and request id, and never lets the start proceed.
  */
+function previewFailure(error: unknown): { message: string; requestId: string | null; code: string | null } {
+  if (error instanceof ApiError) {
+    return { message: error.message, requestId: error.requestId, code: error.errorCode };
+  }
+  return { message: error instanceof Error ? error.message : "The request failed.", requestId: null, code: null };
+}
+
 export function ZeroStartDialog({ storeId, storeLabel, onClose }: { storeId: string; storeLabel: string; onClose: () => void }) {
   const start = useStartStoreAtZero();
-  const [date, setDate] = useState(todayIso());
+  const [date, setDate] = useState("");                    // "" = not chosen: the server applies its own default
+  const [serverToday, setServerToday] = useState<string | undefined>();
   const [reason, setReason] = useState("");
   const [confirm, setConfirm] = useState(false);
   const [acknowledge, setAcknowledge] = useState(false);
   const preview = useZeroStartPreview(storeId, date || undefined);
   const p = preview.data;
   const history = p?.has_history === true;
-  const ready = Boolean(p) && !p?.already_started && reason.trim() !== "" && date !== "" && confirm
+  // Never started from a failed or still-loading preview: what the person confirms is exactly what was checked.
+  const checked = Boolean(p) && !preview.isError && !preview.isFetching;
+  const ready = checked && !p?.already_started && reason.trim() !== "" && confirm
     && (!history || acknowledge) && !start.isPending;
+  const failure = preview.isError ? previewFailure(preview.error) : null;
+
+  // Without a chosen date, a store with no history starts on the server's "today": the latest date it will accept.
+  useEffect(() => {
+    if (!date && p && !p.has_history && !p.already_started) setServerToday(p.effective_date);
+  }, [date, p]);
 
   const submit = () => start.mutate(
-    { storeId, body: { reason: reason.trim(), initialization_date: date, confirm, acknowledge_prior_stock: acknowledge } },
+    { storeId, body: { reason: reason.trim(), ...(date ? { initialization_date: date } : {}), confirm,
+                       acknowledge_prior_stock: acknowledge } },
     {
       onSuccess: (result) => {
         toast.success(result.created
@@ -63,7 +85,14 @@ export function ZeroStartDialog({ storeId, storeLabel, onClose }: { storeId: str
         </AlertDialogHeader>
 
         {preview.isLoading ? <p className="t-meta">Checking what this would do…</p> : null}
-        {preview.isError ? <p className="text-sm text-destructive">The effect could not be checked, so nothing can be started.</p> : null}
+        {failure ? (
+          <div role="alert" className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm" data-testid="zero-start-error">
+            <p className="font-medium text-destructive">The effect could not be checked, so nothing can be started.</p>
+            <p data-testid="zero-start-error-message">{failure.message}</p>
+            {failure.code ? <p className="t-meta">Error {failure.code}</p> : null}
+            {failure.requestId ? <p className="t-meta">Request ID <span className="font-mono" data-testid="zero-start-error-request">{failure.requestId}</span></p> : null}
+          </div>
+        ) : null}
         {p ? (
           <dl className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-md border bg-muted/30 p-3 text-sm" data-testid="zero-start-effect">
             <dt className="text-muted-foreground">Start date</dt>
@@ -105,8 +134,13 @@ export function ZeroStartDialog({ storeId, storeLabel, onClose }: { storeId: str
               </div>
             ) : (
               <label className="block">
-                <span className="mb-1 block text-xs font-medium">Start date</span>
-                <Input type="date" value={date} max={todayIso()} onChange={(e) => setDate(e.target.value)} disabled={start.isPending} />
+                <span className="mb-1 block text-xs font-medium">Start date <span className="text-muted-foreground">(optional)</span></span>
+                <Input type="date" value={date} max={serverToday} onChange={(e) => setDate(e.target.value)} disabled={start.isPending} />
+                {!date ? (
+                  <span className="t-meta mt-1 block" data-testid="zero-start-default-date">
+                    Without a date it starts on {formatDate(p.effective_date)}, the server&apos;s date today.
+                  </span>
+                ) : null}
               </label>
             )}
             <label className="block">

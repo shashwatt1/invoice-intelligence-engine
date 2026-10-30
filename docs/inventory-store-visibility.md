@@ -168,3 +168,23 @@ the whole catalogue on every search; it was not done.
 
 **Feature flag.** `PRODUCT_MASTER_COMMERCIAL_RESOLUTION` controls which sources resolve. This change does not
 alter it or any other environment variable.
+
+### Which date a zero start uses
+
+The server decides "today" in **UTC** and refuses any start date after it (`future_date`, 422). The dialog therefore
+**never sends the browser's own current date**: a browser east of UTC can be a day ahead (03:09 IST on 31 Oct is
+still 21:39 UTC on 30 Oct), and its "today" was refused, which made a start impossible for those hours.
+
+* **No date chosen** (the default): the dialog sends none, and the server applies its own default to the preview
+  and to the start alike, so what was previewed is what is recorded.
+  * A store **with posted receipts** starts on its earliest receipt's arrival date, as before; the default only
+    becomes the recorded run date. No date is offered for these stores.
+  * A store **without receipts** starts on the server's UTC date today (previously the browser's date).
+* **A date the person picks** is sent to the preview and the start, kept as chosen, and still refused if it is after
+  the server's today or (with receipts) before the first receipt. The date picker's ceiling is the server's today.
+* A failed preview shows the server's message, error code and **request id** (for Render logs), and the start stays
+  disabled; it can never be reached from a failed or loading preview.
+
+Related, not changed here: the receipt and opening-count dialogs also default to the browser's date. A store whose
+earliest posted receipt is dated "tomorrow in UTC" (entered from a browser ahead of UTC) would be refused a zero start
+with `after_first_receipt` until the UTC date reaches it.

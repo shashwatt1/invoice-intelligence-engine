@@ -1,9 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
+import { todayIso } from "@/lib/inventory";
 import type {
   InventoryAllStores, InventoryOverview, OpeningState, ResolvedValue, StoreInventoryEntry, StoreRef, ZeroStartPreview,
 } from "@/api/types";
@@ -389,5 +392,144 @@ describe("Reviewed reference values on products", () => {
     const rows = await screen.findAllByTestId("inventory-row");
     expect(within(rows[3]).getByText("Northwind Cola 12PK")).toBeInTheDocument();
     for (const row of rows) expect(within(row).getByText("Out of stock")).toBeInTheDocument();
+  });
+});
+
+
+/**
+ * The start date is the server's call. The dialog never sends the browser's own "today": at 03:09 IST on 31 Oct it
+ * is still 30 Oct in UTC, and the server refuses a date after its own today. A date is sent only when a person picks
+ * one. A failed preview shows the server's message and request id, and the start can never proceed from it.
+ */
+describe("Zero-start date handling and failures", () => {
+  const SERVER_TODAY = "2026-10-30";
+  const FUTURE = new ApiError(422, {
+    error_code: "ERR_VALIDATION_FAILED", message: "The start date cannot be in the future.",
+    detail: { field: "initialization_date", reason: "future_date" },
+  }, "9f1c2d3e-aaaa-bbbb-cccc-0123456789ab");
+
+  /** The server's rule: no date -> its own UTC today; a date after it -> refused. */
+  const serverRule = (preview: ZeroStartPreview) => async (_id: string, date?: string) => {
+    if (date && date > SERVER_TODAY) throw FUTURE;
+    return date ? { ...preview, effective_date: date } : { ...preview, effective_date: preview.has_history ? preview.effective_date : SERVER_TODAY };
+  };
+
+  const openDialog = async (path = "/inventory?store=empty") => {
+    role = "ADMIN";
+    const user = userEvent.setup();
+    renderPage(path);
+    await user.click(await screen.findByRole("button", { name: "Start at zero" }));
+    return { user, dialog: await screen.findByTestId("zero-start-dialog") };
+  };
+  const submit = async (user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement, acknowledge = false) => {
+    await within(dialog).findByTestId("zero-start-effect");
+    await user.type(within(dialog).getByPlaceholderText(/new store/), "opened with no stock");
+    await user.click(within(dialog).getByRole("checkbox", { name: "Confirm the zero start" }));
+    if (acknowledge) await user.click(within(dialog).getByRole("checkbox", { name: "Confirm no stock before the first receipt" }));
+    await user.click(within(dialog).getByTestId("zero-start-confirm"));
+  };
+
+  beforeEach(() => {
+    startStoreAtZero.mockResolvedValue({ created: true, baseline: {}, products_initialized: 0 });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it("reproduces the IST/UTC boundary and sends no date, so the server's own rule is never tripped", async () => {
+    vi.stubEnv("TZ", "Asia/Kolkata");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-30T21:39:00Z"));                      // 03:09 IST on 31 Oct, still 30 Oct in UTC
+    expect(todayIso()).toBe("2026-10-31");                                   // the browser's calendar is a day ahead of UTC
+    getZeroStartPreview.mockImplementation(serverRule(PREVIEW_NO_HISTORY));
+    const { user, dialog } = await openDialog();
+    expect(await within(dialog).findByTestId("zero-start-effect")).toBeInTheDocument();       // no error: the preview worked
+    expect(screen.queryByTestId("zero-start-error")).not.toBeInTheDocument();
+    expect(getZeroStartPreview.mock.calls.every((c) => c[1] === undefined)).toBe(true);        // never the browser's 31 Oct
+    expect(within(dialog).getByTestId("zero-start-date")).toHaveTextContent("30 Oct 2026");    // the server's date
+    await submit(user, dialog);
+    await waitFor(() => expect(startStoreAtZero).toHaveBeenCalledTimes(1));
+    expect(startStoreAtZero.mock.calls[0][1]).not.toHaveProperty("initialization_date");
+  });
+
+  it("works the same when the browser's calendar matches UTC", async () => {
+    vi.stubEnv("TZ", "UTC");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-30T21:39:00Z"));
+    expect(todayIso()).toBe("2026-10-30");
+    getZeroStartPreview.mockImplementation(serverRule(PREVIEW_NO_HISTORY));
+    const { user, dialog } = await openDialog();
+    await submit(user, dialog);
+    await waitFor(() => expect(startStoreAtZero).toHaveBeenCalledTimes(1));
+    expect(getZeroStartPreview.mock.calls.every((c) => c[1] === undefined)).toBe(true);
+    expect(startStoreAtZero.mock.calls[0][1]).not.toHaveProperty("initialization_date");
+  });
+
+  it("sends an explicitly selected date, to both the preview and the start", async () => {
+    getZeroStartPreview.mockImplementation(serverRule(PREVIEW_NO_HISTORY));
+    const { user, dialog } = await openDialog();
+    await within(dialog).findByTestId("zero-start-effect");
+    const input = dialog.querySelector('input[type="date"]') as HTMLInputElement;
+    expect(input.value).toBe("");                                             // nothing chosen by default
+    expect(input.max).toBe(SERVER_TODAY);                                     // the ceiling is the server's today, not the browser's
+    fireEvent.change(input, { target: { value: "2026-10-25" } });
+    await waitFor(() => expect(getZeroStartPreview).toHaveBeenLastCalledWith("empty", "2026-10-25"));
+    await waitFor(() => expect(within(dialog).getByTestId("zero-start-date")).toHaveTextContent("25 Oct 2026"));
+    await submit(user, dialog);
+    await waitFor(() => expect(startStoreAtZero).toHaveBeenCalledTimes(1));
+    expect(startStoreAtZero.mock.calls[0][1]).toMatchObject({ initialization_date: "2026-10-25", confirm: true });
+  });
+
+  it("for a store with receipts offers no date, sends none, and keeps the first-receipt rule", async () => {
+    getZeroStartPreview.mockImplementation(serverRule(PREVIEW_HISTORY));
+    const { user, dialog } = await openDialog();
+    await within(dialog).findByTestId("zero-start-history");
+    expect(dialog.querySelector('input[type="date"]')).toBeNull();
+    expect(within(dialog).getByTestId("zero-start-date")).toHaveTextContent(/10 Sept? 2026/);    // the first receipt, not today
+    await submit(user, dialog, true);
+    await waitFor(() => expect(startStoreAtZero).toHaveBeenCalledTimes(1));
+    expect(startStoreAtZero.mock.calls[0][1]).toMatchObject({ confirm: true, acknowledge_prior_stock: true });
+    expect(startStoreAtZero.mock.calls[0][1]).not.toHaveProperty("initialization_date");
+    expect(getZeroStartPreview.mock.calls.every((c) => c[1] === undefined)).toBe(true);
+  });
+
+  it("still refuses a future date the person picks, shows why, and keeps the start disabled", async () => {
+    getZeroStartPreview.mockImplementation(serverRule(PREVIEW_NO_HISTORY));
+    const { dialog } = await openDialog();
+    await within(dialog).findByTestId("zero-start-effect");
+    fireEvent.change(dialog.querySelector('input[type="date"]') as HTMLInputElement, { target: { value: "2026-12-31" } });
+    expect(await within(dialog).findByTestId("zero-start-error-message")).toHaveTextContent("The start date cannot be in the future.");
+    expect(within(dialog).getByTestId("zero-start-confirm")).toBeDisabled();
+    expect(startStoreAtZero).not.toHaveBeenCalled();
+  });
+
+  it("shows the server's message, error code and request id when the preview fails, and the start stays disabled", async () => {
+    getZeroStartPreview.mockRejectedValue(FUTURE);
+    const { dialog } = await openDialog();
+    expect(await within(dialog).findByTestId("zero-start-error-message")).toHaveTextContent("The start date cannot be in the future.");
+    expect(within(dialog).getByTestId("zero-start-error")).toHaveTextContent("ERR_VALIDATION_FAILED");
+    expect(within(dialog).getByTestId("zero-start-error-request")).toHaveTextContent("9f1c2d3e-aaaa-bbbb-cccc-0123456789ab");   // the full id
+    expect(within(dialog).queryByTestId("zero-start-effect")).not.toBeInTheDocument();
+    expect(within(dialog).queryByPlaceholderText(/new store/)).not.toBeInTheDocument();          // no way to fill in the form
+    expect(within(dialog).getByTestId("zero-start-confirm")).toBeDisabled();
+    expect(startStoreAtZero).not.toHaveBeenCalled();
+  });
+
+  it("explains a network failure plainly and still never allows the start", async () => {
+    getZeroStartPreview.mockRejectedValue(new Error("Cannot reach the backend API. Is the server running?"));
+    const { dialog } = await openDialog();
+    expect(await within(dialog).findByTestId("zero-start-error-message")).toHaveTextContent("Cannot reach the backend API");
+    expect(within(dialog).queryByTestId("zero-start-error-request")).not.toBeInTheDocument();
+    expect(within(dialog).getByTestId("zero-start-confirm")).toBeDisabled();
+  });
+
+  it("shows a server rejection of the start itself to the person", async () => {
+    getZeroStartPreview.mockImplementation(serverRule(PREVIEW_NO_HISTORY));
+    startStoreAtZero.mockRejectedValue(FUTURE);
+    const { user, dialog } = await openDialog();
+    await submit(user, dialog);
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(String((toast.error as ReturnType<typeof vi.fn>).mock.calls[0][0])).toContain("The start date cannot be in the future.");
   });
 });
