@@ -337,6 +337,11 @@ def endpoint(app, monkeypatch):
     monkeypatch.setattr(inv, "record_opening_counts", opening)
     monkeypatch.setattr(inv, "last_recorded", nothing)
     monkeypatch.setattr(inv, "store_baseline", nothing)
+
+    async def no_openings(*_a, **_k):
+        return {}
+
+    monkeypatch.setattr(inv, "opening_summaries", no_openings)
     monkeypatch.setattr(inv, "recent_receipts", none_list)
     monkeypatch.setattr(inv, "item_movements", none_list)
 
