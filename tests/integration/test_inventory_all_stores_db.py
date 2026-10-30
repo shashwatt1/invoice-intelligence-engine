@@ -567,3 +567,75 @@ class TestCatalogueProductsWithoutMovements:
         await add_catalogue(db_session, a, 4)
         assert (await overview_of(api_client, a))["tracked_products"] == 4
         assert (await overview_of(api_client, b))["tracked_products"] == 0
+
+
+class TestZeroStartDateBoundary:
+    """
+    The dialog no longer sends the browser's own "today". At 03:09 IST on 31 Oct it is still 30 Oct in UTC: a
+    browser's 31 Oct was refused as the future, so a start looked impossible. The date is now omitted unless a
+    person picks one, and the server's UTC default applies to the preview and the start alike.
+    """
+
+    @staticmethod
+    def clock(monkeypatch):
+        from app.api.v1 import inventory as inventory_api
+
+        instant = datetime(2026, 10, 30, 21, 39, tzinfo=UTC)               # 03:09 IST on 31 Oct
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+        monkeypatch.setattr(inventory_api, "datetime", Clock)
+
+    async def test_the_old_browser_request_is_still_refused_and_writes_nothing(self, api_client, db_session, monkeypatch):  # noqa: F811
+        self.clock(monkeypatch)
+        sid = store_id(PHYSICAL_STORE)
+        preview = await api_client.get(f"{zero_start_path(sid)}/preview", params={"initialization_date": "2026-10-31"})
+        assert preview.status_code == 422 and preview.json()["error"]["detail"]["reason"] == "future_date"
+        start = await api_client.post(zero_start_path(sid), json=confirmed(initialization_date="2026-10-31"))
+        assert start.status_code == 422 and start.json()["error"]["detail"]["reason"] == "future_date"
+        assert await baseline_rows(db_session) == 0
+
+    async def test_no_date_sent_a_store_without_history_starts_on_the_servers_utc_date(self, api_client, db_session, monkeypatch):  # noqa: F811
+        self.clock(monkeypatch)
+        sid = store_id(PHYSICAL_STORE)
+        preview = (await api_client.get(f"{zero_start_path(sid)}/preview")).json()["data"]
+        assert (preview["effective_date"], preview["basis"], preview["has_history"]) == ("2026-10-30", "INITIALIZATION_DATE", False)
+        r = await api_client.post(zero_start_path(sid), json=confirmed())               # no initialization_date
+        assert r.status_code == 200, r.text
+        baseline = r.json()["data"]["baseline"]
+        assert (baseline["baseline_date"], baseline["initialization_date"]) == ("2026-10-30", "2026-10-30")
+        assert baseline["baseline_date"] == preview["effective_date"]                   # what was previewed is what was recorded
+
+    async def test_an_explicitly_chosen_date_is_kept_and_the_utc_date_itself_is_accepted(self, api_client, db_session, monkeypatch):  # noqa: F811
+        self.clock(monkeypatch)
+        a, b = store_id(PHYSICAL_STORE), store_id("86357232")
+        earlier = await api_client.post(zero_start_path(a), json=confirmed(initialization_date="2026-10-25"))
+        assert earlier.status_code == 200 and earlier.json()["data"]["baseline"]["baseline_date"] == "2026-10-25"
+        today = await api_client.post(zero_start_path(b), json=confirmed(initialization_date="2026-10-30"))
+        assert today.status_code == 200 and today.json()["data"]["baseline"]["baseline_date"] == "2026-10-30"
+
+    async def test_a_store_with_receipts_keeps_its_first_receipt_date_whatever_default_is_applied(
+        self, api_client, db_session, received, monkeypatch,  # noqa: F811
+    ):
+        await received_and_mapped(api_client, db_session, received)
+        self.clock(monkeypatch)
+        sid = received.store_id
+        preview = (await api_client.get(f"{zero_start_path(sid)}/preview")).json()["data"]
+        assert (preview["effective_date"], preview["basis"]) == (FIRST_RECEIPT, "EARLIEST_POSTED_RECEIPT")
+        r = await api_client.post(zero_start_path(sid), json=confirmed(acknowledge_prior_stock=True))   # no date
+        assert r.status_code == 200, r.text
+        baseline = r.json()["data"]["baseline"]
+        assert (baseline["baseline_date"], baseline["initialization_date"]) == (FIRST_RECEIPT, "2026-10-30")
+        rows = await items_of(api_client, sid)
+        assert {c: Decimal(r["on_hand"]) for c, r in rows.items()} == {LAGER_CODE: 36, ALE_CODE: 12}    # receipts counted once
+
+    async def test_a_date_before_the_first_receipt_is_still_refused_with_history(self, api_client, db_session, received, monkeypatch):  # noqa: F811
+        await received_and_mapped(api_client, db_session, received)
+        self.clock(monkeypatch)
+        r = await api_client.post(zero_start_path(received.store_id),
+                                  json=confirmed(acknowledge_prior_stock=True, initialization_date="2026-09-01"))
+        assert r.status_code == 422 and r.json()["error"]["detail"]["reason"] == "after_first_receipt"
+        assert await baseline_rows(db_session) == 0
