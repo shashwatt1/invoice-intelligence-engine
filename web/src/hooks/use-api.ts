@@ -43,7 +43,9 @@ import {
   getCommercialSummary,
   getDashboardSummary,
   getDocumentStatus,
+  getInventoryAllStores,
   getInventoryOverview,
+  startStoreAtZero,
   getInventoryStatus,
   getInvoice,
   getInvoiceExport,
@@ -867,6 +869,21 @@ export function useInventoryStatus({ enabled = true }: { enabled?: boolean } = {
 /** Only the stores this account may use in inventory; the route itself is behind the inventory switch. */
 export function useInventoryStores({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({ queryKey: ["inventory", "stores"], queryFn: listInventoryStores, enabled, staleTime: 60_000 });
+}
+
+/** Every physical store this account can see, with figures for the ones it holds a grant for. */
+export function useInventoryAllStores({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ["inventory", "all-stores"], queryFn: getInventoryAllStores, enabled });
+}
+
+/** Declares a zero start for one store; writes one baseline row, never a movement or a receipt. */
+export function useStartStoreAtZero() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ storeId, body }: { storeId: string; body: { reason: string; initialization_date?: string } }) =>
+      startStoreAtZero(storeId, body),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["inventory"] }),
+  });
 }
 
 export function useInventoryOverview(storeId: string | null) {

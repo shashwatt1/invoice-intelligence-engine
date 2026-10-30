@@ -7,13 +7,15 @@ import type {
   InventoryItemSort,
   InventoryItemStatus,
   InventoryOverview,
+  OpeningState,
+  StoreInventoryEntry,
   StoreInvoiceReceiptFilter,
   StoreInvoiceRow,
-  StoreRef,
 } from "@/api/types";
 import { MovementHistory } from "@/components/inventory/movement-history";
 import { OpeningCountDialog } from "@/components/inventory/opening-count-dialog";
 import { ReceiptDialog } from "@/components/inventory/receipt-dialog";
+import { ZeroStartDialog } from "@/components/inventory/zero-start-dialog";
 import { PageHeader } from "@/components/layout/page-header";
 import { ActiveFilters, FilterBar, SearchInput } from "@/components/shared/filter-bar";
 import { MetricStrip, MetricStripSkeleton } from "@/components/shared/metric-strip";
@@ -22,19 +24,18 @@ import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/state
 import { StatusPill } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  useInventoryAllStores,
   useInventoryItems,
   useInventoryOverview,
-  useInventoryOverviews,
   useInventoryStatus,
   usePendingApprovals,
   useStoreInvoices,
-  useInventoryStores,
 } from "@/hooks/use-api";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { useAuth } from "@/hooks/use-auth";
 import { formatUnits, ITEM_STATUS, RECEIPT_STATUS, receivableReason, staleReason } from "@/lib/inventory";
 import { cn } from "@/lib/utils";
 
@@ -65,11 +66,12 @@ function receiptAction(row: StoreInvoiceRow): { label: string; emphasis: boolean
  */
 export function InventoryPage() {
   const status = useInventoryStatus();
-  const stores = useInventoryStores({ enabled: status.data?.enabled === true });
-  const physical = useMemo(() => stores.data ?? [], [stores.data]);
+  const stores = useInventoryAllStores({ enabled: status.data?.enabled === true });
+  const entries = useMemo(() => stores.data?.stores ?? [], [stores.data]);
   const [params, setParams] = useSearchParams();
   const requested = params.get("store");
-  const store = physical.find((s) => s.id === requested) ?? null;
+  // Only a store the account holds a grant for can be opened; a listed-but-locked store has no store view.
+  const store = entries.find((e) => e.access_granted && e.store.id === requested)?.store ?? null;
   const chooseStore = (id: string | null) => setParams((prev) => {
     const next = new URLSearchParams(prev);
     if (id) next.set("store", id); else next.delete("store");
@@ -90,7 +92,7 @@ export function InventoryPage() {
   }
   if (stores.isError) return <><Header /><ErrorState error={stores.error} onRetry={() => void stores.refetch()} /></>;
 
-  if (!physical.length) {
+  if (!entries.length) {
     return (
       <>
         <Header />
@@ -99,7 +101,7 @@ export function InventoryPage() {
       </>
     );
   }
-  if (!store) return <><Header /><StoreGrid stores={physical} onOpen={chooseStore} /></>;
+  if (!store) return <><Header /><StoreGrid entries={entries} notGranted={stores.data?.not_granted ?? 0} onOpen={chooseStore} /></>;
   return (
     <>
       <Header />
@@ -132,6 +134,8 @@ const STORE_SHOW = [
   { value: "all", label: "All stores" },
   { value: "awaiting", label: "Awaiting approval" },
   { value: "opening", label: "Opening count needed" },
+  { value: "not_set", label: "Opening not entered" },
+  { value: "no_access", label: "No access for me" },
   { value: "no_activity", label: "No activity yet" },
 ] as const;
 type StoreShow = (typeof STORE_SHOW)[number]["value"];
@@ -148,9 +152,24 @@ function lastReceipt(o: InventoryOverview | undefined): string | null {
   return o?.recent_receipts[0]?.received_on ?? null;
 }
 
-function matchesShow(show: StoreShow, o: InventoryOverview | undefined): boolean {
+const OPENING_PILL: Record<OpeningState, { label: string; tone: "warning" | "neutral" | "success"; meaning: string }> = {
+  NOT_SET: { label: "Opening count not entered", tone: "warning",
+             meaning: "No opening count and no zero start: this store's stock is unknown, not zero." },
+  ZERO_START: { label: "Zero start (not counted)", tone: "neutral",
+                meaning: "An administrator declared the store started at zero. It is not a physical count." },
+  COUNTED: { label: "Counted", tone: "success", meaning: "Physical opening counts were entered for this store." },
+};
+
+function openingState(o: InventoryOverview): OpeningState {
+  return o.opening_state ?? "NOT_SET";
+}
+
+function matchesShow(show: StoreShow, entry: StoreInventoryEntry): boolean {
+  const o = entry.overview ?? undefined;
   if (show === "all") return true;
-  if (!o) return false;                      // figures not loaded: shown only under "All stores"
+  if (show === "no_access") return !entry.access_granted;
+  if (!o) return false;                      // no figures (locked): shown only under "All stores" / "No access"
+  if (show === "not_set") return openingState(o) === "NOT_SET";
   if (show === "awaiting") return o.pending_approvals > 0;
   if (show === "opening") return o.opening_required > 0;
   return o.tracked_products === 0 && o.pending_approvals === 0;
@@ -161,7 +180,7 @@ function matchesShow(show: StoreShow, o: InventoryOverview | undefined): boolean
  * store's figures at a glance. Opening a card opens that store's inventory. Filters and
  * sort live in the URL, so going back to "All stores" keeps them.
  */
-function StoreGrid({ stores, onOpen }: { stores: StoreRef[]; onOpen: (id: string) => void }) {
+function StoreGrid({ entries, notGranted, onOpen }: { entries: StoreInventoryEntry[]; notGranted: number; onOpen: (id: string) => void }) {
   const [params, setParams] = useSearchParams();
   const search = params.get("q") ?? "";
   const show = (STORE_SHOW.find((o) => o.value === params.get("show"))?.value ?? "all") as StoreShow;
@@ -172,16 +191,14 @@ function StoreGrid({ stores, onOpen }: { stores: StoreRef[]; onOpen: (id: string
     return next;
   }, { replace: true });
 
-  const overviews = useInventoryOverviews(stores.map((s) => s.id));
-  const byId = new Map(stores.map((s, i) => [s.id, overviews[i]]));
   const term = search.trim().toLowerCase();
-  const visible = stores
-    .filter((s) => !term || s.label.toLowerCase().includes(term) || (s.address ?? "").toLowerCase().includes(term))
-    .filter((s) => matchesShow(show, byId.get(s.id)?.data))
-    .sort((a, b) => {
-      const oa = byId.get(a.id)?.data;
-      const ob = byId.get(b.id)?.data;
-      const byName = a.label.localeCompare(b.label);
+  const visible = entries
+    .filter(({ store: s }) => !term || s.label.toLowerCase().includes(term) || (s.address ?? "").toLowerCase().includes(term))
+    .filter((e) => matchesShow(show, e))
+    .sort((ea, eb) => {
+      const oa = ea.overview ?? undefined;
+      const ob = eb.overview ?? undefined;
+      const byName = ea.store.label.localeCompare(eb.store.label);
       if (sort === "awaiting") return (ob?.pending_approvals ?? -1) - (oa?.pending_approvals ?? -1) || byName;
       if (sort === "products") return (ob?.tracked_products ?? -1) - (oa?.tracked_products ?? -1) || byName;
       if (sort === "recent") return (lastReceipt(ob) ?? "").localeCompare(lastReceipt(oa) ?? "") || byName;
@@ -194,7 +211,7 @@ function StoreGrid({ stores, onOpen }: { stores: StoreRef[]; onOpen: (id: string
 
   return (
     <>
-      <FilterBar summary={`${visible.length} of ${stores.length} store${stores.length === 1 ? "" : "s"}`}>
+      <FilterBar summary={`${visible.length} of ${entries.length} store${entries.length === 1 ? "" : "s"}`}>
         <SearchInput value={search} onChange={(v) => setParam("q", v, "")} placeholder="Search store name or address"
                      className="w-72 max-md:w-full" />
         <Select value={show} onValueChange={(v) => setParam("show", v, "all")}>
@@ -218,62 +235,75 @@ function StoreGrid({ stores, onOpen }: { stores: StoreRef[]; onOpen: (id: string
           const next = new URLSearchParams(prev); next.delete("q"); next.delete("show"); return next;
         }, { replace: true })} />
       </FilterBar>
+      {notGranted > 0 ? (
+        <p className="mb-3 text-xs text-muted-foreground" data-testid="not-granted-note">
+          {notGranted} store{notGranted === 1 ? " is" : "s are"} listed without figures because your account has no
+          access grant for {notGranted === 1 ? "it" : "them"}. Grant yourself access under Users to see
+          {notGranted === 1 ? " its" : " their"} inventory.
+        </p>
+      ) : null}
       {!visible.length ? (
         <EmptyState icon={Store} title="No store matches" description="Clear the search or the filter." />
       ) : (
         <div className="grid grid-cols-3 gap-4 max-xl:grid-cols-2 max-md:grid-cols-1" data-testid="store-grid">
-          {visible.map((s) => {
-            const q = byId.get(s.id);
-            return <StoreCard key={s.id} store={s} overview={q?.data} loading={Boolean(q?.isLoading)}
-                              failed={Boolean(q?.isError)} onOpen={() => onOpen(s.id)} />;
-          })}
+          {visible.map((e) => <StoreCard key={e.store.id} entry={e} onOpen={() => onOpen(e.store.id)} />)}
         </div>
       )}
     </>
   );
 }
 
-function StoreCard({ store, overview: o, loading, failed, onOpen }: {
-  store: StoreRef; overview: InventoryOverview | undefined; loading: boolean; failed: boolean; onOpen: () => void;
-}) {
-  const received = lastReceipt(o);
+function StoreCard({ entry, onOpen }: { entry: StoreInventoryEntry; onOpen: () => void }) {
+  const { store, overview: o } = entry;
+  const received = lastReceipt(o ?? undefined);
+  const header = (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="truncate text-[0.98rem] font-semibold tracking-tight">{store.label}</div>
+        <div className="t-meta mt-0.5 truncate">{store.address ?? "No address recorded"}</div>
+      </div>
+      {entry.access_granted
+        ? <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
+        : null}
+    </div>
+  );
+  if (!entry.access_granted || !o) {
+    return (
+      <div data-testid="store-card" data-access="none" className="surface flex flex-col gap-4 p-5">
+        {header}
+        <p className="t-meta">
+          No figures: your account has no access grant for this store. Inventory is shown only for stores you are
+          granted.
+        </p>
+        <StatusPill size="xs" tone="neutral" label="No access for your account" />
+      </div>
+    );
+  }
+  const state = openingState(o);
+  const pill = OPENING_PILL[state];
   return (
     <button type="button" onClick={onOpen} data-testid="store-card" aria-label={`Open ${store.label} inventory`}
             className="surface surface-hover group flex flex-col gap-4 p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-[0.98rem] font-semibold tracking-tight">{store.label}</div>
-          <div className="t-meta mt-0.5 truncate">{store.address ?? "No address recorded"}</div>
-        </div>
-        <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
+      {header}
+      <div className="grid grid-cols-3 gap-2 border-y border-border py-3">
+        <CardStat label="Products" value={o.tracked_products} />
+        <CardStat label="Available units" value={o.on_hand_units == null ? "—" : formatUnits(o.on_hand_units)} />
+        <CardStat label="Need opening count" value={o.opening_required} warn={o.opening_required > 0} />
       </div>
-      {loading ? (
-        <Skeleton className="h-12 w-full" />
-      ) : failed || !o ? (
-        <p className="t-meta">Figures could not be loaded. Open the store to retry.</p>
-      ) : (
-        <>
-          <div className="grid grid-cols-3 gap-2 border-y border-border py-3">
-            <CardStat label="Products" value={o.tracked_products} />
-            <CardStat label="In stock" value={o.in_stock} />
-            <CardStat label="Need opening count" value={o.opening_required} warn={o.opening_required > 0} />
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            {o.pending_approvals ? (
-              <StatusPill size="xs" tone="warning" label={`${o.pending_approvals} awaiting approval`}
-                          meaning="Receipts submitted by marking invoices Retailed; no stock moves until approved." />
-            ) : (
-              <StatusPill size="xs" tone="neutral" label="Nothing awaiting approval" />
-            )}
-            <span className="t-meta">{received ? `Last receipt ${formatDate(received)}` : "No receipts yet"}</span>
-          </div>
-        </>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <StatusPill size="xs" tone={pill.tone} label={state === "COUNTED" ? `Counted · ${o.opening_counted_products ?? 0} products` : pill.label}
+                    meaning={pill.meaning} />
+        {o.pending_approvals ? (
+          <StatusPill size="xs" tone="warning" label={`${o.pending_approvals} awaiting approval`}
+                      meaning="Receipts submitted by marking invoices Retailed; no stock moves until approved." />
+        ) : null}
+      </div>
+      <div className="t-meta">{received ? `Last receipt ${formatDate(received)}` : "No receipts yet"}</div>
     </button>
   );
 }
 
-function CardStat({ label, value, warn = false }: { label: string; value: number; warn?: boolean }) {
+function CardStat({ label, value, warn = false }: { label: string; value: number | string; warn?: boolean }) {
   return (
     <div>
       <div className={cn("text-[1.15rem] font-semibold tabular-nums", warn && "text-warning")}>{value}</div>
@@ -286,6 +316,8 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
   const overview = useInventoryOverview(storeId);
   const [tab, setTab] = useState<string>(initialTab);
   const [counting, setCounting] = useState(false);
+  const [zeroStart, setZeroStart] = useState(false);
+  const isAdmin = useAuth().user?.role === "ADMIN";
   const o = overview.data;
 
   return (
@@ -311,6 +343,28 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
             Provisional: on hand is the opening count plus receipts and adjustments since. Sales are not imported yet, so
             it overstates stock until they are. Nothing here is reconciled against the POS.
           </p>
+          {openingState(o) === "NOT_SET" ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs"
+                 data-testid="opening-not-set">
+              <span>
+                <strong className="font-semibold">Opening count not entered.</strong> This store&apos;s stock is unknown,
+                not zero. Record physical opening counts{isAdmin ? ", or declare that the store started at zero" : ""}.
+                Receipts are still recorded.
+              </span>
+              {isAdmin ? (
+                <Button variant="outline" size="sm" className="ml-auto h-7" onClick={() => setZeroStart(true)}>
+                  Start at zero
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          {openingState(o) === "COUNTED" ? (
+            <p className="text-xs text-muted-foreground" data-testid="opening-counted-note">
+              Opening counted for {o.opening_counted_products ?? 0} product{o.opening_counted_products === 1 ? "" : "s"}
+              {o.opening_last_counted_on ? `, latest ${formatDate(o.opening_last_counted_on)}` : ""}
+              {o.opening_last_counted_by ? ` by ${o.opening_last_counted_by}` : ""}.
+            </p>
+          ) : null}
           {o.baseline ? (
             <p className="text-xs text-muted-foreground" data-testid="baseline-note">
               Inventory started at zero on {formatDate(o.baseline.baseline_date)}
@@ -339,6 +393,7 @@ function StoreInventory({ storeId, storeLabel, initialTab }: { storeId: string; 
         <TabsContent value="invoices" className="mt-3"><InvoicesTab storeId={storeId} /></TabsContent>
       </Tabs>
 
+      {zeroStart && <ZeroStartDialog storeId={storeId} storeLabel={storeLabel} onClose={() => setZeroStart(false)} />}
       {counting && <OpeningCountDialog storeId={storeId} storeLabel={storeLabel} onClose={() => setCounting(false)} />}
     </div>
   );
