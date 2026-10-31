@@ -40,7 +40,7 @@ def photo_header(page_number: int, page_count: int, filename: str) -> str:
     return PHOTO_HEADER.format(k=page_number, n=page_count, name=filename)
 
 
-def combine_photos(photos: list[PhotoOCR]) -> OCRResult:
+def combine_photos(photos: list[PhotoOCR], order: list[int] | None = None) -> OCRResult:
     """
     The combined OCRResult the structuring stage receives.
 
@@ -48,10 +48,17 @@ def combine_photos(photos: list[PhotoOCR]) -> OCRResult:
     - several: page-separated text, confidence weighted by each photo's
       text length (a near-empty photo should not drag the mean down),
       page_count summed, source_type 'ocr' if any photo needed OCR.
+
+    `order` (photo numbers, top to bottom) arranges the sections when the document itself shows the stored
+    order is wrong (app.services.photo_order); each section keeps its own photo number, so a row's source_pages
+    still names the stored photo. Without it, or with an order that does not name every photo, the stored order.
     """
     if not photos:
         raise ValueError("combine_photos needs at least one photo.")
     photos = sorted(photos, key=lambda p: p.page_number)
+    if order and sorted(order) == [p.page_number for p in photos]:
+        by_number = {p.page_number: p for p in photos}
+        photos = [by_number[n] for n in order]
     if len(photos) == 1:
         return photos[0].result
 

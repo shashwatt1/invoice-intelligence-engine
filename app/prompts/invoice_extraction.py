@@ -727,6 +727,35 @@ def _derive_v11(base: str) -> str:
 _SYSTEM_PROMPT_V11 = _derive_v11(_SYSTEM_PROMPT_V10)
 
 
+# v12 — completeness and typed charges. A real 61-row, 15-section PepsiCo invoice photographed in four
+# overlapping pieces lost 21 rows (the model returned only rows it saw in two photos), carried the next
+# row's figures on another, read a state container deposit of 23.30 as nothing, and kept the container size
+# ("20OZ") where the case count ("1/24") belongs. v12 states the invariants the downstream completeness gate
+# checks, and the typed fields it needs. NOT the active version until it has been replayed against real
+# invoices (a paid step): v11 stays active, and the gate catches what the prompt misses either way.
+_V12_ADDENDUM = """
+
+## Step 6 — Completeness, sections and additional charges
+
+  1. COMPLETENESS. Every row that carries an item code / UPC and an amount is exactly one line item, \
+including a row that appears in only ONE photo. Rows seen in one photo are not "uncertain": return them. \
+Dropping a row because it is not repeated in another photo is wrong. Before you answer, count the item \
+codes in the text and make sure each one is a line item or an explicit overlap with another photo.
+  2. SECTIONS. On layouts that group rows under a pack-size heading ("20OZ PL 1/24S", "1L PL 1/15S") followed \
+by a SUBTOTAL row (cases, units, amount), set `section_label` on every row to its heading exactly as printed, \
+and `printed_units` to the row's own Units figure. A row belongs to the heading above it, never the next one. \
+The SUBTOTAL of a section is the sum of its rows: if yours differs, a row is missing or misplaced — find it.
+  3. PACK TEXT. In "20OZ PL 1/24S" the leading number is the container size and `1/24` means one case of 24; \
+copy the text into `pack_size` unchanged and never put 20 into quantity or units.
+  4. ADDITIONAL CHARGES. A block such as "STATE/LOCAL CHARGES" that lists "NY St Deposit @ .05" and a \
+subtotal is NOT sales tax and NOT merchandise: report its amount in `other_charges` with kind \
+'state_container_deposit' (or 'jurisdiction_charge' for a charge that is not a deposit). The invoice total is \
+merchandise + sales tax + other charges. Do not also put it in `tax_amount`; do not put it in `deposit_total` \
+unless the document itself prints a container-deposit total of that amount.
+"""
+_SYSTEM_PROMPT_V12 = _SYSTEM_PROMPT_V11 + _V12_ADDENDUM
+
+
 
 _REGISTRY: dict[str, PromptTemplate] = {
     "v1": PromptTemplate(
@@ -782,6 +811,11 @@ _REGISTRY: dict[str, PromptTemplate] = {
     "v11": PromptTemplate(
         version="v11",
         system_prompt=_SYSTEM_PROMPT_V11,
+        build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
+    ),
+    "v12": PromptTemplate(
+        version="v12",
+        system_prompt=_SYSTEM_PROMPT_V12,
         build_user_prompt=_build_user_prompt_v3,  # user prompt unchanged
     ),
 }

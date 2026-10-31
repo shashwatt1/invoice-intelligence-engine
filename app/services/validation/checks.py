@@ -276,6 +276,19 @@ def charges_not_in_fuel(invoice: NormalizedInvoice, tolerance: Decimal) -> Decim
     return charges
 
 
+def typed_other_charges(invoice: NormalizedInvoice) -> Decimal:
+    """
+    The typed additional charges (a state container deposit, another jurisdiction charge) that sit outside the
+    merchandise subtotal and inside the amount payable. Delivery and fuel entries are skipped when the invoice
+    already carries a `fuel_surcharge`, which is the same figure reported twice, not two charges.
+    """
+    skip_fuel = invoice.fuel_surcharge is not None and invoice.fuel_surcharge > 0
+    return sum(
+        (c.amount for c in invoice.other_charges if not (skip_fuel and c.kind in ("delivery", "fuel", "service"))),
+        Decimal("0.00"),
+    )
+
+
 def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> list[CheckResult]:
     """
     grand_total ≈ subtotal + tax − discount. Falls back to Σ line totals
@@ -310,6 +323,7 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
         + (invoice.deposit_total or Decimal("0"))
         + (invoice.fuel_surcharge or Decimal("0"))
         + charges_not_in_fuel(invoice, tolerance)
+        + typed_other_charges(invoice)
     )
     discount = invoice.discount_amount or Decimal("0")
 
@@ -399,7 +413,7 @@ def check_grand_total_math(invoice: NormalizedInvoice, tolerance: Decimal) -> li
         )
     else:
         message = (
-            "subtotal + tax + fuel does not match the printed grand total "
+            "subtotal + tax + deposit + fuel + other charges does not match the printed grand total "
             "under any combination of the discount and deposit being "
             "inside or outside the subtotal."
         )

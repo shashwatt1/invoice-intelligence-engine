@@ -89,6 +89,7 @@ class ValidationService:
         extracted: ExtractedInvoice,
         ocr_confidence: float | None = None,
         filename: str = "",
+        ocr_text: str | None = None,
     ) -> ValidationResult:
         """
         Validate an extracted invoice and decide its processing route.
@@ -98,6 +99,9 @@ class ValidationService:
             ocr_confidence: OCRResult.mean_confidence from the extraction
                 stage (1.0 for digital PDFs); None if unavailable.
             filename: Original filename (used for logging).
+            ocr_text: The OCR text the model was given (per-photo sections included). With it the
+                completeness gate compares the printed product codes and subtotals with the extracted lines;
+                without it completeness is UNVERIFIED, never COMPLETE.
 
         Returns:
             ValidationResult with the canonical NormalizedInvoice and the
@@ -124,6 +128,11 @@ class ValidationService:
         confidence = compute_confidence(
             ocr_confidence, self._aggregate_ai_confidence(extracted), checks
         )
+        # Local import: the completeness module builds on this package's report types.
+        from app.services.completeness import apply_completeness_gate
+
+        checks, confidence, completeness = apply_completeness_gate(
+            checks, confidence, ocr_text, normalized.line_items)
 
         failed = [c for c in checks if c.status is CheckStatus.FAILED]
         review_reasons = [
@@ -146,6 +155,7 @@ class ValidationService:
             confidence=confidence,
             decision=decision,
             review_reasons=review_reasons,
+            completeness=completeness.to_dict(),
             duration_ms=int((time.monotonic() - start) * 1000),
         )
 

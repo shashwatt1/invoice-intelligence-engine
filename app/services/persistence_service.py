@@ -83,6 +83,7 @@ class PersistenceService:
             composite_confidence=validation.report.confidence.composite,
             extraction_model=structuring.metadata.model,
             raw_extraction_json=structuring.raw_response,
+            blocking_checks=validation.report.blocking_check_names(),
         )
 
         final_status = document_status_for(decision)

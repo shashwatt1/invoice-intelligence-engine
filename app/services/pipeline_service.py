@@ -57,7 +57,8 @@ from app.services.document_lifecycle import ensure_document_active
 from app.services.extraction_service import ExtractionService
 from app.services.ocr.base import OCRResult
 from app.services.persistence_service import PersistenceService
-from app.services.photo_context import PhotoOCR, combine_photos
+from app.services.photo_context import PhotoOCR
+from app.services.photo_order import combine_in_detected_order
 from app.services.store_identification_service import candidate_ids, identify_store
 from app.services.structuring_service import StructuringService
 from app.services.validation.report import ProcessingDecision
@@ -378,7 +379,10 @@ class InvoiceProcessingPipeline:
                 row.source_type = photo.result.source_type
                 row.mean_confidence = round(photo.result.mean_confidence, 4)
                 row.ocr_duration_ms = photo.result.duration_ms
-        ocr_result = combine_photos(photos)
+        # Order is judged from the document, not taken on trust from the upload sequence: on strong evidence
+        # (a header photo and a different closing-totals photo) the sections are arranged top to bottom, each
+        # keeping its stored photo number. Weak or no evidence keeps the stored order and is reported.
+        ocr_result, order_evidence = combine_in_detected_order(photos)
 
         await documents.store_extraction(
             document, raw_ocr_text=ocr_result.full_text, source_type=ocr_result.source_type
@@ -396,6 +400,7 @@ class InvoiceProcessingPipeline:
                 "photo_count": len(photos),
                 "mean_confidence": round(ocr_result.mean_confidence, 4),
                 "text_chars": len(ocr_result.full_text),
+                "photo_order": order_evidence.to_dict(),
                 "photos": [{"page_number": p.page_number, "filename": p.filename,
                             "source_type": p.result.source_type,
                             "mean_confidence": round(p.result.mean_confidence, 4),
@@ -561,7 +566,7 @@ class InvoiceProcessingPipeline:
 
         # ---- Validation -----------------------------------------------------
         validation = self.validation.validate_invoice(
-            structuring.invoice, ocr_result.mean_confidence, filename
+            structuring.invoice, ocr_result.mean_confidence, filename, ocr_text=ocr_result.full_text
         )
         decision = validation.report.decision
         await documents.set_status(

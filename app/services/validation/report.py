@@ -26,6 +26,15 @@ from typing import Any
 
 from app.schemas.normalized import NormalizedInvoice
 
+# Checks that, while FAILED, mean the invoice must not be exported: the extraction is incomplete or its money does
+# not reconcile. Anything else that fails (a missing date, a tax-rate inconsistency) still routes the invoice to
+# review but leaves the export to a person's confirmation, as before.
+CRITICAL_CHECKS = frozenset({
+    "COMPLETENESS_MISSING_LINES", "COMPLETENESS_PARTIAL_CODES", "COMPLETENESS_DUPLICATE_LINES",
+    "COMPLETENESS_SUMMARY_CASES", "COMPLETENESS_SUMMARY_UNITS", "COMPLETENESS_SECTION_TOTALS",
+    "SUBTOTAL_MATCHES_ITEMS", "GRAND_TOTAL_MATH",
+})
+
 
 class CheckStatus(StrEnum):
     PASSED = "PASSED"
@@ -75,15 +84,24 @@ class ConfidenceBreakdown:
     ai_confidence: float | None
     validation_score: float
     weights: dict[str, float]
+    # COMPLETE / INCOMPLETE / UNVERIFIED (see app.services.completeness). A score says how well the text was
+    # read; it never says the invoice is whole. An INCOMPLETE invoice's composite is capped, and this says why.
+    completeness: str | None = None
+    composite_uncapped: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "composite": round(self.composite, 4),
             "ocr_confidence": self.ocr_confidence,
             "ai_confidence": self.ai_confidence,
             "validation_score": round(self.validation_score, 4),
             "weights": self.weights,
         }
+        if self.completeness is not None:
+            data["completeness"] = self.completeness
+        if self.composite_uncapped is not None:
+            data["composite_uncapped"] = round(self.composite_uncapped, 4)
+        return data
 
 
 @dataclass
@@ -94,6 +112,7 @@ class ValidationReport:
     confidence: ConfidenceBreakdown
     decision: ProcessingDecision
     review_reasons: list[str] = field(default_factory=list)
+    completeness: dict[str, Any] | None = None
     validated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     duration_ms: int = 0
 
@@ -112,6 +131,10 @@ class ValidationReport:
     def warnings(self) -> list[CheckResult]:
         return self._by_status(CheckStatus.WARNING)
 
+    def blocking_check_names(self) -> list[str] | None:
+        """The CRITICAL checks that failed (see CRITICAL_CHECKS), sorted; None when there are none."""
+        return sorted({c.name for c in self.failed_checks if c.name in CRITICAL_CHECKS}) or None
+
     @property
     def is_valid(self) -> bool:
         return self.decision is ProcessingDecision.VALIDATED
@@ -122,6 +145,7 @@ class ValidationReport:
             "decision": self.decision.value,
             "confidence": self.confidence.to_dict(),
             "review_reasons": list(self.review_reasons),
+            **({"completeness": self.completeness} if self.completeness is not None else {}),
             "summary": {
                 "passed": len(self.passed_checks),
                 "failed": len(self.failed_checks),
