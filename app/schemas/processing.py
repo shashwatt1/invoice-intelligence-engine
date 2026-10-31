@@ -1198,6 +1198,24 @@ class VendorChoice(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class StoreChange(BaseModel):
+    """Body of POST /invoices/{id}/change-store."""
+
+    store_id: uuid.UUID
+    note: str | None = Field(default=None, max_length=500)
+
+
+class StoreChangeResult(BaseModel):
+    store_id: uuid.UUID
+    store_label: str
+    previous_store_id: uuid.UUID | None = None
+    previous_store_label: str | None = None
+    decided_proposals_left_at_old_store: int = Field(
+        default=0, description="Approved/rejected proposals made from this invoice; they stay as history at the old store.")
+    export_files_for_old_store: int = Field(
+        default=0, description="Export files already generated for this invoice; they carry the old store.")
+
+
 class InvoiceDeclarationResult(BaseModel):
     delivery_date: date | None = None
     vendor_id: uuid.UUID | None = None

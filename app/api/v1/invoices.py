@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.mappers import to_history_row
@@ -38,9 +39,11 @@ from app.core.exceptions import (
 from app.core.logging import get_logger
 from app.database.session import get_db, get_session_factory
 from app.models.document import INACTIVE_DOCUMENT_STATUSES, DocumentStatus
+from app.models.edi_export import EdiExport
 from app.models.invoice import SOURCE_OPERATOR, SOURCE_REQUESTED
 from app.models.processing_log import PipelineStage
 from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
+from app.models.product_data_proposal import STATUS_PENDING, ProductDataProposal
 from app.models.user import User, UserRole
 from app.models.vendor import Vendor
 from app.models.vendor_item_crosswalk import VendorItemCrosswalk
@@ -80,6 +83,8 @@ from app.schemas.processing import (
     ProcessAccepted,
     ReferenceLinkData,
     StoreAssignment,
+    StoreChange,
+    StoreChangeResult,
     StoreRef,
     VendorChoice,
     VendorData,
@@ -115,6 +120,7 @@ from app.services.inventory_service import ensure_invoice_changeable
 from app.services.invoice_workflow_service import (
     completion_state,
     current_facts,
+    ensure_not_retailed,
     missing_declarations,
     status_for,
 )
@@ -1111,6 +1117,7 @@ async def assign_store(
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
     ensure_document_operable(invoice.document, "assign_store")   # not in the bin, not a reference copy
+    ensure_not_retailed(invoice, "assign_store")
     if invoice.store_id is not None:
         raise ValidationError(
             message="This invoice already has a store; moving an invoice between stores is not done here.",
@@ -1132,6 +1139,75 @@ async def assign_store(
     )
     await db.commit()
     return await get_invoice(invoice_id, db, user)
+
+
+@router.post(
+    "/invoices/{invoice_id}/change-store",
+    response_model=APIResponse[StoreChangeResult],
+    summary="Move an invoice to another physical store, until it is marked Retailed (MANAGER/ADMIN)",
+    description=(
+        "For an invoice processed under the wrong store. The store is replaced on the invoice and its document, and from "
+        "then on the new store's reference data, case mappings and review queue apply. Refused (409) once the invoice is "
+        "marked Retailed (reopen it first) or a receipt is POSTED; refused (422) while product proposals made from this "
+        "invoice for the old store are still PENDING — decide them in Master Data Review first. Proposals already decided "
+        "stay as history on the store they were made for, and mappings they applied stay with that store. Export files "
+        "already generated carry the old store and have to be generated again. Nothing is re-extracted or re-validated: "
+        "validation does not depend on the store."
+    ),
+    responses={404: {"description": "Invoice or store not found"},
+               409: {"description": "Retailed, or a POSTED receipt holds the invoice"},
+               422: {"description": "Not a physical store, the same store, or proposals still pending"}},
+)
+async def change_store(
+    invoice_id: uuid.UUID, body: StoreChange, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[StoreChangeResult]:
+    await ensure_invoice_changeable(db, invoice_id, "change_store")      # locks the row; a POSTED receipt refuses
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    ensure_document_operable(invoice.document, "change_store")
+    ensure_not_retailed(invoice, "change_store")
+    if invoice.store_id is None:
+        raise ValidationError(message="This invoice has no store yet; assign one instead.",
+                              detail={"invoice_id": str(invoice_id), "reason": "no_store"})
+    if invoice.store_id == body.store_id:
+        raise ValidationError(message="The invoice is already at that store.",
+                              detail={"invoice_id": str(invoice_id), "reason": "same_store"})
+    store = await StoreRepository(db).get(body.store_id)
+    if store is None:
+        raise RecordNotFoundError(message="Store not found.", detail={"store_id": str(body.store_id)})
+    ensure_physical_store(store)
+
+    pending = (await db.execute(select(func.count()).select_from(ProductDataProposal).where(
+        ProductDataProposal.invoice_id == invoice_id, ProductDataProposal.status == STATUS_PENDING))).scalar_one()
+    if pending:
+        raise ValidationError(
+            message=(f"{pending} product proposal{'s' if pending != 1 else ''} made from this invoice for its current store "
+                     f"{'are' if pending != 1 else 'is'} still pending. Approve or reject "
+                     f"{'them' if pending != 1 else 'it'} in Master Data Review, then move the invoice."),
+            detail={"invoice_id": str(invoice_id), "reason": "pending_proposals", "pending_proposals": pending})
+    decided = (await db.execute(select(func.count()).select_from(ProductDataProposal).where(
+        ProductDataProposal.invoice_id == invoice_id, ProductDataProposal.status != STATUS_PENDING))).scalar_one()
+    exports = (await db.execute(select(func.count()).select_from(EdiExport).where(EdiExport.invoice_id == invoice_id))).scalar_one()
+
+    old = await StoreRepository(db).get(invoice.store_id)
+    invoice.store_id = store.id
+    invoice.document.store_id = store.id
+    await ProcessingLogRepository(db).add(
+        document_id=invoice.document_id,
+        stage=PipelineStage.STORE_IDENTIFICATION,
+        message=f"Store changed by {user.username}: {old.label if old else 'unknown'} → {store.label}.",
+        payload={"event": "store_changed", "from_store_id": str(old.id) if old else None,
+                 "from_store_label": old.label if old else None, "to_store_id": str(store.id),
+                 "to_store_label": store.label, "by": user.username, "role": user.role, "note": body.note,
+                 "decided_proposals_left_at_old_store": decided, "export_files_for_old_store": exports})
+    result = StoreChangeResult(store_id=store.id, store_label=store.label, previous_store_id=old.id if old else None,
+                               previous_store_label=old.label if old else None,
+                               decided_proposals_left_at_old_store=decided, export_files_for_old_store=exports)
+    await db.commit()
+    return APIResponse(data=result)
 
 
 def _corrected_line(item) -> CorrectedLineItem:
@@ -1300,6 +1376,7 @@ async def set_delivery_date(
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
     ensure_document_operable(invoice.document, "set_delivery_date")
+    ensure_not_retailed(invoice, "set_delivery_date")
     await repository.set_delivery_date(invoice, when, by=user.username, note=payload.note)
     await _log_correction(db, invoice, "delivery_date_set", user.username, payload.note,
                           changes=(invoice.correction_history or [])[-1:])
@@ -1331,6 +1408,7 @@ async def choose_vendor(
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
     ensure_document_operable(invoice.document, "choose_vendor")
+    ensure_not_retailed(invoice, "choose_vendor")
     if payload.vendor_id is not None:
         vendor = await db.get(Vendor, payload.vendor_id)
         if vendor is None:

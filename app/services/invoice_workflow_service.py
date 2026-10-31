@@ -42,7 +42,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.exceptions import ValidationError
+from app.core.exceptions import InvoiceRetailedError, ValidationError
 from app.models.edi_export import EdiExport
 from app.models.invoice import SOURCE_OPERATOR, SOURCE_REQUESTED, Invoice
 from app.models.processing_log import PipelineStage
@@ -184,6 +184,22 @@ def attestation_fingerprint(invoice: Invoice, units_by_item_code: Mapping[str, i
     payload = json.dumps({"header": header, "lines": lines, "mappings": mappings, "pdi_sha256": pdi_sha},
                          sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def ensure_not_retailed(invoice: Invoice, action: str) -> None:
+    """
+    The vendor, the delivery date and the store stay changeable until the invoice is marked Retailed — the person's
+    attestation that it is right. After that they are changed by reopening the mark first (MANAGER/ADMIN), so the
+    attestation is never silently out from under a changed declaration.
+    """
+    if invoice.retailed_at is None:
+        return
+    by = f" by {invoice.retailed_by}" if invoice.retailed_by else ""
+    raise InvoiceRetailedError(
+        message=f"This invoice was marked Retailed{by}. Reopen it (remove the Retailed mark) before changing it.",
+        detail={"invoice_id": str(invoice.id), "reason": "invoice_retailed", "action": action,
+                "retailed_by": invoice.retailed_by,
+                "retailed_at": invoice.retailed_at.isoformat() if invoice.retailed_at else None})
 
 
 def missing_declarations(invoice: Invoice) -> str | None:
