@@ -17,6 +17,8 @@ from sqlalchemy import func, select, text
 
 from app.models.document import Document
 from app.models.invoice import SOURCE_OPERATOR, Invoice
+from app.models.processing_log import ProcessingLog
+from app.models.product_data_proposal import ProductDataProposal
 from app.models.vendor import VENDOR_CONFIRMED, Vendor
 from app.models.vendor_request import (
     REQUEST_APPROVED,
@@ -28,8 +30,12 @@ from app.services.pipeline_service import InvoiceProcessingPipeline
 from tests.integration.conftest import (
     MANAGER_PASSWORD,
     MANAGER_USERNAME,
+    PHYSICAL_STORE,
+    RCM_STORE,
+    SOURCE_ONLY_STORE,
     USER_PASSWORD,
     USER_USERNAME,
+    approve_all_pending,
     requires_db,
     store_id,
 )
@@ -368,3 +374,119 @@ class TestTheReceiptAndTheDeclaredDate:
         assert refused_as_received(vendor_change) == "choose_vendor"
         row = await db_session.get(Invoice, uuid.UUID(received.invoice_id), populate_existing=True)
         assert row.delivery_date.isoformat() == "2026-10-09", "unchanged"
+
+
+def other_store(received):
+    """A physical fixture store the invoice is not at."""
+    return store_id(PHYSICAL_STORE) if received.store_id == store_id(RCM_STORE) else store_id(RCM_STORE)
+
+
+def retailed_refusal(response, action):
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["error_code"] == "ERR_INVOICE_RETAILED" and error["detail"]["reason"] == "invoice_retailed"
+    assert error["detail"]["action"] == action
+    return error
+
+
+class TestChangeableUntilRetailed:
+    async def _retailed(self, api_client, db_session, received):
+        await approve(api_client, db_session, received.invoice_id, LAGER, 12)
+        await approve(api_client, db_session, received.invoice_id, ALE, 6)
+        await submit(api_client, received.invoice_id)
+
+    async def test_vendor_delivery_date_and_store_are_refused_once_retailed_and_open_again_after_reopening(
+        self, api_client, manager, db_session, received,
+    ):
+        acme = await make_vendor(db_session, "Acme Corp")
+        await self._retailed(api_client, db_session, received)
+        base = f"/api/v1/invoices/{received.invoice_id}"
+        rcm = str(other_store(received))
+
+        retailed_refusal(await manager.patch(f"{base}/vendor", json={"vendor_id": str(acme.id)}), "choose_vendor")
+        retailed_refusal(await manager.patch(f"{base}/delivery-date", json={"delivery_date": "2026-10-10"}), "set_delivery_date")
+        retailed_refusal(await manager.post(f"{base}/change-store", json={"store_id": rcm}), "change_store")
+        row = await db_session.get(Invoice, uuid.UUID(received.invoice_id), populate_existing=True)
+        assert row.store_id == received.store_id and row.delivery_date.isoformat() == "2026-10-09"
+
+        assert (await manager.post(f"{base}/retailed/reopen", json={})).status_code == 200
+        assert (await manager.patch(f"{base}/delivery-date", json={"delivery_date": "2026-10-10"})).status_code == 200
+        assert (await manager.patch(f"{base}/vendor", json={"vendor_id": str(acme.id)})).status_code == 200
+        assert (await manager.post(f"{base}/change-store", json={"store_id": rcm})).status_code == 200
+
+    async def test_validated_alone_does_not_lock_them(self, api_client, manager, db_session, received):
+        detail = (await api_client.get(f"/api/v1/invoices/{received.invoice_id}")).json()["data"]
+        assert detail["status"] == "VALIDATED" and detail["completion"]["status"] == "not_retailed"
+        acme = await make_vendor(db_session, "Acme Corp")
+        assert (await manager.patch(f"/api/v1/invoices/{received.invoice_id}/vendor", json={"vendor_id": str(acme.id)})).status_code == 200
+
+
+class TestChangingTheStore:
+    async def _log(self, db_session, event):
+        rows = (await db_session.execute(select(ProcessingLog.payload).where(
+            ProcessingLog.payload["event"].astext == event))).scalars().all()
+        return list(rows)
+
+    async def test_a_manager_moves_the_invoice_and_the_move_is_recorded(self, api_client, manager, db_session, received):
+        rcm = other_store(received)
+        moved = await manager.post(f"/api/v1/invoices/{received.invoice_id}/change-store",
+                                   json={"store_id": str(rcm), "note": "photographed at the wrong store"})
+        assert moved.status_code == 200, moved.text
+        data = moved.json()["data"]
+        assert data["store_id"] == str(rcm) and data["previous_store_id"] == str(received.store_id)
+        row = await db_session.get(Invoice, uuid.UUID(received.invoice_id), populate_existing=True)
+        doc = await db_session.get(Document, row.document_id, populate_existing=True)
+        assert row.store_id == rcm and doc.store_id == rcm
+        [entry] = await self._log(db_session, "store_changed")
+        assert (entry["to_store_id"], entry["from_store_id"], entry["by"], entry["note"]) == (
+            str(rcm), str(received.store_id), MANAGER_USERNAME, "photographed at the wrong store")
+        detail = (await api_client.get(f"/api/v1/invoices/{received.invoice_id}")).json()["data"]
+        assert detail["store"]["id"] == str(rcm)
+
+    async def test_a_user_cannot_and_the_rules_hold(self, api_client, user, manager, db_session, received):
+        base = f"/api/v1/invoices/{received.invoice_id}/change-store"
+        rcm = str(other_store(received))
+        assert (await user.post(base, json={"store_id": rcm})).status_code == 403
+        same = await manager.post(base, json={"store_id": str(received.store_id)})
+        assert same.status_code == 422 and same.json()["error"]["detail"]["reason"] == "same_store"
+        source = await manager.post(base, json={"store_id": str(store_id(SOURCE_ONLY_STORE))})
+        assert source.status_code == 422 and source.json()["error"]["detail"]["reason"] == "source_identity"
+        unknown = await manager.post(base, json={"store_id": str(uuid.uuid4())})
+        assert unknown.status_code == 404
+        row = await db_session.get(Invoice, uuid.UUID(received.invoice_id), populate_existing=True)
+        assert row.store_id == received.store_id, "nothing moved"
+
+    async def test_pending_proposals_from_the_invoice_block_the_move_until_decided(self, api_client, manager, db_session, received):
+        base = f"/api/v1/invoices/{received.invoice_id}"
+        proposed = await api_client.post(f"{base}/case-mappings",
+                                         json={"mappings": [{"item_code": LAGER, "units_per_case": 12}]})
+        assert proposed.status_code == 200, proposed.text
+        blocked = await manager.post(f"{base}/change-store", json={"store_id": str(other_store(received))})
+        assert blocked.status_code == 422, blocked.text
+        assert blocked.json()["error"]["detail"] == {"invoice_id": received.invoice_id, "reason": "pending_proposals",
+                                                     "pending_proposals": 1}
+        await approve_all_pending(db_session)
+        moved = await manager.post(f"{base}/change-store", json={"store_id": str(other_store(received))})
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["data"]["decided_proposals_left_at_old_store"] == 1
+        stays = (await db_session.execute(select(ProductDataProposal.store_id).where(
+            ProductDataProposal.invoice_id == uuid.UUID(received.invoice_id)))).scalars().all()
+        assert stays == [received.store_id], "a decided proposal stays at the store it was made for"
+
+    async def test_export_files_already_generated_are_reported(self, api_client, manager, db_session, received):
+        await approve(api_client, db_session, received.invoice_id, LAGER, 12)
+        await approve(api_client, db_session, received.invoice_id, ALE, 6)
+        assert (await api_client.get(f"/api/v1/invoices/{received.invoice_id}/export", params={"format": "pdi"})).status_code == 200
+        moved = await manager.post(f"/api/v1/invoices/{received.invoice_id}/change-store",
+                                   json={"store_id": str(other_store(received))})
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["data"]["export_files_for_old_store"] == 1
+
+    async def test_a_posted_receipt_still_refuses_the_move(self, api_client, manager, db_session, received):
+        await approve(api_client, db_session, received.invoice_id, LAGER, 12)
+        await approve(api_client, db_session, received.invoice_id, ALE, 6)
+        preview = await submit(api_client, received.invoice_id)
+        assert (await approve_submission(api_client, received.invoice_id, preview)).status_code == 200
+        refused = await manager.post(f"/api/v1/invoices/{received.invoice_id}/change-store",
+                                     json={"store_id": str(other_store(received))})
+        assert refused_as_received(refused) == "change_store"
