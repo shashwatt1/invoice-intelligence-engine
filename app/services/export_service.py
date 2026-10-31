@@ -22,9 +22,11 @@ Design decisions:
 from __future__ import annotations
 
 import csv
+import dataclasses
 import io
 import re
-from collections.abc import Mapping
+import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -86,7 +88,21 @@ def export_basename(invoice: Invoice) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_export_payload(invoice: Invoice) -> dict[str, Any]:
+def export_status(invoice: Invoice, override: Any = None) -> dict[str, Any]:
+    """
+    Whether the invoice is export-ready, stated in the data itself so a file that is copied away from the screen
+    still says so: `export_ready` is false while critical checks fail and no admin override covers the invoice.
+    """
+    blockers = critical_check_blockers(invoice)
+    return {
+        "export_ready": not blockers or override is not None,
+        "blocking_checks": blockers,
+        "overridden_by_admin": bool(blockers) and override is not None,
+        "override_id": str(override.id) if blockers and override is not None else None,
+    }
+
+
+def build_export_payload(invoice: Invoice, override: Any = None) -> dict[str, Any]:
     """The final validated invoice object, as persisted by the pipeline."""
     vendor = invoice.vendor
     document = invoice.document
@@ -130,6 +146,7 @@ def build_export_payload(invoice: Invoice) -> dict[str, Any]:
             "review_required": invoice.status == "REVIEW_REQUIRED",
             "composite_confidence": _num(invoice.composite_confidence),
         },
+        "export_status": export_status(invoice, override),
         "processing": {
             "filename": document.filename if document else None,
             "source_type": document.source_type if document else None,
@@ -154,14 +171,41 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
-def build_txt(invoice: Invoice) -> str:
-    payload = build_export_payload(invoice)
+REVIEW_COPY_TITLE = "REVIEW COPY - NOT EXPORT-READY - DO NOT IMPORT"
+
+
+def review_banner(invoice: Invoice) -> list[str]:
+    """
+    Heading for a TXT/CSV review download (see GET .../export?purpose=review). It is part of the file, so a copy
+    that is saved, forwarded or opened elsewhere can never be mistaken for an export-ready one.
+    """
+    blockers = critical_check_blockers(invoice)
+    return [
+        REVIEW_COPY_TITLE,
+        f"Invoice {invoice.invoice_number or str(invoice.id)[:8]}: "
+        + (f"critical checks failing: {', '.join(blockers)}" if blockers else "no critical check is failing"),
+        "Produced for internal investigation only. Correct the invoice (or have an administrator record an export "
+        "override) and download the normal export instead.",
+    ]
+
+
+def override_banner(override: Any) -> list[str]:
+    return [
+        "EXPORTED UNDER AN ADMINISTRATOR OVERRIDE - critical checks were failing",
+        f"Failing checks: {', '.join(override.blocked_checks)}; granted by {override.granted_by}; "
+        f"override {override.id}",
+    ]
+
+
+def build_txt(invoice: Invoice, banner: Sequence[str] | None = None, override: Any = None) -> str:
+    payload = build_export_payload(invoice, override)
     header = payload["invoice"]
     totals = header["totals"]
     vendor = payload["vendor"]
     validation = payload["validation"]
 
     lines: list[str] = [
+        *([*banner, _RULE, ""] if banner else []),
         "Vendor",
         "------",
         _fmt(vendor["name"]),
@@ -242,8 +286,12 @@ def build_txt(invoice: Invoice) -> str:
 CSV_HEADERS = ["Description", "Quantity", "Unit Price", "Line Total", "Tax Rate (%)", "UPC"]
 
 
-def build_items_csv(invoice: Invoice) -> str:
+def build_items_csv(invoice: Invoice, banner: Sequence[str] | None = None) -> str:
     buffer = io.StringIO()
+    for line in banner or ():
+        # Comment rows ahead of the header: a human reads them at once, and an accounting import that expects the
+        # header on the first row rejects the file instead of accepting a review copy.
+        buffer.write(f"# {line}\r\n")
     writer = csv.writer(buffer, lineterminator="\r\n")
     writer.writerow(CSV_HEADERS)
     for item in _sorted_items(invoice):
@@ -494,6 +542,17 @@ _AMBIGUOUS_PACK_THEN_SIZE = re.compile(
 SUGGESTION_FROM_PACK_SIZE = "pack_size"
 SUGGESTION_FROM_DESCRIPTION = "description"
 SUGGESTION_FROM_DESCRIPTION_AMBIGUOUS = "description_ambiguous"
+SUGGESTION_FROM_PRINTED_UNITS = "printed_units"
+SUGGESTION_FROM_PRINTED_UNITS_AND_PACK = "printed_units_and_pack"
+SUGGESTION_CONFLICT = "conflict"
+
+# A container size printed first: "20OZ PL 1/24S", "1L PL 1/15S", "16OZCN1/12SLCEL", "13.7OZ NR 1/12".
+# The number up front is the SIZE of one container (20 ounces), never how many make a case; the case
+# count is the denominator of the "1/N" that follows ("1/24S" = one case of 24). Reading the leading
+# number as units per case suggested 20, 28 and 16 where the truth was 24, 15 and 12.
+_SIZE_TOKEN = r"\d+(?:\.\d+)?\s*(?:OZ|0Z|ML|LTR|L(?![A-Z]))"
+_SIZE_FIRST_CASE = re.compile(rf"^\s*{_SIZE_TOKEN}[A-Z\s.]*?(?<!\d)1\s*/\s*(\d{{1,3}})(?!\d)", re.IGNORECASE)
+_LEADING_SIZE = re.compile(rf"^\s*{_SIZE_TOKEN}", re.IGNORECASE)
 
 
 def pack_candidates(description: str | None) -> list[int]:
@@ -536,10 +595,20 @@ def suggest_units_per_case(
 
     NOTHING here is ever applied automatically, whatever the source.
     """
+    # A container size first ("20OZ PL 1/24S"): the case count is the denominator of "1/N".
+    size_first = _SIZE_FIRST_CASE.match(pack_size or "")
+    if size_first:
+        units = int(size_first.group(1))
+        if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE:
+            return units, SUGGESTION_FROM_PACK_SIZE
+        return None, None
+
     # "24/12OZ", "12 CT" — and the lettered forms some distributors print,
     # "C-15 25OZ" (case of 15), "B-12 24OZ" (bottles, 12), "C-2/12 12OZ"
     # (two 12-packs): an optional short letter code and dash, then the count.
-    match = re.match(r"\s*(?:[A-Z]{1,3}-)?\s*(\d+)", pack_size or "", re.IGNORECASE)
+    # A bare container size ("20OZ", "2L") is NOT a count and is never read as one: it falls through.
+    match = (None if _LEADING_SIZE.match(pack_size or "")
+             else re.match(r"\s*(?:[A-Z]{1,3}-)?\s*(\d+)", pack_size or "", re.IGNORECASE))
     if match:
         units = int(match.group(1))
         if MIN_UNITS_PER_CASE <= units <= MAX_UNITS_PER_CASE:
@@ -563,6 +632,52 @@ def suggest_units_per_case(
         else SUGGESTION_FROM_DESCRIPTION
     )
     return units, source
+
+
+@dataclass(frozen=True)
+class UnitsEvidence:
+    """What the document says about units per case, and whether a person must decide."""
+
+    units: int | None
+    source: str | None
+    conflict: bool = False
+    note: str | None = None
+    candidates: tuple[int, ...] = ()        # the readings that disagree, when conflict
+
+
+def units_evidence(
+    pack_size: str | None, description: str | None = None, *,
+    cases: float | int | None = None, printed_units: int | None = None,
+) -> UnitsEvidence:
+    """
+    Units per case from every printed source, never from a guess.
+
+    * printed units ÷ cases (the invoice's own Units and Cases columns) is the strongest evidence: it is
+      what was actually delivered, and it needs no reading of a pack notation. Used only when it divides
+      evenly and lies within the allowed range;
+    * the pack notation ("20OZ PL 1/24S" -> 24) is the second source;
+    * when both exist and DISAGREE there is no suggestion at all (conflict): a person decides, nothing is
+      preselected. When they agree the suggestion is as strong as it gets;
+    * a container size is never a case count (see suggest_units_per_case).
+    """
+    from_units: int | None = None
+    if printed_units and cases and cases > 0:
+        ratio = printed_units / float(cases)
+        if ratio == int(ratio) and MIN_UNITS_PER_CASE <= int(ratio) <= MAX_UNITS_PER_CASE:
+            from_units = int(ratio)
+    from_pack, pack_source = suggest_units_per_case(pack_size, description)
+    if from_units is not None and from_pack is not None:
+        if from_units == from_pack:
+            return UnitsEvidence(from_units, SUGGESTION_FROM_PRINTED_UNITS_AND_PACK)
+        return UnitsEvidence(
+            None, SUGGESTION_CONFLICT, conflict=True, candidates=tuple(sorted({from_units, from_pack})),
+            note=f"The printed units and cases say {from_units} per case; the pack text says {from_pack}. "
+                 "Check the document.")
+    if from_units is not None:
+        return UnitsEvidence(from_units, SUGGESTION_FROM_PRINTED_UNITS)
+    if from_pack is not None:
+        return UnitsEvidence(from_pack, pack_source)
+    return UnitsEvidence(None, None)
 
 
 def suggested_units_per_case(
@@ -779,6 +894,10 @@ class PdiExportEligibility:
     allowed: bool
     requires_confirmation: bool
     blocked_reason: str | None = None
+    # True when the invoice's critical checks fail and an ADMIN override (see export_override_service) covers
+    # this exact state: the export is permitted, the invoice itself is unchanged and still failing.
+    overridden: bool = False
+    override_id: uuid.UUID | None = None
 
 
 def unmapped_item_codes(
@@ -823,19 +942,58 @@ def items_missing_cost(invoice: Invoice) -> list[str]:
 STORE_PENDING_EXPORT_REASON = "Assign the store this invoice belongs to before it can be exported."
 
 
+def critical_check_blockers(invoice: Invoice) -> list[str]:
+    """The critical checks (completeness, financial reconciliation) that failed on the latest validation."""
+    return list(getattr(invoice, "blocking_checks", None) or [])
+
+
+def critical_check_reason(blockers: Sequence[str]) -> str:
+    return ("This invoice cannot be exported while critical checks fail: " + ", ".join(blockers)
+            + ". The extraction is incomplete or its totals do not reconcile — correct the invoice so the "
+            "checks pass before exporting, or have an administrator record an export override.")
+
+
+def critical_check_gate(invoice: Invoice, override: Any = None) -> tuple[str | None, bool]:
+    """
+    (blocked reason, overridden) for every export format that leaves the system as a file — PDI, TXT and CSV
+    all pass through this one rule. While critical checks fail the export is blocked unless `override` (an
+    ExportOverride already proven to cover this exact state) is given; the invoice, its status and its checks
+    are never changed by it.
+    """
+    blockers = critical_check_blockers(invoice)
+    if not blockers:
+        return None, False
+    if override is not None:
+        return None, True
+    return critical_check_reason(blockers), False
+
+
 def persisted_pdi_export_eligibility(
-    invoice: Invoice, units_by_item_code: Mapping[str, int] | None = None
+    invoice: Invoice, units_by_item_code: Mapping[str, int] | None = None, override: Any = None
 ) -> PdiExportEligibility:
     """
     The gate for a STORED invoice: a STORE_PENDING invoice (store_id NULL —
     read before its store was known) is blocked before any other rule,
     because mappings, reference data and the EDI are all the store's.
-    Everything else is pdi_export_eligibility(), unchanged.
+    Failing critical checks block next, unless an admin override covers this exact state (`override`); an
+    override lifts only that block — every PDI-specific rule below still applies. Everything else is
+    pdi_export_eligibility(), unchanged.
     """
     if invoice.store_id is None:
         return PdiExportEligibility(allowed=False, requires_confirmation=False,
                                     blocked_reason=STORE_PENDING_EXPORT_REASON)
-    return pdi_export_eligibility(invoice, units_by_item_code)
+    blocked, overridden = critical_check_gate(invoice, override)
+    if blocked:
+        # An incomplete extraction, or money that does not reconcile, is never confirmed away: the file would
+        # carry a partial invoice. Fix the lines or totals (the checks re-run on every correction), or delete
+        # and re-upload, and the block lifts by itself; only an audited admin override exports it as it is.
+        return PdiExportEligibility(allowed=False, requires_confirmation=False, blocked_reason=blocked)
+    eligibility = pdi_export_eligibility(invoice, units_by_item_code)
+    if overridden and eligibility.allowed:
+        # An overridden export is already a deliberate decision; it never also asks for the generic confirmation.
+        return dataclasses.replace(eligibility, requires_confirmation=False, overridden=True,
+                                   override_id=getattr(override, "id", None))
+    return eligibility
 
 
 def items_with_unresolved_quantity(invoice: Invoice) -> list[str]:

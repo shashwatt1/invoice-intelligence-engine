@@ -23,6 +23,7 @@ from app.services.export_service import (
     pack_candidates,
     pdi_items,
     suggest_units_per_case,
+    units_evidence,
 )
 from app.services.product_master.commercial_resolution import (
     PATH_PRODUCT_MASTER_GLOBAL,
@@ -42,6 +43,8 @@ class PendingProposal(Protocol):
 
 
 SUGGESTION_FROM_DATABASE = "database"
+# Sources that are a count PRINTED on the invoice (pack text, description, or the Units and Cases columns).
+PRINTED_SUGGESTION_SOURCES = frozenset({"pack_size", "description", "printed_units", "printed_units_and_pack"})
 # The invoice prints an explicit count and the reference derives a
 # different one from a cost ratio or a retail margin. Neither is
 # prefilled: both are offered and a person decides.
@@ -207,8 +210,12 @@ def build_case_mapping_status(
     for item in pdi_items(invoice):
         code = normalize_item_code(item.product_sku)
         units = units_by_item_code.get(code or "") if code else None
-        suggestion, source = suggest_units_per_case(item.pack_size, item.description)
-        candidates_override = None
+        # The invoice's own Units and Cases columns (when it has them) outrank pack text; when they disagree with
+        # the pack text nothing is prefilled and both readings are offered (never a container size, never a default).
+        ev = units_evidence(item.pack_size, item.description, cases=item.quantity,
+                            printed_units=getattr(item, "printed_units", None))
+        suggestion, source = ev.units, ev.source
+        candidates_override = list(ev.candidates) if ev.conflict else None
         # Evidence precedence, strongest first: a confirmed mapping (below);
         # an explicit count printed on the invoice; explicit reference
         # evidence (a typed items/case cell, a decoded package); and only
@@ -221,7 +228,7 @@ def build_case_mapping_status(
         queued = (pending or {}).get(code or "")
         if reference is not None and reference.best_evidence is not None:
             evidence = reference.best_evidence
-            printed = suggestion if source == "pack_size" or source == "description" else None
+            printed = suggestion if source in PRINTED_SUGGESTION_SOURCES else None
             if (printed is not None and evidence.kind in DERIVED_REFERENCE_SOURCES
                     and evidence.units_per_case != printed):
                 suggestion, source = None, SUGGESTION_CONFLICT

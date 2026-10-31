@@ -28,8 +28,11 @@ attribution.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -178,6 +181,44 @@ async def _detail(db: AsyncSession, p: ProductDataProposal) -> ProposalDetail:
     detail.resulting_mapping = resulting
     detail.current_master_value = mapping.units_per_case if mapping else None
     return detail
+
+
+class UnappliedApprovalOut(BaseModel):
+    proposal_id: uuid.UUID
+    store_id: uuid.UUID
+    item_code: str
+    approved_value: Any
+    mapping_value: int | None = Field(description="Null: the store has no mapping for the product at all.")
+    invoice_id: uuid.UUID | None = None
+    invoice_deleted: bool = Field(
+        default=False,
+        description="The invoice this was raised on no longer exists. Such a proposal is history: it is flagged, "
+                    "never revived, repaired or removed.")
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+
+
+@router.get(
+    "/proposals/integrity",
+    response_model=APIResponse[list[UnappliedApprovalOut]],
+    summary="Approved units-per-case proposals whose mapping does not exist (read-only)",
+    description=(
+        "The invariant is: an approved case-mapping proposal has its mapping. Approval writes both in one "
+        "transaction, so a gap means a mapping was removed afterwards (by hand) or a defect. Lists every APPROVED "
+        "proposal whose approved value is not the store's mapping and was not superseded by a later approval. "
+        "Nothing is changed and nothing is repaired: the audit trail is never rewritten, and what to do with a "
+        "gap is a decision for a person. MANAGER and ADMIN."
+    ),
+    dependencies=[Depends(require_manager)],
+)
+async def proposal_integrity(
+    store_id: uuid.UUID | None = Query(default=None), db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[UnappliedApprovalOut]]:
+    gaps = await proposal_service.find_unapplied_approvals(db, store_id=store_id)
+    cache: dict = {}
+    return APIResponse(data=[
+        UnappliedApprovalOut(**vars(g), invoice_deleted=not await _invoice_exists(db, g.invoice_id, cache))
+        for g in gaps])
 
 
 @router.get(
