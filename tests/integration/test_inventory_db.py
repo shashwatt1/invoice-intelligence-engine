@@ -15,7 +15,7 @@ which submits the receipt — then approved through the inventory API:
     database refuses a duplicate idempotency key or a wrong-signed movement;
   * balances are per store: a source identity is refused, another physical
     store sees nothing, and on-hand exists only after an opening count;
-  * a POSTED receipt locks its invoice: every line, store and document change
+  * a POSTED receipt locks its invoice: every line, store, date, total and document change
     is refused (409) until the receipt is reversed; reversing compensates every
     movement, keeps the history, is idempotent, leaves the Retailed mark as it
     is, and frees the invoice to be corrected, re-marked and received again; a
@@ -404,6 +404,9 @@ class TestCorrectionsAfterReceipt:
                                                   json={"decision": "same_row", "decided_by": "m"}),
             "assign_store": api_client.post(f"{base}/assign-store", json={"store_id": str(other.id),
                                                                           "assigned_by": "m"}),
+            "correct_invoice_date": api_client.patch(f"{base}/date", json={"invoice_date": "2026-01-16",
+                                                                           "corrected_by": "m"}),
+            "correct_totals": api_client.patch(f"{base}/totals", json={"subtotal": 1.0, "corrected_by": "m"}),
             # delete_invoice reverses the receipt first: tests/integration/test_inventory_approval_db.py
             "move_to_bin": api_client.post(f"/api/v1/documents/{before['document_id']}/move-to-bin",
                                            json={"reason": "test: received invoice"}),
@@ -418,6 +421,9 @@ class TestCorrectionsAfterReceipt:
         after = (await api_client.get(base)).json()["data"]
         assert after["line_items"] == before["line_items"]
         assert (after["status"], after["store"]["id"]) == (before["status"], before["store"]["id"])
+        # the refused date and totals corrections left no trace: not a value, not a history entry
+        for field in ("invoice_date", "subtotal", "grand_total", "corrected_fields", "correction_history"):
+            assert after[field] == before[field], field
         document = (await api_client.get(f"/api/v1/documents/{before['document_id']}")).json()["data"]
         assert document["status"] != "BINNED"
         assert await ledger_counts(db_session) == (1, 2)
@@ -437,10 +443,40 @@ class TestCorrectionsAfterReceipt:
         assert after["correction_history"] == before["correction_history"]
         assert await ledger_counts(db_session) == (1, 2)
 
-    async def test_the_date_and_totals_stay_correctable(self, api_client, db_session, received):  # noqa: F811
+    async def test_the_date_and_totals_are_locked_too_and_nothing_changes(self, api_client, db_session, received):  # noqa: F811
+        # Before this was fixed the header date and printed totals stayed editable on a received invoice,
+        # so a figure the receipt was approved against could change without reversing the receipt.
         await received_and_mapped(api_client, db_session, received)
-        r = await api_client.patch(f"/api/v1/invoices/{received.invoice_id}/date",
-                                   json={"invoice_date": "2026-01-16", "corrected_by": "m"})
+        base = f"/api/v1/invoices/{received.invoice_id}"
+        before = (await api_client.get(base)).json()["data"]
+        date_response = await api_client.patch(f"{base}/date", json={"invoice_date": "2026-01-16", "corrected_by": "m"})
+        assert refused_as_received(date_response) == "correct_invoice_date"
+        for body in ({"subtotal": 1.0}, {"grand_total": 1.0}, {"tax_amount": 0.0, "discount_amount": 0.0},
+                     {"deposit_total": 2.0, "fuel_surcharge": 1.0}):
+            response = await api_client.patch(f"{base}/totals", json={**body, "corrected_by": "m"})
+            assert refused_as_received(response) == "correct_totals", body
+        after = (await api_client.get(base)).json()["data"]
+        assert after == before                                         # not one field, history entry or status moved
+        assert await ledger_counts(db_session) == (1, 2)
+
+    async def test_the_date_and_totals_are_correctable_again_once_the_receipt_is_reversed(
+        self, api_client, db_session, received,  # noqa: F811
+    ):
+        receipt = await received_and_mapped(api_client, db_session, received)
+        base = f"/api/v1/invoices/{received.invoice_id}"
+        reversal = await api_client.post(f"/api/v1/inventory/invoices/{received.invoice_id}/receipt/reverse",
+                                         json={"receipt_id": receipt["id"], "reason": "test: corrected after reversal"})
+        assert reversal.status_code == 200, reversal.text
+        r = await api_client.patch(f"{base}/date", json={"invoice_date": "2026-01-16", "corrected_by": "m"})
+        assert r.status_code == 200, r.text
+        r = await api_client.patch(f"{base}/totals", json={"subtotal": 90.85, "corrected_by": "m"})
+        assert r.status_code == 200, r.text
+
+    async def test_an_invoice_that_was_never_received_is_still_correctable(self, api_client, db_session, received):  # noqa: F811
+        base = f"/api/v1/invoices/{received.invoice_id}"                # received fixture only creates the invoice
+        r = await api_client.patch(f"{base}/date", json={"invoice_date": "2026-01-16", "corrected_by": "m"})
+        assert r.status_code == 200, r.text
+        r = await api_client.patch(f"{base}/totals", json={"subtotal": 90.85, "corrected_by": "m"})
         assert r.status_code == 200, r.text
 
 

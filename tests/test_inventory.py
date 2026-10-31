@@ -648,7 +648,8 @@ class TestTheCorrectionGuard:
         guarded = {
             # delete_invoice takes the same lock through inventory_approval.release_invoice_for_deletion.
             "app/api/v1/invoices.py": {"correct_line_item", "duplicate_decision", "assign_store",
-                                       "add_line_item", "void_line_item"},
+                                       "add_line_item", "void_line_item",
+                                       "correct_invoice_date", "correct_totals"},
             "app/services/recycle_bin.py": {"move_to_bin"},          # binning lives in the Recycle Bin service
             "app/services/reprocess_service.py": {"reprocess"},
         }

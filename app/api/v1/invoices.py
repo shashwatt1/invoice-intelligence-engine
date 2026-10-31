@@ -1250,6 +1250,8 @@ async def correct_invoice_date(
     invoice_id: uuid.UUID, payload: InvoiceDateCorrection, db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[InvoiceDateCorrectionResult]:
+    # A POSTED receipt locks the invoice, the header date included: reverse the receipt first.
+    await ensure_invoice_changeable(db, invoice_id, "correct_invoice_date")
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
@@ -1295,6 +1297,8 @@ async def correct_totals(
     if negative:
         raise ValidationError(message=f"{', '.join(negative)} must not be negative.",
                               detail={"invoice_id": str(invoice_id), "fields": negative})
+    # A POSTED receipt locks the invoice, the printed totals included: reverse the receipt first.
+    await ensure_invoice_changeable(db, invoice_id, "correct_totals")
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
