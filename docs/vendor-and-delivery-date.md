@@ -35,9 +35,28 @@ Neither replaces what the document prints. The vendor and the dates read from th
 
 ## Data
 
+Migration `0041_vendor_merge` (after 0040): `vendors.merged_into_id` and the `vendor_merges` record, both described under "Merging duplicate vendors" below. Additive; nothing is rewritten.
+
 Migration `0040_vendor_and_delivery_date_at_upload`: table `vendor_requests` (row-level security on, like the other ledgers; one open request per normalised name); `documents.chosen_vendor_id`, `vendor_request_id`, `declared_delivery_date`; `invoices.vendor_source`, `delivery_date`. All new columns are nullable; nothing is back-filled. Existing invoices have no declared date and a vendor from the document; they need both declared before they can be marked Retailed.
 
 The Retailed attestation fingerprint adds the delivery date only when one is set, so an invoice already marked Retailed keeps its mark.
+
+## Merging duplicate vendors (`scripts/merge_vendors.py`)
+
+Extraction creates a vendor per spelling, so one supplier can exist twice (two T.J. Sheehan rows, two PepsiCo rows). The picker would list both, so they are merged first. The vendor that **stays** is the winner; the duplicate is the loser.
+
+* **Nothing is deleted.** The loser is kept as a tombstone (`merged_into_id`): its identity-review history is an audit record that must keep pointing at it, and an invoice that later prints its old spelling resolves to the winner instead of creating the duplicate again. The picker, the Vendor Master list and name checks never show a tombstone; a picker loaded before a merge still works (the merged-away vendor is read as the one that stays).
+* **What moves:** invoices, product proposals of every status, documents' chosen vendor, vendor requests and the vendor item crosswalk. A crosswalk link the winner already holds for the same vendor item code is redundant when it names the same item code (the loser's is retired, with the reason) and a conflict when it names a different one (refused: decide which is right first).
+* **What does not change:** lines, totals, stores, statuses, mappings, exports and inventory records. A Retailed mark does not cover the vendor, so a merge never makes one stale (proven by a test on a marked invoice).
+* **Safeguards:** `--list-duplicates` and the dry run are read-only (the database itself refuses a write); an apply needs an active ADMIN `--actor`, a `--basis`, the plan fingerprint the dry run printed (a new invoice on the loser since then makes it stale) and `--expect-database host/db`. It refuses: a confirmed vendor merged into an unconfirmed one, two confirmed vendors (`--allow-both-confirmed`), different tax ids (`--allow-different-tax-ids`), names with nothing in common (`--allow-different-names`), an invoice with a POSTED receipt (`--allow-received-invoices`; only its vendor pointer moves) and a vendor already merged. Every moved invoice gets an audit entry; the merge is recorded once in `vendor_merges`.
+* **Rehearsed** on a throwaway copy of the 0038 restore migrated to 0041 (dropped afterwards): the finder reported exactly the two known pairs among 14 vendors, both merges applied, 14 → 12 vendors, no invoice left on a tombstone, no duplicate group left.
+
+```
+python scripts/merge_vendors.py --list-duplicates
+python scripts/merge_vendors.py --winner <id> --loser <id>                    # dry run; prints the plan fingerprint
+python scripts/merge_vendors.py --winner <id> --loser <id> --apply --actor <admin> --basis "why" \
+       --expect-plan <sha256> --expect-database <host/db>
+```
 
 ## Setting
 
@@ -45,9 +64,9 @@ The Retailed attestation fingerprint adds the delivery date only when one is set
 
 ## Rollout order (production steps are the operator's and need separate approval)
 
-1. Back up. Apply migration 0040 (additive; the previous release ignores the new columns).
-2. **Merge the duplicate vendors first.** The picker lists every vendor, so duplicates (the same supplier under two rows) would be chosen at random. Run the vendor-merge tool in dry-run, review, then apply.
+1. Back up. Apply migrations 0040 and 0041 (both additive; the previous release ignores the new columns and table).
+2. **Merge the duplicate vendors first.** The picker lists every vendor, so duplicates (the same supplier under two rows) would be chosen at random. Run `scripts/merge_vendors.py --list-duplicates`, then a dry run per pair, review, then apply (see above; the pair with a POSTED receipt needs `--allow-received-invoices`).
 3. Deploy the application.
 4. Tell users: choose the vendor and enter the delivery day at upload; a vendor that is missing is added by a manager, or asked for.
 
-Rollback: set `UPLOAD_REQUIRES_VENDOR_AND_DELIVERY=false` (or redeploy the previous release). The migration needs no rollback to do so. `alembic downgrade` drops the new table and columns and loses what was declared.
+Rollback: set `UPLOAD_REQUIRES_VENDOR_AND_DELIVERY=false` (or redeploy the previous release). The migration needs no rollback to do so. `alembic downgrade` drops the new tables and columns and loses what was declared (and the merge pointers: invoices already repointed stay on the vendor that stayed).
