@@ -666,9 +666,10 @@ class TestTheMigration:
         assert revisions["0038"] == "0037"          # shared mappings + vendor item crosswalk
         assert revisions["0039"] == "0038"          # typed other charges + printed units
         assert revisions["0040"] == "0039"          # vendor and delivery date at upload, vendor requests
+        assert revisions["0041"] == "0040"          # vendor merge: tombstone pointer and the merge record
         heads = set(revisions) - {d for d in revisions.values() if d}
         # 0025 is an unreleased branch off 0024, re-parented when released (see 0033's docstring).
-        assert heads - {"0025"} == {"0040"}, heads
+        assert heads - {"0025"} == {"0041"}, heads
 
     def test_the_database_checks_are_exactly_the_models(self):
         m0035 = _load(MIGRATION)
