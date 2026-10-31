@@ -380,6 +380,7 @@ ALLOWED_STORE_WRITES = {
     ("app/api/v1/documents.py", "confirm_store"),          # after ensure_physical_store
     ("app/api/v1/documents.py", "defer_store"),            # clears it — ADMIN only
     ("app/api/v1/invoices.py", "assign_store"),            # after ensure_physical_store
+    ("app/api/v1/invoices.py", "change_store"),            # after ensure_physical_store; MANAGER/ADMIN, until Retailed
     ("app/services/pipeline_service.py", "intake_pages"),  # the operator's choice, via resolve_chosen_store
     ("app/services/pipeline_service.py", "_settle_store"), # the same choice, when the document agrees
     ("app/repositories/invoice_repository.py", "create_with_items"),  # persists the document's store
@@ -433,6 +434,9 @@ class TestStoreWritePaths:
     def test_the_entry_points_apply_the_physical_store_guard(self):
         assert "ensure_physical_store" in _calls(_function("app/api/v1/documents.py", "confirm_store"))
         assert "ensure_physical_store" in _calls(_function("app/api/v1/invoices.py", "assign_store"))
+        change = _function("app/api/v1/invoices.py", "change_store")
+        assert {"ensure_physical_store", "ensure_not_retailed", "ensure_invoice_changeable"} <= _calls(change)
+        assert "require_manager" in ast.unparse(change.args)
         assert "ensure_physical_store" in _calls(_function("app/api/v1/invoices.py", "resolve_chosen_store"))
         process = _calls(_function("app/api/v1/invoices.py", "process_invoice"))
         assert {"resolve_chosen_store", "require_store_choice"} <= process
