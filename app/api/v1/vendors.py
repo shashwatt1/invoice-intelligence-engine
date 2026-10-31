@@ -41,7 +41,8 @@ from app.schemas.vendor import (
     VendorReopenRequest,
     VendorRow,
 )
-from app.services import vendor_identity_service
+from app.schemas.vendor_choice import VendorAddRequest, VendorOption
+from app.services import vendor_identity_service, vendor_request_service
 
 router = APIRouter(prefix="/vendors", tags=["Vendor Master"], dependencies=[Depends(require_authenticated_user)])
 
@@ -53,6 +54,28 @@ def _row(vendor: Vendor, stats: dict) -> VendorRow:
         invoices=stats.get("invoices", 0), observed_names=stats.get("observed_names", 0),
         last_seen_at=stats.get("last_seen_at"),
     )
+
+
+@router.get("/options", response_model=APIResponse[list[VendorOption]],
+            summary="The vendor picker for upload: every vendor, names only (any authenticated account)")
+async def vendor_options(
+    store_id: uuid.UUID | None = Query(default=None, description="Vendors that last supplied this store are listed first."),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[VendorOption]]:
+    rows = await VendorRepository(db).options(store_id)
+    return APIResponse(data=[
+        VendorOption(id=v.id, name=v.display_name or v.name, confirmed=v.identity_status == "confirmed", last_used_at=last)
+        for v, last in rows])
+
+
+@router.post("", response_model=APIResponse[VendorOption], status_code=201,
+             summary="Add a vendor that is not listed (MANAGER/ADMIN; it is confirmed and listed at once)")
+async def add_vendor(body: VendorAddRequest, db: AsyncSession = Depends(get_db),
+                     user: User = Depends(require_manager)) -> APIResponse[VendorOption]:
+    vendor = await vendor_request_service.add_vendor(db, user, body.name)
+    option = VendorOption(id=vendor.id, name=vendor.display_name or vendor.name, confirmed=True)
+    await db.commit()
+    return APIResponse(data=option)
 
 
 @router.get("", response_model=PaginatedResponse[VendorRow], summary="The Vendor Master")

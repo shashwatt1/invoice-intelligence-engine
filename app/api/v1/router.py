@@ -31,6 +31,7 @@ from app.api.v1 import (
     stores,
     upload,
     users,
+    vendor_requests,
     vendors,
 )
 
@@ -61,3 +62,4 @@ api_router.include_router(product_master.router, prefix="")
 api_router.include_router(vendors.router, prefix="")
 api_router.include_router(inventory.router, prefix="")
 api_router.include_router(inventory.status_router, prefix="")
+api_router.include_router(vendor_requests.router, prefix="")

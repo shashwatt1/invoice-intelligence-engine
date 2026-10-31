@@ -192,3 +192,17 @@ class VendorRepository:
         await self._session.flush()
         return review
 
+    async def options(self, store_id: uuid.UUID | None = None) -> list[tuple[Vendor, Any]]:
+        """
+        Every vendor for the upload picker, with when it last had an invoice at `store_id` (None if never or no store):
+        recent at this store first, then confirmed, then by name.
+        """
+        if store_id is None:
+            rows: list[tuple[Vendor, Any]] = [(v, None) for v in (await self._session.execute(select(Vendor))).scalars().all()]
+        else:
+            last_used = (select(Invoice.vendor_id, func.max(Invoice.created_at).label("last_used_at"))
+                         .where(Invoice.store_id == store_id).group_by(Invoice.vendor_id).subquery())
+            rows = [(v, last) for v, last in (await self._session.execute(
+                select(Vendor, last_used.c.last_used_at).outerjoin(last_used, last_used.c.vendor_id == Vendor.id))).all()]
+        return sorted(rows, key=lambda r: (r[1] is None, -(r[1].timestamp() if r[1] else 0),
+                                           r[0].identity_status != "confirmed", (r[0].display_name or r[0].name).casefold()))
