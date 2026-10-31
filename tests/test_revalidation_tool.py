@@ -102,6 +102,85 @@ class TestDetectingTheRewritesTheDeployedRevalidationWouldMake:
         assert tool.rows_the_deployed_revalidation_would_rewrite(self.invoice(quantity=4)) == 0
 
 
+class TestTheCounterAgreesWithTheDeployedRevalidation:
+    """
+    The tool refuses to apply when the deployed revalidation would rewrite a stored line, so its count must be the
+    function's own answer. Here the deployed `_persist_proven_reconciliation` runs on the same invoices (against a fake
+    session, so nothing is persisted) and the number of rows it changes must equal the tool's count.
+    """
+
+    class FakeSession:
+        def add(self, *_):
+            pass
+
+        async def flush(self):
+            pass
+
+    @pytest.fixture(autouse=True)
+    def _no_log_writes(self, monkeypatch):
+        import app.services.revalidation_service as deployed
+
+        class NoLogs:
+            def __init__(self, _session):
+                pass
+
+            async def add(self, **_kw):
+                pass
+        monkeypatch.setattr(deployed, "ProcessingLogRepository", NoLogs)
+
+    def prepared(self, invoice):
+        for item in invoice.items:
+            item.line_type, item.source_pages, item.duplicate_candidate = "product", [], None
+            item.discount = item.discount if getattr(item, "discount", None) is not None else None
+            item.correction_history = []
+        invoice.other_charges = None
+        return invoice
+
+    async def deployed_rewrites(self, invoice):
+        from app.services.revalidation_service import _persist_proven_reconciliation
+        from app.services.validation.service import ValidationService
+        return await _persist_proven_reconciliation(self.FakeSession(), invoice, ValidationService()._tolerance)
+
+    def quantity_case(self, quantity):
+        invoice = make_invoice(subtotal=Decimal("50.00"), tax_amount=Decimal("0"), grand_total=Decimal("50.00"))
+        first, second = invoice.items
+        first.quantity, first.unit_price, first.line_total, first.sort_order = Decimal(str(quantity)), Decimal("10.00"), Decimal("40.00"), 0
+        second.quantity, second.unit_price, second.line_total, second.sort_order = Decimal("1"), Decimal("10.00"), Decimal("10.00"), 1
+        first.deposit = second.deposit = None
+        return self.prepared(invoice)
+
+    def deposit_case(self, folded):
+        # Rule D: the printed unit price already contains the container deposit (11.00 = 10.00 + 1.00), which the
+        # invoice's own totals prove: sum(price x qty) = subtotal + deposits and sum((price - deposit) x qty) = subtotal.
+        invoice = make_invoice(subtotal=Decimal("100.00"), tax_amount=Decimal("0"), grand_total=Decimal("110.00"),
+                               deposit_total=Decimal("10.00"))
+        invoice.items = invoice.items[:1]
+        item = invoice.items[0]
+        item.sort_order, item.quantity = 0, Decimal("10")
+        item.unit_price, item.line_total = (Decimal("11.00"), Decimal("110.00")) if folded else (Decimal("10.00"), Decimal("100.00"))
+        item.deposit = Decimal("1.00")
+        return self.prepared(invoice)
+
+    @pytest.mark.parametrize("quantity, label", [(1, "Rule E: a quantity the totals prove wrong"), (4, "a consistent invoice")])
+    async def test_rule_e(self, quantity, label):
+        invoice = self.quantity_case(quantity)
+        counted = tool.rows_the_deployed_revalidation_would_rewrite(invoice)
+        assert counted == await self.deployed_rewrites(invoice), label
+        assert counted == (1 if quantity == 1 else 0)
+
+    @pytest.mark.parametrize("folded", [True, False])
+    async def test_rule_d(self, folded):
+        invoice = self.deposit_case(folded)
+        counted = tool.rows_the_deployed_revalidation_would_rewrite(invoice)
+        assert counted == await self.deployed_rewrites(invoice)
+        assert counted == (1 if folded else 0)
+
+    async def test_the_count_is_taken_before_the_deployed_function_rewrites_anything(self):
+        invoice = self.quantity_case(1)
+        assert tool.rows_the_deployed_revalidation_would_rewrite(invoice) == 1
+        assert invoice.items[0].quantity == Decimal("1")                  # counting changed nothing
+
+
 class TestTheCommandLineRefusesWhatWasNotReviewed:
     def run(self, *argv):
         with pytest.raises(SystemExit) as stopped:
