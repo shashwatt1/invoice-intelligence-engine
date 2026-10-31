@@ -264,6 +264,8 @@ class SubmissionOut(BaseModel):
 class ReceiptPreviewOut(BaseModel):
     invoice_id: uuid.UUID
     invoice_number: str | None = None
+    declared_delivery_date: date | None = Field(
+        default=None, description="The day the goods arrived, declared at upload or on the invoice; pre-fills the receipt date.")
     store: StoreRef | None = None
     eligibility_reasons: list[str]
     lines: list[ReceiptLineOut] = Field(description="The lines a receipt would cover now.")

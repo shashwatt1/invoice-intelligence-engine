@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.exceptions import ValidationError
 from app.models.edi_export import EdiExport
-from app.models.invoice import Invoice
+from app.models.invoice import SOURCE_OPERATOR, SOURCE_REQUESTED, Invoice
 from app.models.processing_log import PipelineStage
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
@@ -171,6 +171,9 @@ def attestation_fingerprint(invoice: Invoice, units_by_item_code: Mapping[str, i
     header = {name: _canonical(getattr(invoice, name)) for name in (
         "invoice_number", "invoice_date", "currency", "store_id", "subtotal", "tax_amount",
         "discount_amount", "deposit_total", "fuel_surcharge", "grand_total")}
+    if getattr(invoice, "delivery_date", None) is not None:
+        # Added only when set: an invoice attested before delivery dates existed keeps the fingerprint it was attested with.
+        header["delivery_date"] = _canonical(invoice.delivery_date)
     lines = [
         {name: _canonical(getattr(item, name)) for name in (
             "sort_order", "line_type", "product_sku", "description", "pack_size", "quantity",
@@ -181,6 +184,24 @@ def attestation_fingerprint(invoice: Invoice, units_by_item_code: Mapping[str, i
     payload = json.dumps({"header": header, "lines": lines, "mappings": mappings, "pdi_sha256": pdi_sha},
                          sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def missing_declarations(invoice: Invoice) -> str | None:
+    """
+    Why the invoice cannot be marked Retailed yet for want of the vendor or the delivery date a person must declare, or None.
+    Asked for at upload; whoever missed it (an ADMIN, an invoice from before the upload asked) sets it on the invoice.
+    """
+    missing = []
+    if getattr(invoice, "delivery_date", None) is None:
+        missing.append("set the delivery date (the day the goods arrived)")
+    source = getattr(invoice, "vendor_source", None)
+    if source == SOURCE_REQUESTED:
+        missing.append("wait for the vendor you asked for to be approved, or choose another vendor")
+    elif source != SOURCE_OPERATOR:
+        missing.append("choose the vendor from the vendor list")
+    if not missing:
+        return None
+    return f"Before this invoice can be marked Retailed: {' and '.join(missing)}."
 
 
 def status_for(invoice: Invoice, current_fingerprint: str | None) -> str:
@@ -228,6 +249,8 @@ async def _evaluate(session: AsyncSession, invoice: Invoice) -> tuple[Completion
     elif invoice.status != STATUS_VALIDATED:
         reason = (f"The invoice must be VALIDATED before it can be marked Retailed (it is {invoice.status}). "
                   "Resolve the failed checks or correct the invoice first.")
+    elif (missing := missing_declarations(invoice)) is not None:
+        reason = missing
     elif current_pdi is None:
         reason = f"The invoice cannot be exported now: {blocked}"
     elif latest is None:

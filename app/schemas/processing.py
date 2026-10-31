@@ -1177,6 +1177,37 @@ class RetailReopenRequest(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class VendorRequestRef(BaseModel):
+    id: uuid.UUID
+    name: str
+    status: str
+
+
+class DeliveryDateCorrection(BaseModel):
+    """Body of PATCH /invoices/{id}/delivery-date."""
+
+    delivery_date: date = Field(description="The day the goods arrived, YYYY-MM-DD.")
+    note: str | None = Field(default=None, max_length=500)
+
+
+class VendorChoice(BaseModel):
+    """Body of PATCH /invoices/{id}/vendor: a vendor from the list, or a request for one that is not."""
+
+    vendor_id: uuid.UUID | None = None
+    vendor_request_id: uuid.UUID | None = None
+    note: str | None = Field(default=None, max_length=500)
+
+
+class InvoiceDeclarationResult(BaseModel):
+    delivery_date: date | None = None
+    vendor_id: uuid.UUID | None = None
+    vendor_label: str | None = None
+    vendor_source: str | None = None
+    status: str
+    review_reasons: list[str] = Field(default_factory=list)
+    retailed_blocker: str | None = Field(default=None, description="What still has to be declared before Retailed, if anything.")
+
+
 class InvoiceDetailData(BaseModel):
     """Full invoice detail. `store` is None while the invoice is STORE_PENDING."""
     """Everything the invoice detail view needs in one request."""
@@ -1186,6 +1217,16 @@ class InvoiceDetailData(BaseModel):
     filename: str
     document_status: str
     source_type: str | None = None
+    vendor_source: str | None = Field(
+        default=None, description="'extracted', 'operator' (chosen by a person) or 'requested'; null before this existed.")
+    delivery_date: date | None = Field(default=None, description="The day the goods arrived, as declared by a person.")
+    vendor_request: VendorRequestRef | None = Field(
+        default=None, description="The request for a vendor this invoice waits on, if it was uploaded against one.")
+    vendor_mismatch: str | None = Field(
+        default=None,
+        description="When a person chose the vendor and the document prints a different one: the sentence saying so.")
+    declarations_missing: str | None = Field(
+        default=None, description="What a person still has to set (vendor, delivery date) before Retailed; null when set.")
     store: StoreRef | None = Field(default=None, description="None while STORE_PENDING.")
     store_pending: bool = Field(
         default=False,

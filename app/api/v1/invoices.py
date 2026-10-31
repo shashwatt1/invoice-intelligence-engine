@@ -38,10 +38,13 @@ from app.core.exceptions import (
 from app.core.logging import get_logger
 from app.database.session import get_db, get_session_factory
 from app.models.document import INACTIVE_DOCUMENT_STATUSES, DocumentStatus
+from app.models.invoice import SOURCE_OPERATOR, SOURCE_REQUESTED
 from app.models.processing_log import PipelineStage
 from app.models.product_case_mapping import MAX_UNITS_PER_CASE, MIN_UNITS_PER_CASE
 from app.models.user import User, UserRole
+from app.models.vendor import Vendor
 from app.models.vendor_item_crosswalk import VendorItemCrosswalk
+from app.models.vendor_request import REQUEST_APPROVED, REQUEST_PENDING, VendorRequest
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
@@ -55,6 +58,7 @@ from app.schemas.processing import (
     CompletionData,
     CorrectedLineItem,
     DatabaseConfirmation,
+    DeliveryDateCorrection,
     DocumentPhoto,
     DuplicateDecision,
     DuplicateDecisionResult,
@@ -62,6 +66,7 @@ from app.schemas.processing import (
     HistoryRow,
     InvoiceDateCorrection,
     InvoiceDateCorrectionResult,
+    InvoiceDeclarationResult,
     InvoiceDeleteResult,
     InvoiceDetailData,
     InvoiceReviewSummary,
@@ -76,8 +81,10 @@ from app.schemas.processing import (
     ReferenceLinkData,
     StoreAssignment,
     StoreRef,
+    VendorChoice,
     VendorData,
     VendorItemRemembered,
+    VendorRequestRef,
 )
 from app.services import inventory_approval, proposal_service, recycle_bin, vendor_item_crosswalk
 from app.services.case_mapping_service import (
@@ -105,7 +112,12 @@ from app.services.export_service import (
 )
 from app.services.gtin import classify as classify_printed_code
 from app.services.inventory_service import ensure_invoice_changeable
-from app.services.invoice_workflow_service import completion_state, current_facts, status_for
+from app.services.invoice_workflow_service import (
+    completion_state,
+    current_facts,
+    missing_declarations,
+    status_for,
+)
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.printed_code import printed_code_incompleteness
 from app.services.product_master.commercial_resolution import line_product_names, resolution_fields
@@ -115,6 +127,7 @@ from app.services.storage_service import get_storage_service
 from app.services.store_guard import ensure_physical_store, require_store_choice
 from app.services.store_reference_service import match_invoice_against_reference
 from app.services.supplier_item_context import digits, supplier_item_ids
+from app.services.upload_choices import parse_delivery_date, resolve_upload_choices
 from app.services.upload_service import UploadService
 
 logger = get_logger(__name__)
@@ -232,7 +245,9 @@ async def resolve_chosen_store(db: AsyncSession, value: str | None) -> uuid.UUID
         "\n\n**Accepted formats:** PDF, PNG, JPEG · **Max size:** 25 MB per file"
         "\n\n**409** if the same file (SHA-256), the same set of photos, or a photo already "
         "used in another intake was already processed."
-        "\n\n`store_id` (optional) is the store the operator says the invoice is for. After "
+        "\n\n`vendor_id` (or `vendor_request_id`) and `delivery_date` (YYYY-MM-DD, the day the goods arrived) are required "
+        "for USER and MANAGER and may be left to an ADMIN to set later; both are required before an invoice can be marked "
+        "Retailed. `store_id` (optional) is the store the operator says the invoice is for. After "
         "text extraction the document is matched against the store master; the run pauses in "
         "`STORE_CONFIRMATION_REQUIRED` for a person to confirm unless the operator's choice "
         "agrees with what the document says. There is no default store."
@@ -248,6 +263,11 @@ async def process_invoice(
         default=None,
         description="The Store id the operator chose, if chosen up front. Never a default.",
     ),
+    vendor_id: str | None = Form(default=None, description="The vendor (from GET /vendors/options) the invoice is from."),
+    vendor_request_id: str | None = Form(
+        default=None, description="Instead of vendor_id: a request (POST /vendor-requests) for a vendor that is not listed."),
+    delivery_date: str | None = Form(
+        default=None, description="The day the goods were delivered, YYYY-MM-DD, as the operator typed it."),
     db: AsyncSession = Depends(get_db),
     upload_service: UploadService = Depends(get_upload_service),
     pipeline: InvoiceProcessingPipeline = Depends(get_pipeline),
@@ -260,6 +280,8 @@ async def process_invoice(
     # Checked before any file is touched: a store that does not exist is
     # refused outright — nothing is stored, no document row is made.
     chosen = await resolve_chosen_store(db, store_id)
+    choices = await resolve_upload_choices(db, user.role, vendor_id=vendor_id, vendor_request_id=vendor_request_id,
+                                           delivery_date=delivery_date)
 
     pages: list[PageUpload] = []
     for upload_file in uploads:
@@ -273,7 +295,9 @@ async def process_invoice(
         ))
 
     try:
-        document = await pipeline.intake_pages(db, pages, store_id=chosen, uploaded_by_user_id=user.id)
+        document = await pipeline.intake_pages(
+            db, pages, store_id=chosen, uploaded_by_user_id=user.id, chosen_vendor_id=choices.vendor_id,
+            vendor_request_id=choices.vendor_request_id, delivery_date=choices.delivery_date)
     except InvoiceBaseException:
         # A safe, typed error (duplicate etc.) — re-raised unchanged. The files
         # were stored before intake could check, so this request's copies are
@@ -458,12 +482,19 @@ async def get_invoice(
     names = await line_product_names(db, invoice, resolution)
     supplier_items = supplier_item_ids(invoice)
 
+    waiting_for = await db.get(VendorRequest, document.vendor_request_id) if document.vendor_request_id else None
     data = InvoiceDetailData(
         invoice_id=invoice.id,
         document_id=invoice.document_id,
         filename=document.filename,
         document_status=document.status,
         source_type=document.source_type,
+        vendor_source=invoice.vendor_source,
+        delivery_date=invoice.delivery_date,
+        vendor_request=(VendorRequestRef(id=waiting_for.id, name=waiting_for.requested_name, status=waiting_for.status)
+                        if waiting_for is not None else None),
+        declarations_missing=missing_declarations(invoice),
+        vendor_mismatch=_vendor_mismatch(invoice),
         store=StoreRef.from_store(await StoreRepository(db).get(store)) if store else None,
         store_pending=store is None,
         invoice_number=invoice.invoice_number,
@@ -575,6 +606,21 @@ def reference_link_data(invoice) -> ReferenceLinkData | None:
 
 def completion_data(state) -> CompletionData:
     return CompletionData(**vars(state))
+
+
+def _vendor_mismatch(invoice) -> str | None:
+    """
+    When a person chose this invoice's vendor and the document prints another, the sentence that says so — for every role,
+    since the people who uploaded it are the ones who can tell which is right. None when they agree, nothing was printed, or
+    nobody chose.
+    """
+    from app.services.revalidation_service import expected_vendor_of
+    from app.services.validation.checks import CheckStatus, check_vendor_matches_choice
+
+    for result in check_vendor_matches_choice(invoice.vendor_name, invoice.vendor_tax_id, expected_vendor_of(invoice)):
+        if result.status is CheckStatus.FAILED:
+            return result.message
+    return None
 
 
 def _redact_invoice_detail(data: InvoiceDetailData, role: str) -> InvoiceDetailData:
@@ -1230,6 +1276,94 @@ async def void_line_item(
         review_reasons=report.review_reasons, pdi_export_allowed=eligibility.allowed,
         pdi_export_blocked_reason=eligibility.blocked_reason,
     ))
+
+
+@router.patch(
+    "/invoices/{invoice_id}/delivery-date",
+    response_model=APIResponse[InvoiceDeclarationResult],
+    summary="Set the day the goods were delivered (MANAGER/ADMIN)",
+    description=(
+        "The delivery date a person declares — the day the goods physically arrived — as a plain calendar date. It is "
+        "required before the invoice can be marked Retailed, pre-fills the date when the receipt is approved, and is locked "
+        "(409) once a receipt is POSTED: reverse the receipt first. The change is kept in the correction history."
+    ),
+    responses={404: {"description": "Invoice not found"}, 409: {"description": "A POSTED receipt holds the invoice"}},
+)
+async def set_delivery_date(
+    invoice_id: uuid.UUID, payload: DeliveryDateCorrection, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[InvoiceDeclarationResult]:
+    when = parse_delivery_date(payload.delivery_date)
+    await ensure_invoice_changeable(db, invoice_id, "set_delivery_date")
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    ensure_document_operable(invoice.document, "set_delivery_date")
+    await repository.set_delivery_date(invoice, when, by=user.username, note=payload.note)
+    await _log_correction(db, invoice, "delivery_date_set", user.username, payload.note,
+                          changes=(invoice.correction_history or [])[-1:])
+    result = _declaration_result(invoice)
+    await db.commit()
+    return APIResponse(data=result)
+
+
+@router.patch(
+    "/invoices/{invoice_id}/vendor",
+    response_model=APIResponse[InvoiceDeclarationResult],
+    summary="Choose the vendor of an invoice, from the vendor list or as a request for one that is not (MANAGER/ADMIN)",
+    description=(
+        "Points the invoice at a vendor a person chose; the vendor the document printed stays on the invoice as provenance "
+        "and is compared with the choice (a mismatch is a review reason, never a pause). Required before the invoice can be "
+        "marked Retailed. Locked (409) once a receipt is POSTED. Validation runs again."
+    ),
+    responses={404: {"description": "Invoice or vendor not found"}, 409: {"description": "A POSTED receipt holds the invoice"}},
+)
+async def choose_vendor(
+    invoice_id: uuid.UUID, payload: VendorChoice, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[InvoiceDeclarationResult]:
+    if (payload.vendor_id is None) == (payload.vendor_request_id is None):
+        raise ValidationError(message="Give either vendor_id or vendor_request_id.", detail={"field": "vendor_id"})
+    await ensure_invoice_changeable(db, invoice_id, "choose_vendor")
+    repository = InvoiceRepository(db)
+    invoice = await repository.get_detail(invoice_id)
+    if invoice is None:
+        raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
+    ensure_document_operable(invoice.document, "choose_vendor")
+    if payload.vendor_id is not None:
+        vendor = await db.get(Vendor, payload.vendor_id)
+        if vendor is None:
+            raise RecordNotFoundError(message="That vendor is not in the vendor list.", detail={"vendor_id": str(payload.vendor_id)})
+        await repository.set_vendor(invoice, vendor, source=SOURCE_OPERATOR, by=user.username, note=payload.note)
+        invoice.document.chosen_vendor_id, invoice.document.vendor_request_id = vendor.id, None
+    else:
+        request = await db.get(VendorRequest, payload.vendor_request_id)
+        if request is None or request.status not in (REQUEST_PENDING, REQUEST_APPROVED):
+            raise ValidationError(message="That vendor request is not open.", detail={"field": "vendor_request_id"})
+        if request.status == REQUEST_APPROVED and request.vendor_id is not None:
+            vendor = await db.get(Vendor, request.vendor_id)
+            await repository.set_vendor(invoice, vendor, source=SOURCE_OPERATOR, by=user.username, note=payload.note)
+            invoice.document.chosen_vendor_id = vendor.id
+        else:
+            invoice.correction_history = [*(invoice.correction_history or []), repository._entry(
+                "vendor", invoice.vendor.label if invoice.vendor else None, f"requested: {request.requested_name}",
+                user.username, payload.note)]
+            invoice.vendor_source = SOURCE_REQUESTED
+            invoice.document.vendor_request_id, invoice.document.chosen_vendor_id = request.id, None
+    await _log_correction(db, invoice, "vendor_chosen", user.username, payload.note,
+                          changes=(invoice.correction_history or [])[-1:])
+    invoice, report, _eligibility = await _revalidated(db, invoice_id)
+    result = _declaration_result(invoice, status=report.decision.value, reasons=report.review_reasons)
+    await db.commit()
+    return APIResponse(data=result)
+
+
+def _declaration_result(invoice, *, status: str | None = None, reasons: list[str] | None = None) -> InvoiceDeclarationResult:
+    return InvoiceDeclarationResult(
+        delivery_date=invoice.delivery_date, vendor_id=invoice.vendor_id,
+        vendor_label=invoice.vendor.label if invoice.vendor else None, vendor_source=invoice.vendor_source,
+        status=status or invoice.status, review_reasons=reasons or [], retailed_blocker=missing_declarations(invoice))
 
 
 @router.patch(
