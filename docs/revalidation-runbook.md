@@ -72,6 +72,14 @@ same argument and checks it the same way.
 `--expect-plan` binds the apply to exactly what was reviewed: if the invoice changed since the dry run (a new export, a
 correction, a receipt) the fingerprints differ and nothing is written. Each invoice is its own transaction.
 
+## Exports while it runs
+
+PDI, TXT and CSV requests share-lock the invoice for the length of the request, and the apply takes the exclusive lock
+first. So no operational pause is needed: an export that starts during an apply waits for it and is then refused by the
+new block; an apply that finds an export in flight waits for it, and, because the export landed, its plan fingerprint no
+longer matches and nothing is written (re-run the dry run, which now counts the export, and apply again). JSON and the
+labelled review copies deliver no export file and take no lock. Historical exports are never touched.
+
 ## After applying
 
 ```sql

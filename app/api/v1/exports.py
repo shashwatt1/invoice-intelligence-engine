@@ -23,6 +23,7 @@ from app.core.dependencies import require_manager
 from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.database.session import get_db
 from app.models.edi_export import EdiExport
+from app.models.invoice import Invoice
 from app.models.user import User
 from app.repositories.invoice_repository import InvoiceRepository
 from app.schemas.base import APIResponse
@@ -104,13 +105,21 @@ async def export_invoice(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> Response:
-    invoice = await InvoiceRepository(db).get_detail(invoice_id)
+    review = purpose == "review"
+    delivering = not review and format in ("pdi", "txt", "csv")
+    if delivering:
+        # Share-lock the invoice row for the whole request, taken BEFORE the invoice is read. Every writer of the
+        # invoice (edits, receipts, a revalidation that sets blocking_checks) takes the exclusive lock first, so:
+        # a revalidation that commits first is seen by this export (it is read afterwards and refused if blocked);
+        # one that starts while an export is in flight waits for it. Exports share the lock with each other, and
+        # JSON and review copies, which deliver no file, take none.
+        await db.execute(select(Invoice.id).where(Invoice.id == invoice_id).with_for_update(read=True))
+    invoice = await InvoiceRepository(db).get_detail(invoice_id, fresh=delivering)
     if invoice is None:
         raise RecordNotFoundError(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
 
-    review = purpose == "review"
     if review and format not in ("txt", "csv"):
         raise ValidationError(
             message="A review copy exists only as TXT or CSV. A PDI file is produced only for an export-ready "

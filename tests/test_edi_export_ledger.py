@@ -119,7 +119,7 @@ def endpoint(app, monkeypatch):
         def __init__(self, _db):
             pass
 
-        async def get_detail(self, _iid):
+        async def get_detail(self, _iid, fresh=False):
             document = SimpleNamespace(id=INVOICE.document_id, status="COMPLETED", reference_of_document_id=None)
             return SimpleNamespace(**vars(INVOICE), status="VALIDATED", items=[], document=document)
 
