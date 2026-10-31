@@ -32,11 +32,13 @@ from app.models.user import ROLE_RANK, User, UserRole
 from app.models.user_store_access import UserStoreAccess
 from app.models.vendor import Vendor
 from app.models.vendor_item_crosswalk import VendorItemCrosswalk
+from app.models.vendor_request import VendorRequest
 
 __all__ = [
     "Document",
     "EdiExport",
     "ExportOverride",
+    "VendorRequest",
     "MasterCommercialMapping",
     "MasterCommercialReview",
     "MasterPackComposition",

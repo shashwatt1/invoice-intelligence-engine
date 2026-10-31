@@ -19,10 +19,11 @@ Design decisions:
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import Date, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -130,6 +131,14 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     store_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("stores.id", ondelete="SET NULL"), nullable=True
     )
+    # What the operator chose at upload besides the store (nullable: older documents, and an ADMIN may leave them to
+    # be set later). The vendor is either a vendor from the Vendor Master or a request for one a manager has not yet
+    # approved; the delivery date is the day the goods physically arrived, as a plain calendar date.
+    chosen_vendor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("vendors.id", ondelete="SET NULL"), nullable=True)
+    vendor_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("vendor_requests.id", ondelete="SET NULL"), nullable=True)
+    declared_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     # What store identification found in the extracted text, for the
     # operator to confirm or override. A list of candidate dicts.
     store_candidates: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
