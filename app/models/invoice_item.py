@@ -120,6 +120,15 @@ class InvoiceItem(Base, UUIDPrimaryKeyMixin):
         doc="Possible cross-photo duplicate of another row, and how a reviewer resolved it.",
     )
 
+    printed_units: Mapped[int | None] = mapped_column(
+        Integer, nullable=True,
+        doc="The row's printed Units figure (single units delivered), when the document has a Units column.",
+    )
+    section_label: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        doc="The pack-size heading the row is printed under on grouped layouts, exactly as printed.",
+    )
+
     # 'extracted' (the model read it) or 'manual' (a person added the row).
     # A manual row is invoice-scoped data, never master data.
     entry_source: Mapped[str] = mapped_column(

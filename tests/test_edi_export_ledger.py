@@ -185,4 +185,10 @@ class TestTheMigration:
         tree = ast.parse((ROOT / "alembic/versions/20261008_0030_edi_exports.py").read_text())
         migration = {node.args[0].value for node in ast.walk(tree)
                      if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "Column"}
-        assert migration == set(EdiExport.__table__.columns.keys())
+        # export_override_id arrived later, additively, in 0039 (admin export overrides).
+        later = ast.parse((ROOT / "alembic/versions/20261031_0039_typed_charges_and_printed_units.py").read_text())
+        added = {node.args[1].args[0].value for node in ast.walk(later)
+                 if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "add_column"
+                 and node.args[0].value == "edi_exports"}
+        assert added == {"export_override_id"}
+        assert migration | added == set(EdiExport.__table__.columns.keys())

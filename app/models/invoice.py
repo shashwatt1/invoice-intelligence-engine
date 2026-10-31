@@ -102,6 +102,18 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     fuel_surcharge: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True, doc="Fuel surcharge / delivery fee, if printed."
     )
+    other_charges: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True,
+        doc=("Typed additional charges from the totals area, [{kind, label, amount}]: a state container "
+             "deposit, another jurisdiction charge, delivery, fuel. Outside the merchandise subtotal, "
+             "inside the amount payable. Never tax and never a product."),
+    )
+    blocking_checks: Mapped[list[str] | None] = mapped_column(
+        JSONB, nullable=True,
+        doc=("Names of the CRITICAL validation checks that failed on the latest validation (completeness and "
+             "financial reconciliation). While any is set the PDI export is blocked. Null = none failed, or an "
+             "invoice validated before this was recorded."),
+    )
     grand_total: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2), nullable=True, doc="Final invoice total."
     )
