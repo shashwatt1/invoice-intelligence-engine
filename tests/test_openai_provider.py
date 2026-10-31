@@ -172,6 +172,19 @@ class TestOpenAIProviderSuccess:
         assert body["temperature"] == 0.0
         assert body["seed"] == 42
 
+    async def test_no_output_cap_is_sent_by_default(self):
+        captured: list[httpx.Request] = []
+        await call(make_provider(completion_payload(VALID_INVOICE_CONTENT), captured=captured))
+        body = json.loads(captured[0].content)
+        assert "max_completion_tokens" not in body and "max_tokens" not in body
+
+    async def test_an_explicit_output_cap_is_sent_as_max_completion_tokens(self):
+        captured: list[httpx.Request] = []
+        provider = make_provider(completion_payload(VALID_INVOICE_CONTENT), captured=captured)
+        provider._max_output_tokens = 6000
+        await call(provider)
+        assert json.loads(captured[0].content)["max_completion_tokens"] == 6000
+
     async def test_raw_response_is_json_safe_and_strips_parsed(self):
         provider = make_provider(completion_payload(VALID_INVOICE_CONTENT))
 

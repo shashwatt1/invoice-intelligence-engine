@@ -89,8 +89,12 @@ class OpenAIProvider(LLMProvider):
         api_key: str | None = None,
         model: str | None = None,
         client: AsyncOpenAI | None = None,
+        max_output_tokens: int | None = None,
     ) -> None:
         settings = get_settings()
+        # None (the default, and what the application always uses) leaves the request exactly as it was. A cap is
+        # for a bounded-cost call such as scripts/extraction_replay.py; an answer cut by it fails as `length`.
+        self._max_output_tokens = max_output_tokens
         self._model = model or settings.openai_model
         self._temperature = settings.openai_temperature
         self._seed = settings.openai_seed
@@ -136,6 +140,7 @@ class OpenAIProvider(LLMProvider):
                 response_format=schema,
                 temperature=self._temperature,
                 seed=self._seed,
+                **({"max_completion_tokens": self._max_output_tokens} if self._max_output_tokens else {}),
             )
         except openai.AuthenticationError as exc:
             logger.error("openai_auth_failed", status_code=exc.status_code)
