@@ -75,10 +75,11 @@ class TestItCannotWriteWhatItMustNotTouch:
                     and t.value.id == "invoice"}
         assert assigned == {"status", "blocking_checks", "composite_confidence"}
 
-    def test_the_script_has_no_sql_writes_of_its_own(self):
+    def test_the_script_has_no_sql_writes_of_its_own_only_one_read_of_the_database_name(self):
         source = SCRIPT.read_text()
-        for forbidden in ("INSERT ", "UPDATE ", "DELETE ", "session.add", ".execute("):
-            assert forbidden not in source, forbidden
+        for forbidden in ("INSERT ", "UPDATE ", "DELETE ", "session.add", "commit()", "flush("):
+            assert forbidden not in source.replace("await session.commit()", ""), forbidden
+        assert source.count(".execute(") == 1 and 'text("select current_database()")' in source
 
 
 class TestDetectingTheRewritesTheDeployedRevalidationWouldMake:
@@ -111,12 +112,45 @@ class TestTheCommandLineRefusesWhatWasNotReviewed:
         assert self.run() == 2
         assert self.run("--all") == 2
 
-    def test_apply_needs_an_actor_and_a_reviewed_plan_for_every_invoice(self):
+    def test_apply_needs_an_actor_a_database_and_a_reviewed_plan_for_every_invoice(self):
         assert self.run("--invoice-number", "1", "--apply") == 2
         assert self.run("--invoice-number", "1", "--apply", "--actor", "a") == 2
+        assert self.run("--invoice-number", "1", "--apply", "--actor", "a", "--expect-plan", "1=abc") == 2  # no database
+        assert self.run("--invoice-number", "1", "--apply", "--expect-database", "h/d", "--expect-plan", "1=abc") == 2  # no actor
         assert self.run("--invoice-number", "1", "--invoice-number", "2", "--apply", "--actor", "a",
-                        "--expect-plan", "1=abc") == 2                       # the plan for 2 is missing
+                        "--expect-database", "h/d", "--expect-plan", "1=abc") == 2   # the plan for 2 is missing
 
     def test_actor_and_plan_without_apply_are_refused_so_a_dry_run_is_never_confused_with_one(self):
         assert self.run("--invoice-number", "1", "--actor", "a") == 2
         assert self.run("--invoice-number", "1", "--expect-plan", "1=abc") == 2
+
+
+class TestTheExpectedDatabaseIsComparedWithTheOneConnected:
+    TARGET = cli.Target(host="db.example.supabase.co", port=6543, database="postgres", connected_database="postgres")
+
+    def test_the_matching_host_and_database_are_accepted_with_or_without_the_port(self):
+        assert cli.target_mismatch("db.example.supabase.co/postgres", self.TARGET) is None
+        assert cli.target_mismatch("db.example.supabase.co:6543/postgres", self.TARGET) is None
+        assert cli.target_mismatch("DB.Example.Supabase.CO/postgres", self.TARGET) is None      # host names are case-insensitive
+        assert cli.target_mismatch(self.TARGET.expect_flag, self.TARGET) is None                # what the dry run tells you to pass
+
+    @pytest.mark.parametrize("expected, differs", [
+        ("other.example.supabase.co/postgres", "host"),
+        ("db.example.supabase.co/staging", "database"),
+        ("db.example.supabase.co:5432/postgres", "port"),
+        ("localhost/invoice_db", "host"),
+    ])
+    def test_a_different_host_database_or_port_is_refused_and_says_what_differs(self, expected, differs):
+        message = cli.target_mismatch(expected, self.TARGET)
+        assert message is not None and differs in message
+
+    @pytest.mark.parametrize("expected", [None, "", "postgres", "db.example.supabase.co", "/"])
+    def test_a_missing_or_malformed_expectation_is_refused(self, expected):
+        assert "host/db" in cli.target_mismatch(expected, self.TARGET)
+
+    def test_the_server_reporting_a_different_database_than_the_url_is_refused(self):
+        routed = cli.Target(host="pool.example.com", port=6543, database="postgres", connected_database="analytics")
+        assert "analytics" in cli.target_mismatch("pool.example.com/postgres", routed)
+
+    def test_the_target_description_never_contains_a_password(self):
+        assert "SECRET" not in cli.Target("db.example.com", 5432, "postgres", "postgres").describe()

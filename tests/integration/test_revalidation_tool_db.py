@@ -357,7 +357,14 @@ class TestWhatItRefuses:
 
 class TestTheCommandLine:
     def args(self, **kw):
-        return argparse.Namespace(**{"invoice_number": [], "apply": False, "actor": None, "expect_plan": [], "json": False, **kw})
+        return argparse.Namespace(**{"invoice_number": [], "apply": False, "actor": None, "expect_plan": [],
+                                     "expect_database": None, "json": False, **kw})
+
+    async def expect_database(self, tool_session):
+        async with tool_session() as session:
+            target = await cli.actual_target(session)
+            await session.rollback()
+        return target.expect_flag
 
     async def test_the_default_is_a_dry_run_that_prints_the_comparison_and_changes_nothing(
             self, db_session, blocked, tool_session, monkeypatch, capsys):
@@ -368,6 +375,7 @@ class TestTheCommandLine:
         code = await cli.run(self.args(invoice_number=[number]))
         out = capsys.readouterr().out
         assert code == 0 and "DRY RUN (read-only)" in out
+        assert "TARGET DATABASE: host=" in out and "(to apply here: --expect-database " in out
         assert "REVIEW_REQUIRED" in out and "COMPLETENESS_MISSING_LINES" in out and "plan sha256" in out
         assert "historical EDI exports: 0 | POSTED receipts: 0" in out
         assert "WRITTEN" not in out
@@ -380,7 +388,8 @@ class TestTheCommandLine:
         monkeypatch.setattr(cli, "get_session_factory", lambda: tool_session.factory)
         async with tool_session() as session:
             sha = (await tool.plan(session, number)).fingerprint
-        code = await cli.run(self.args(invoice_number=[number], apply=True, actor="testadmin", expect_plan=[f"{number}={sha}"]))
+        code = await cli.run(self.args(invoice_number=[number], apply=True, actor="testadmin", expect_plan=[f"{number}={sha}"],
+                                       expect_database=await self.expect_database(tool_session)))
         assert code == 0 and ">>> WRITTEN" in capsys.readouterr().out
         assert (await invoice_state(db_session, blocked))["blocking"] == ["COMPLETENESS_MISSING_LINES"]
 
@@ -405,7 +414,45 @@ class TestTheCommandLine:
             sha = (await tool.plan(session, number)).fingerprint
         state = await invoice_state(db_session, blocked)
         code = await cli.run(self.args(invoice_number=[number, "does-not-exist"], apply=True, actor="testadmin",
-                                       expect_plan=[f"{number}={sha}", "does-not-exist=00"]))
+                                       expect_plan=[f"{number}={sha}", "does-not-exist=00"],
+                                       expect_database=await self.expect_database(tool_session)))
         out = capsys.readouterr().out
         assert code == 2 and out.count("REFUSED") >= 2 and "WRITTEN" not in out
         assert await invoice_state(db_session, blocked) == state
+
+    @pytest.mark.parametrize("wrong", ["not-this-host/invoice_test", "localhost/not_this_database", "no-slash", ""])
+    async def test_apply_against_a_database_other_than_the_expected_one_is_refused_before_anything_is_read_or_written(
+            self, db_session, blocked, tool_session, monkeypatch, capsys, wrong):
+        await make_legacy(db_session, blocked)
+        number = await number_of(db_session, blocked)
+        monkeypatch.setattr(cli, "get_session_factory", lambda: tool_session.factory)
+        async with tool_session() as session:
+            sha = (await tool.plan(session, number)).fingerprint
+        state, snapshot, logs = await invoice_state(db_session, blocked), await world(db_session, blocked), await log_counts(db_session, blocked)
+
+        # the tool must not even look at an invoice: make any attempt to plan or apply fail the test
+        async def forbidden(*a, **k):
+            raise AssertionError("the tool read or wrote an invoice although the database was not the expected one")
+        monkeypatch.setattr(tool, "apply", forbidden)
+        monkeypatch.setattr(tool, "plan", forbidden)
+        code = await cli.run(self.args(invoice_number=[number], apply=True, actor="testadmin", expect_plan=[f"{number}={sha}"],
+                                       expect_database=wrong))
+        out = capsys.readouterr().out
+        assert code == 2 and "REFUSED:" in out and "Nothing was read or written." in out and "WRITTEN" not in out
+        assert await invoice_state(db_session, blocked) == state and await world(db_session, blocked) == snapshot
+        assert await log_counts(db_session, blocked) == logs
+
+    async def test_the_right_host_with_the_wrong_database_name_says_which_part_differs(
+            self, db_session, blocked, tool_session, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "get_session_factory", lambda: tool_session.factory)
+        host = (await self.expect_database(tool_session)).split("/")[0]
+        code = await cli.run(self.args(invoice_number=["x"], apply=True, actor="testadmin", expect_plan=["x=00"],
+                                       expect_database=f"{host}/production"))
+        out = capsys.readouterr().out
+        assert code == 2 and "database 'invoice_test'" in out and "host" not in out.split("differs in:")[1]
+
+    async def test_a_dry_run_that_names_the_wrong_database_is_refused_too(self, db_session, blocked, tool_session, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "get_session_factory", lambda: tool_session.factory)
+        number = await number_of(db_session, blocked)
+        code = await cli.run(self.args(invoice_number=[number], expect_database="somewhere-else/prod"))
+        assert code == 2 and "REFUSED:" in capsys.readouterr().out

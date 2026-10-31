@@ -14,7 +14,7 @@ correction revalidates, but it also stamps the field as hand-corrected, even whe
 | Show historical EDI exports, POSTED/submitted receipts and the Retailed mark around the invoice | Touch EDI exports, the EDI ledger or any inventory record |
 | On `--apply`: set the invoice's status, confidence and `blocking_checks`, sync the document status as revalidation does, and append a VALIDATION entry (so the screen shows the new report) and an audit entry | Run Rule D/E (the stored-line rewrites of the deployed revalidation) |
 
-**Refused before anything is written:** an invoice with a POSTED inventory receipt; a document in the Recycle Bin or a
+**Refused before anything is written:** a database other than the one named by `--expect-database`; an invoice with a POSTED inventory receipt; a document in the Recycle Bin or a
 reference copy; an invoice number matching none or more than one invoice; an invoice where the deployed revalidation
 would rewrite a stored line (Rule D/E); an `--actor` that is not an active ADMIN; an `--expect-plan` that is missing or
 no longer matches the invoice.
@@ -46,8 +46,13 @@ Including 2037594523 here is read-only and confirms the refusal. For each invoic
 * `stored lines that the deployed revalidation would rewrite` (must be 0 to apply)
 * `REFUSED (would not be applied): …` or `WOULD CHANGE the invoice row   plan sha256 <64 hex>`
 
-The first line names the database host and name (never a credential). Check that it is the production database you mean.
+The first line, `TARGET DATABASE: host=… database=…`, names the database actually connected to (host and name only, never a
+credential) and the `--expect-database host/db` text to pass to an apply. Check that it is the production database you mean.
 Exit code 2 means at least one invoice is refused.
+
+The tool reads `DATABASE_URL` from the environment and, failing that, from a `.env` file in the **current directory**; with
+neither it uses the local development database. Run it from a directory without a `.env`, or export `DATABASE_URL`
+explicitly, and read that line before going on.
 
 **Review it, then stop.** Send the output for approval. Expected for 2037594523: `REFUSED … posted_inventory_receipt`.
 
@@ -56,8 +61,13 @@ Exit code 2 means at least one invoice is refused.
 ```
 DATABASE_URL='postgresql+asyncpg://…' python scripts/revalidate_invoices.py \
     --invoice-number 48288200 --invoice-number 501315 --apply --actor <your ADMIN username> \
-    --expect-plan 48288200=<sha256 from step 1> --expect-plan 501315=<sha256 from step 1>
+    --expect-plan 48288200=<sha256 from step 1> --expect-plan 501315=<sha256 from step 1> \
+    --expect-database <host/db printed by the dry run>
 ```
+
+`--expect-database` is compared with the database actually connected to (host and name from the connection, and the name
+the server itself reports) **before anything is read**. If it differs, nothing is read or written. A dry run accepts the
+same argument and checks it the same way.
 
 `--expect-plan` binds the apply to exactly what was reviewed: if the invoice changed since the dry run (a new export, a
 correction, a receipt) the fingerprints differ and nothing is written. Each invoice is its own transaction.
