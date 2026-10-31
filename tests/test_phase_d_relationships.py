@@ -36,6 +36,7 @@ from app.models.user import User, UserRole
 from app.models.vendor import VENDOR_CONFIRMED, VENDOR_UNRESOLVED, Vendor
 from app.services import receiving_eligibility as rx
 from app.services import reprocess_service
+from app.services import upload_choices as upload_choices_module
 from app.services.store_guard import require_store_choice
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -129,6 +130,9 @@ class TestTheStoreRuleAtProcessing:
     @pytest.mark.parametrize("role", [UserRole.USER.value, UserRole.MANAGER.value])
     async def test_a_physical_store_satisfies_the_rule(self, client, act_as, monkeypatch, role):
         act_as(role)
+        # The vendor and delivery-date requirement has its own tests; this one is about the store rule only.
+        monkeypatch.setattr(upload_choices_module, "get_settings",
+                            lambda: SimpleNamespace(upload_requires_vendor_and_delivery=False))
         store = physical_store()
         _directory(monkeypatch, store)
         monkeypatch.setattr(invoices_module.UploadService, "handle_upload", _async(_sentinel))

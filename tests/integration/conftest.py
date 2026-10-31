@@ -128,7 +128,7 @@ async def db_engine():
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
+                "TRUNCATE processing_logs, invoice_items, invoices, vendors, vendor_requests, "
                 "documents, product_case_mappings, store_product_references, product_data_proposals, "
                 "product_pricing, product_identifier, product_identity, store_identifiers, stores, "
                 "users CASCADE"
@@ -165,7 +165,7 @@ async def db_session(db_engine) -> AsyncSession:
         # Start from clean tables — pipeline tests commit real transactions.
         await session.execute(
             text(
-                "TRUNCATE processing_logs, invoice_items, invoices, vendors, "
+                "TRUNCATE processing_logs, invoice_items, invoices, vendors, vendor_requests, "
                 "documents, product_case_mappings, store_product_references, product_data_proposals, "
                 "product_pricing, product_identifier, product_identity, store_identifiers, stores, "
                 "users CASCADE"
@@ -241,3 +241,20 @@ async def approve_all_pending(session, *, reviewed_by: str = "test:reviewer") ->
         await proposal_service.approve(session, proposal, reviewed_by=reviewed_by)
     await session.commit()
     return len(pending)
+
+
+async def declare_vendor_and_delivery(session, invoice_id, delivery_date=None) -> None:
+    """
+    Play the person who declared the invoice's vendor and delivery day, which Mark Retailed requires.
+
+    For tests that are about something after the declaration (receipts, exports, the Retailed workflow); the
+    declaration itself is tested in tests/integration/test_vendor_delivery_db.py. Commits.
+    """
+    from datetime import date
+
+    from app.models.invoice import SOURCE_OPERATOR, Invoice
+
+    invoice = await session.get(Invoice, uuid.UUID(str(invoice_id)), populate_existing=True)
+    invoice.vendor_source = SOURCE_OPERATOR
+    invoice.delivery_date = delivery_date or date(2026, 10, 9)
+    await session.commit()

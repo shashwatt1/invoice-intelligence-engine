@@ -69,7 +69,8 @@ async def corpus(db_session):
     await db_session.flush()
     invoice = Invoice(document_id=document.id, store_id=store.id, invoice_number="WF-1", status="VALIDATED",
                       vendor_name="Test Beverage", invoice_date=date(2026, 9, 1), currency="USD",
-                      subtotal=Decimal("60.00"), grand_total=Decimal("60.00"))
+                      subtotal=Decimal("60.00"), grand_total=Decimal("60.00"),
+                      vendor_source="operator", delivery_date=date(2026, 9, 3))
     db_session.add(invoice)
     await db_session.flush()
     db_session.add(InvoiceItem(invoice_id=invoice.id, sort_order=0, description="BUD LIGHT 24/12OZ",

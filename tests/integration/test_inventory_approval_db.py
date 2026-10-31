@@ -56,6 +56,7 @@ from tests.integration.conftest import (
     TEST_URL,
     USER_PASSWORD,
     USER_USERNAME,
+    declare_vendor_and_delivery,
     requires_db,
     store_id,
 )
@@ -447,6 +448,7 @@ class TestWrongStore:
         assert (detail["status"], detail["store"]["id"]) == ("VALIDATED", str(right))
 
         await grant(db_session, "ADMIN", right)
+        await declare_vendor_and_delivery(db_session, invoice_id)        # a re-upload is declared again before Retailed
         await approve(api_client, db_session, invoice_id, LAGER, 12)
         await approve(api_client, db_session, invoice_id, ALE, 6)
         second = (await receive(api_client, invoice_id))["receipt"]

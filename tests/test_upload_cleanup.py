@@ -125,7 +125,8 @@ class _FakeUploadService:
 class _DuplicatePipeline:
     """Intake that refuses, the way a re-uploaded invoice is refused."""
 
-    async def intake_pages(self, session, pages, *, store_id=None, uploaded_by_user_id=None):
+    async def intake_pages(self, session, pages, *, store_id=None, uploaded_by_user_id=None, chosen_vendor_id=None,
+                           vendor_request_id=None, delivery_date=None):
         raise DuplicateDocumentError(
             detail={"existing_document_id": "f6f714c0-a326-42df-adbb-eee6ab8d1391",
                     "existing_status": "STORE_CONFIRMATION_REQUIRED"}
@@ -140,7 +141,8 @@ class _AcceptingPipeline:
             "id": uuid.uuid4(), "filename": "IMG_6569.jpg", "status": "UPLOADED",
         })()
 
-    async def intake_pages(self, session, pages, *, store_id=None, uploaded_by_user_id=None):
+    async def intake_pages(self, session, pages, *, store_id=None, uploaded_by_user_id=None, chosen_vendor_id=None,
+                           vendor_request_id=None, delivery_date=None):
         return self.document
 
 
@@ -168,7 +170,7 @@ class TestProcessRouteCleansUpWhatItStored:
 
         with pytest.raises(DuplicateDocumentError) as raised:
             await process_invoice(
-                background_tasks=BackgroundTasks(), file=_photo(), files=[], store_id=None,
+                background_tasks=BackgroundTasks(), file=_photo(), files=[], store_id=None, vendor_id=None, vendor_request_id=None, delivery_date=None,
                 db=None, upload_service=_FakeUploadService(new_object),
                 pipeline=_DuplicatePipeline(), user=_operator(),
             )
@@ -185,7 +187,7 @@ class TestProcessRouteCleansUpWhatItStored:
         monkeypatch.setattr(invoices_module, "get_storage_service", lambda: storage)
 
         response = await process_invoice(
-            background_tasks=BackgroundTasks(), file=_photo(), files=[], store_id=None,
+            background_tasks=BackgroundTasks(), file=_photo(), files=[], store_id=None, vendor_id=None, vendor_request_id=None, delivery_date=None,
             db=None, upload_service=_FakeUploadService("default/2026/09/keep-me.jpg"),
             pipeline=_AcceptingPipeline(), user=_operator(),
         )
@@ -201,7 +203,7 @@ class TestProcessRouteCleansUpWhatItStored:
         # A failed cleanup must never turn a 409 into a 500.
         with pytest.raises(DuplicateDocumentError):
             await process_invoice(
-                background_tasks=BackgroundTasks(), file=_photo(), files=[], store_id=None,
+                background_tasks=BackgroundTasks(), file=_photo(), files=[], store_id=None, vendor_id=None, vendor_request_id=None, delivery_date=None,
                 db=None, upload_service=_FakeUploadService(new_object),
                 pipeline=_DuplicatePipeline(), user=_operator(),
             )
