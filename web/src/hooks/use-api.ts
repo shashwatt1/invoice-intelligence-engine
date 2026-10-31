@@ -11,7 +11,15 @@ import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } f
 import { apiClient } from "@/api/client";
 
 import {
+  addVendor,
+  approveVendorRequest,
   cancelDeletionRequest,
+  chooseInvoiceVendor,
+  listVendorOptions,
+  listVendorRequests,
+  rejectVendorRequest,
+  requestVendor,
+  setDeliveryDate,
   decideDeletionRequest,
   getRecycleBinSummary,
   listDeletionRequests,
@@ -129,8 +137,10 @@ import type {
   ReceiptApproveRequest,
   StoreCreate,
   StoreIdentityUpdate,
+  UploadDeclarations,
   UserRole,
   VendorListParams,
+  VendorRequestStatus,
   DifferenceResolutionRequest,
   ZeroStartRequest,
 } from "@/api/types";
@@ -192,8 +202,8 @@ export function useStores() {
 export function useProcessInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ files, storeId }: { files: File[]; storeId: string | null }) =>
-      processInvoice(files, storeId),
+    mutationFn: ({ files, storeId, declared }: { files: File[]; storeId: string | null; declared?: UploadDeclarations }) =>
+      processInvoice(files, storeId, declared),
     onSettled: () => {
       // Any outcome (success or duplicate rejection) can change the
       // dashboard and history projections.
@@ -1055,5 +1065,79 @@ export function useResolveCrossStoreDifference() {
       void queryClient.invalidateQueries({ queryKey: ["proposals"] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
     },
+  });
+}
+
+
+// ---- Vendor and delivery date declared at upload ---------------------------
+
+/** The upload picker. Recent-at-this-store vendors come first when a store is chosen. */
+export function useVendorOptions(storeId?: string | null) {
+  return useQuery({ queryKey: ["vendors", "options", storeId ?? null], queryFn: () => listVendorOptions(storeId) });
+}
+
+export function useAddVendor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => addVendor(name),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["vendors"] }),
+  });
+}
+
+export function useRequestVendor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => requestVendor(name),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["vendor-requests"] }),
+  });
+}
+
+/** MANAGER/ADMIN: the vendor requests (open ones by default). */
+export function useVendorRequests(status: VendorRequestStatus | "" = "PENDING", enabled = true) {
+  return useQuery({ queryKey: ["vendor-requests", status], queryFn: () => listVendorRequests(status), enabled });
+}
+
+export function useDecideVendorRequest() {
+  const queryClient = useQueryClient();
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["vendor-requests"] });
+    void queryClient.invalidateQueries({ queryKey: ["vendors"] });
+    void queryClient.invalidateQueries({ queryKey: ["invoice"] });
+  };
+  return {
+    approve: useMutation({
+      mutationFn: ({ id, existingVendorId, note }: { id: string; existingVendorId?: string | null; note?: string | null }) =>
+        approveVendorRequest(id, { existingVendorId, note }),
+      onSettled: refresh,
+    }),
+    reject: useMutation({
+      mutationFn: ({ id, note }: { id: string; note: string }) => rejectVendorRequest(id, note),
+      onSettled: refresh,
+    }),
+  };
+}
+
+/** The invoice reads again after either declaration changes: status, checks and the Retailed gate all depend on it. */
+function refreshInvoice(queryClient: ReturnType<typeof useQueryClient>, invoiceId: string) {
+  void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+  void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+  void queryClient.invalidateQueries({ queryKey: ["inventory"] });
+}
+
+export function useSetDeliveryDate(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deliveryDate, note }: { deliveryDate: string; note?: string | null }) =>
+      setDeliveryDate(invoiceId, deliveryDate, note),
+    onSettled: () => refreshInvoice(queryClient, invoiceId),
+  });
+}
+
+export function useChooseInvoiceVendor(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (choice: { vendorId?: string | null; vendorRequestId?: string | null; note?: string | null }) =>
+      chooseInvoiceVendor(invoiceId, choice),
+    onSettled: () => refreshInvoice(queryClient, invoiceId),
   });
 }

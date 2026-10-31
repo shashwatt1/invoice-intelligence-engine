@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowRight, CopyX, RotateCcw, Store } from "lucide-react";
+import { ArrowRight, CalendarDays, CopyX, RotateCcw, Store } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -11,9 +11,11 @@ import { ProcessingTimeline } from "@/components/processing/processing-timeline"
 import { StoreConfirmation } from "@/components/processing/store-confirmation";
 import { StoreChip } from "@/components/shared/store-chip";
 import { UploadDropzone } from "@/components/processing/upload-dropzone";
+import { VendorPicker, type VendorChoice } from "@/components/processing/vendor-picker";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -24,6 +26,8 @@ import {
 import { useDocumentStatus, useProcessInvoice, useStores } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { physicalStores } from "@/lib/stores";
+import { todayIso } from "@/lib/inventory";
+import { plainDate } from "@/lib/vendors";
 
 export function ProcessPage() {
   // The photos of ONE invoice, in top-to-bottom order. A long invoice is
@@ -36,6 +40,10 @@ export function ProcessPage() {
   // The store the running/finished upload was submitted for — kept apart
   // from the picker so the confirmation cannot drift if the picker changes.
   const [submittedStore, setSubmittedStore] = useState<string | null>(null);
+  // The vendor the invoice is from and the day its goods arrived. Both are the person's declaration — not what the
+  // document prints — and nothing is pre-filled: "today" is a guess, and a wrong delivery day misdates inventory.
+  const [vendor, setVendor] = useState<VendorChoice | null>(null);
+  const [deliveryDate, setDeliveryDate] = useState("");
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<{ existingId: string | null } | null>(null);
 
@@ -46,12 +54,26 @@ export function ProcessPage() {
   // USER and MANAGER name the physical store before processing; only an ADMIN may
   // process without one and resolve it later. The server enforces this as well.
   const storeRequired = user?.role !== "ADMIN";
+  // The vendor and the delivery day are asked of everyone but an ADMIN, who may add them later; the invoice cannot be
+  // marked Retailed until both are set either way.
+  const declarationsRequired = user?.role !== "ADMIN";
 
   const isRunning = Boolean(documentId) && !status.data?.is_terminal;
   const terminal = status.data?.is_terminal ? status.data : null;
   const choices = physicalStores(stores.data);
   const selected = choices.find((s) => s.id === store) ?? null;
   const missingStore = storeRequired && !selected;
+  const typedDate = deliveryDate.trim() ? plainDate(deliveryDate) : null;
+  const badDate = Boolean(deliveryDate.trim()) && typedDate === null;
+  const missingVendor = declarationsRequired && !vendor;
+  const missingDate = declarationsRequired && !typedDate;
+  const blockedReason = missingStore
+    ? "Choose the physical store this invoice is for first"
+    : missingVendor
+      ? "Choose the vendor this invoice is from first"
+      : missingDate
+        ? "Enter the day the goods were delivered first"
+        : undefined;
   const awaiting = status.data?.awaiting_store_confirmation ?? false;
 
   const start = () => {
@@ -61,7 +83,15 @@ export function ProcessPage() {
     // The store may be chosen now or after the document has been read:
     // either way a person decides, and the document's own text is checked
     // against the choice before anything is processed under it.
-    processMutation.mutate({ files, storeId: selected?.id ?? null }, {
+    processMutation.mutate({
+      files,
+      storeId: selected?.id ?? null,
+      declared: {
+        vendorId: vendor?.kind === "vendor" ? vendor.id : null,
+        vendorRequestId: vendor?.kind === "request" ? vendor.id : null,
+        deliveryDate: typedDate,
+      },
+    }, {
       onSuccess: (accepted) => {
         setDocumentId(accepted.document_id);
         const what = files.length === 1 ? accepted.filename : `${files.length} photos as one invoice`;
@@ -91,6 +121,8 @@ export function ProcessPage() {
     setDocumentId(null);
     setDuplicate(null);
     setSubmittedStore(null);
+    setVendor(null);
+    setDeliveryDate("");
     processMutation.reset();
   };
 
@@ -179,9 +211,63 @@ export function ProcessPage() {
           )}
           </section>
 
-          <section className="space-y-2.5" aria-labelledby="intake-upload">
+          <section className="space-y-2.5" aria-labelledby="intake-vendor">
             <div className="flex items-baseline gap-2.5">
               <span className="t-mono text-muted-foreground/70">02</span>
+              <h2 id="intake-vendor" className="t-section">
+                Vendor{" "}
+                <span className="font-normal text-muted-foreground">
+                  {declarationsRequired ? "— required" : "— optional for administrators, needed before Retailed"}
+                </span>
+              </h2>
+            </div>
+            <VendorPicker
+              storeId={selected?.id ?? null}
+              value={vendor}
+              onChange={setVendor}
+              disabled={isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
+            />
+            <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
+              The vendor decides how the invoice is grouped and filtered. What the document prints is compared with
+              your choice and flagged for review if it differs; your choice is never overwritten.
+            </p>
+          </section>
+
+          <section className="space-y-2.5" aria-labelledby="intake-delivery">
+            <div className="flex items-baseline gap-2.5">
+              <span className="t-mono text-muted-foreground/70">03</span>
+              <label id="intake-delivery" htmlFor="delivery-date" className="t-section">
+                Delivery date{" "}
+                <span className="font-normal text-muted-foreground">
+                  {declarationsRequired ? "— required" : "— optional for administrators, needed before Retailed"}
+                </span>
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <CalendarDays className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <Input
+                id="delivery-date"
+                type="date"
+                className="w-[180px]"
+                value={deliveryDate}
+                max={todayIso()}
+                min="2000-01-01"
+                onChange={(event) => setDeliveryDate(event.target.value)}
+                disabled={isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
+                aria-invalid={badDate}
+                aria-label="Delivery date"
+              />
+            </div>
+            <p className="text-[0.74rem] leading-relaxed text-muted-foreground">
+              The day the goods physically arrived at the store — not the invoice date. It dates the receipt in
+              inventory. Leave nothing to a default: enter the day.
+              {badDate ? <span className="text-danger ml-1">That is not a valid date.</span> : null}
+            </p>
+          </section>
+
+          <section className="space-y-2.5" aria-labelledby="intake-upload">
+            <div className="flex items-baseline gap-2.5">
+              <span className="t-mono text-muted-foreground/70">04</span>
               <h2 id="intake-upload" className="t-section">
                 Document <span className="font-normal text-muted-foreground">— one file, or every photo of one invoice</span>
               </h2>
@@ -203,10 +289,9 @@ export function ProcessPage() {
               className="flex-1"
               size="lg"
               variant={files.length === 0 ? "secondary" : "default"}
-              disabled={files.length === 0 || missingStore || isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
+              disabled={files.length === 0 || missingStore || missingVendor || missingDate || badDate || isRunning || processMutation.isPending || Boolean(terminal) || awaiting}
               onClick={start}
-              title={files.length === 0 ? "Add a file or the photos of one invoice first"
-                : missingStore ? "Choose the physical store this invoice is for first" : undefined}
+              title={files.length === 0 ? "Add a file or the photos of one invoice first" : blockedReason}
               data-testid="process-button"
             >
               {processMutation.isPending
@@ -218,7 +303,11 @@ export function ProcessPage() {
                       ? `Processing for ${submittedStore}…`
                       : "Reading the document…"
                     : selected
-                      ? `Process ${files.length > 1 ? `${files.length} photos as one invoice` : "invoice"} for ${selected.label}`
+                      ? missingVendor
+                        ? "Choose the vendor to process this invoice"
+                        : missingDate
+                          ? "Enter the delivery date to process this invoice"
+                          : `Process ${files.length > 1 ? `${files.length} photos as one invoice` : "invoice"} for ${selected.label}`
                       : missingStore
                         ? "Choose the store to process this invoice"
                         : `Read the ${files.length > 1 ? `${files.length} photos` : "document"}, then confirm the store`}

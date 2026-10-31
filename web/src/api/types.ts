@@ -729,6 +729,16 @@ export interface InvoiceDetail {
   filename: string;
   document_status: DocumentStatus;
   source_type: string | null;
+  /** Who set the vendor: the document ("extracted"), a person ("operator"), or a request still waiting ("requested"). */
+  vendor_source?: VendorSource | null;
+  /** The day the goods arrived, as a person declared it (YYYY-MM-DD). */
+  delivery_date?: string | null;
+  /** The vendor request this invoice waits on, if it was uploaded against one. */
+  vendor_request?: VendorRequestRef | null;
+  /** What still has to be declared before Retailed; null when both are set. */
+  declarations_missing?: string | null;
+  /** When a person chose the vendor and the document prints another: the sentence saying so. */
+  vendor_mismatch?: string | null;
   /** The store this invoice was received for. Every reference lookup,
    * case mapping and proposal on this page is that store's own. */
   /** null while STORE_PENDING — read before the store was known. */
@@ -1589,6 +1599,8 @@ export interface ReceiptSubmission {
 
 export interface ReceiptPreview {
   invoice_id: string;
+  /** The delivery day a person declared for this invoice; pre-fills the received date. */
+  declared_delivery_date?: string | null;
   invoice_number: string | null;
   store: StoreRef | null;
   eligibility_reasons: string[];
@@ -1722,4 +1734,59 @@ export interface DifferenceResolutionResult {
   shared_mapping_id: string;
   adopted_store_ids: string[];
   kept_store_ids: string[];
+}
+
+
+// ---- Vendor and delivery date declared at upload ---------------------------
+
+export type VendorSource = "extracted" | "operator" | "requested";
+export type VendorRequestStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+/** One entry of the upload vendor picker (names only). */
+export interface VendorOption {
+  id: string;
+  name: string;
+  confirmed: boolean;
+  last_used_at: string | null;
+}
+
+export interface VendorRequestRef {
+  id: string;
+  name: string;
+  status: VendorRequestStatus;
+}
+
+export interface VendorRequest {
+  id: string;
+  requested_name: string;
+  status: VendorRequestStatus;
+  requested_by: string;
+  created_at: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  vendor_id: string | null;
+  /** Invoices uploaded against this request that still wait for it. */
+  waiting_invoices: number;
+}
+
+/** What a person declared at upload besides the store. */
+export interface UploadDeclarations {
+  /** A vendor from the list. Exclusive with vendorRequestId. */
+  vendorId?: string | null;
+  /** A request for a vendor that is not listed. */
+  vendorRequestId?: string | null;
+  /** The day the goods arrived, exactly as typed (YYYY-MM-DD) — never the browser's "today". */
+  deliveryDate?: string | null;
+}
+
+export interface InvoiceDeclarationResult {
+  delivery_date: string | null;
+  vendor_id: string | null;
+  vendor_label: string | null;
+  vendor_source: VendorSource | null;
+  status: string;
+  review_reasons: string[];
+  /** What still has to be declared before Retailed, if anything. */
+  retailed_blocker: string | null;
 }

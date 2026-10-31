@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,9 @@ vi.mock("@/api/endpoints", () => ({
   processInvoice: vi.fn(),
   listStores: vi.fn(async () => []),
   getDocumentStatus: vi.fn(),
+  listVendorOptions: vi.fn(async () => []),
+  addVendor: vi.fn(),
+  requestVendor: vi.fn(),
 }));
 // Role-dependent store rules: ADMIN by default (may process or defer without a store).
 let currentRole = "ADMIN";
@@ -151,7 +154,7 @@ describe("the physical store rule by role", () => {
     vi.mocked(api.listStores).mockResolvedValue([STORE]);
     const user = userEvent.setup();
     renderPage();
-    expect(screen.getByText("— required")).toBeInTheDocument();
+    expect(screen.getAllByText("— required")).toHaveLength(3);                 // store, vendor, delivery date
     await user.upload(screen.getByTestId("file-input"), [png("p1.jpg", 1)]);
     const button = screen.getByTestId("process-button");
     expect(button).toBeDisabled();
@@ -159,15 +162,151 @@ describe("the physical store rule by role", () => {
     await waitFor(() => expect(api.listStores).toHaveBeenCalled());
     await user.click(screen.getByRole("combobox"));
     await user.click(await screen.findByRole("option", { name: /PB Wolf/ }));
-    expect(button).toBeEnabled();
-    processInvoice.mockResolvedValue({ document_id: "d-2", filename: "p1.jpg", status: "UPLOADED", status_url: "/x" });
-    await user.click(button);
-    await waitFor(() => expect(processInvoice).toHaveBeenCalledWith(expect.any(Array), "pb-wolf"));
+    // The store alone is not enough any more: the vendor and the delivery day are declared too.
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("Choose the vendor to process this invoice");
   });
 
   it("an ADMIN may leave the store for later", async () => {
     currentRole = "ADMIN";
     renderPage();
-    expect(screen.getByText(/optional for administrators/)).toBeInTheDocument();
+    expect(screen.getAllByText(/optional for administrators/)).toHaveLength(3);   // store, vendor, delivery date
+  });
+});
+
+
+describe("the vendor and the delivery date declared at upload", () => {
+  const STORE = {
+    id: "pb-wolf", label: "PB Wolf (identity unconfirmed)", identity_status: "unresolved" as const, display_name: "PB Wolf",
+    address: "800 Wolf St", source_codes: [] as string[], kind: "physical" as const, in_store_directory: true,
+    customer_name: null, address_line_1: null, address_line_2: null, city: null, state: null, postal_code: null,
+    status: "active", notes: null, identifiers: [], invoices: 0, pricing_rows: 0, identities: 0, catalogue_rows: 0,
+    case_mappings: 0, pending_proposals: 0,
+  };
+  const VENDORS = [
+    { id: "v-tj", name: "T.J. Sheehan", confirmed: true, last_used_at: null },
+    { id: "v-pepsi", name: "PepsiCo Pepsi Beverages Company", confirmed: true, last_used_at: null },
+  ];
+  const accepted = { document_id: "d-9", filename: "p1.jpg", status: "UPLOADED" as const, status_url: "/x" };
+
+  async function chooseStoreAndFile(user: ReturnType<typeof userEvent.setup>) {
+    await user.upload(screen.getByTestId("file-input"), [png("p1.jpg", 1)]);
+    await waitFor(() => expect(api.listStores).toHaveBeenCalled());
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: /PB Wolf/ }));
+  }
+
+  beforeEach(() => {
+    vi.mocked(api.listStores).mockResolvedValue([STORE]);
+    vi.mocked(api.listVendorOptions).mockResolvedValue(VENDORS);
+    processInvoice.mockResolvedValue(accepted);
+  });
+
+  it("starts with no delivery date: nothing is guessed, least of all today", async () => {
+    currentRole = "USER";
+    renderPage();
+    expect(screen.getByLabelText("Delivery date")).toHaveValue("");
+  });
+
+  it("a USER cannot process until a vendor AND a delivery date are given, then both are sent exactly as chosen", async () => {
+    currentRole = "USER";
+    const user = userEvent.setup();
+    renderPage();
+    await chooseStoreAndFile(user);
+    const button = screen.getByTestId("process-button");
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("Choose the vendor");
+
+    await user.click(await screen.findByRole("button", { name: "T.J. Sheehan" }));
+    expect(screen.getByTestId("chosen-vendor")).toHaveTextContent("T.J. Sheehan");
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("Enter the delivery date");
+
+    await user.type(screen.getByLabelText("Delivery date"), "2026-10-22");
+    expect(button).toBeEnabled();
+    await user.click(button);
+
+    await waitFor(() => expect(processInvoice).toHaveBeenCalledTimes(1));
+    const [, storeId, declared] = processInvoice.mock.calls[0];
+    expect(storeId).toBe("pb-wolf");
+    expect(declared).toEqual({ vendorId: "v-tj", vendorRequestId: null, deliveryDate: "2026-10-22" });
+  });
+
+  it("the vendor list is searched without regard to punctuation", async () => {
+    currentRole = "USER";
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("button", { name: "T.J. Sheehan" });
+    await user.type(screen.getByLabelText("Vendor"), "tj sheehan");
+    expect(screen.getByRole("button", { name: "T.J. Sheehan" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /PepsiCo/ })).not.toBeInTheDocument();
+  });
+
+  it("a USER whose vendor is not listed asks for it, and the upload goes against the request", async () => {
+    currentRole = "USER";
+    vi.mocked(api.requestVendor).mockResolvedValue({
+      id: "req-1", requested_name: "Brand New Vendor", status: "PENDING", requested_by: "tester",
+      created_at: "2026-11-01T00:00:00Z", decided_by: null, decided_at: null, decision_note: null, vendor_id: null,
+      waiting_invoices: 0,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await chooseStoreAndFile(user);
+    await user.type(screen.getByLabelText("Vendor"), "Brand New Vendor");
+    await user.click(await screen.findByRole("button", { name: /Ask for .Brand New Vendor. to be added/ }));
+    await user.click(screen.getByRole("button", { name: "Send request" }));
+
+    expect(await screen.findByTestId("chosen-vendor")).toHaveTextContent(/waiting for a manager or administrator/i);
+    expect(api.addVendor).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText("Delivery date"), "2026-10-22");
+    await user.click(screen.getByTestId("process-button"));
+    await waitFor(() => expect(processInvoice).toHaveBeenCalledTimes(1));
+    expect(processInvoice.mock.calls[0][2]).toEqual({
+      vendorId: null, vendorRequestId: "req-1", deliveryDate: "2026-10-22",
+    });
+  });
+
+  it("a MANAGER adds the vendor directly and it is chosen at once", async () => {
+    currentRole = "MANAGER";
+    vi.mocked(api.addVendor).mockResolvedValue({ id: "v-new", name: "Brand New Vendor", confirmed: true, last_used_at: null });
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(screen.getByLabelText("Vendor"), "Brand New Vendor");
+    await user.click(await screen.findByRole("button", { name: /Add .Brand New Vendor. as a new vendor/ }));
+    await user.click(screen.getByRole("button", { name: "Add vendor" }));
+
+    expect(await screen.findByTestId("chosen-vendor")).toHaveTextContent("Brand New Vendor");
+    expect(screen.getByTestId("chosen-vendor")).not.toHaveTextContent(/waiting/i);
+    expect(api.requestVendor).not.toHaveBeenCalled();
+  });
+
+  it("a vendor that is already listed is never offered for adding again", async () => {
+    currentRole = "MANAGER";
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("button", { name: "T.J. Sheehan" });
+    await user.type(screen.getByLabelText("Vendor"), "TJ SHEEHAN");
+    expect(screen.queryByRole("button", { name: /as a new vendor/ })).not.toBeInTheDocument();
+  });
+
+  it("an impossible date keeps Process disabled and says so", async () => {
+    currentRole = "USER";
+    const user = userEvent.setup();
+    renderPage();
+    await chooseStoreAndFile(user);
+    await user.click(await screen.findByRole("button", { name: "T.J. Sheehan" }));
+    fireEvent.change(screen.getByLabelText("Delivery date"), { target: { value: "1990-01-01" } });
+    expect(screen.getByTestId("process-button")).toBeDisabled();
+    expect(screen.getByText("That is not a valid date.")).toBeInTheDocument();
+  });
+
+  it("an ADMIN may process without either, and sends neither", async () => {
+    currentRole = "ADMIN";
+    const user = userEvent.setup();
+    renderPage();
+    await user.upload(screen.getByTestId("file-input"), [png("p1.jpg", 1)]);
+    await user.click(screen.getByTestId("process-button"));
+    await waitFor(() => expect(processInvoice).toHaveBeenCalledTimes(1));
+    expect(processInvoice.mock.calls[0][2]).toEqual({ vendorId: null, vendorRequestId: null, deliveryDate: null });
   });
 });
