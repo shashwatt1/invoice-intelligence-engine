@@ -30,19 +30,28 @@ from app.schemas.processing import EdiExportRecord
 from app.services.case_mapping_service import invoice_commercial_resolution
 from app.services.document_lifecycle import ensure_document_operable
 from app.services.edi_export_ledger import record_pdi_export
+from app.services.export_override_service import active_override, log_override_export
 from app.services.export_service import (
     build_export_payload,
     build_items_csv,
     build_pdi_export,
     build_txt,
+    critical_check_blockers,
+    critical_check_gate,
     export_basename,
+    override_banner,
     persisted_pdi_export_eligibility,
+    review_banner,
     unmapped_item_codes,
 )
 
 router = APIRouter(tags=["Invoices"])
 
 ExportFormat = Literal["json", "txt", "csv", "pdi"]
+ExportPurpose = Literal["export", "review"]
+
+REVIEW_FILE_TAG = "REVIEW-ONLY_not-for-import"
+OVERRIDE_FILE_TAG = "admin-override"
 
 
 @router.get(
@@ -64,6 +73,14 @@ ExportFormat = Literal["json", "txt", "csv", "pdi"]
         "Available for VALIDATED and REVIEW_REQUIRED invoices with at least "
         "one extracted line item; blocked only when there's no usable "
         "extracted data (see pdi_export_allowed on GET /invoices/{id}).\n\n"
+        "PDI, TXT and CSV files share one rule: while the invoice's critical checks (completeness, "
+        "financial reconciliation) fail they are refused (422) unless an administrator has recorded an "
+        "export override for the invoice as it stands. JSON is the structured record and stays readable; it "
+        "states `export_status.export_ready` itself.\n\n"
+        "`purpose=review` downloads a TXT or CSV copy for internal investigation even while blocked. It is "
+        "labelled inside the file and in its filename (`REVIEW-ONLY_not-for-import`) and header "
+        "(`X-Export-Purpose: review-only`), so it cannot be taken for an export. There is no review copy of the "
+        "PDI file.\n\n"
         "Responses carry a `Content-Disposition` attachment header with a "
         "filename derived from the invoice number."
     ),
@@ -82,6 +99,8 @@ ExportFormat = Literal["json", "txt", "csv", "pdi"]
 async def export_invoice(
     invoice_id: uuid.UUID,
     format: ExportFormat = Query(default="json", description="Export format."),
+    purpose: ExportPurpose = Query(
+        default="export", description="`review` = a labelled internal-investigation copy (TXT/CSV only)."),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> Response:
@@ -91,24 +110,52 @@ async def export_invoice(
             message="Invoice not found.", detail={"invoice_id": str(invoice_id)}
         )
 
-    if format in ("pdi", "csv"):
+    review = purpose == "review"
+    if review and format not in ("txt", "csv"):
+        raise ValidationError(
+            message="A review copy exists only as TXT or CSV. A PDI file is produced only for an export-ready "
+                    "invoice.",
+            detail={"invoice_id": str(invoice.id), "format": format, "purpose": purpose})
+    if format in ("pdi", "csv") and not review:
         # Files for EDI and accounting systems are never produced for an invoice in the Recycle Bin or for a
-        # reference copy, so nothing is imported twice. JSON and the text summary stay readable.
+        # reference copy, so nothing is imported twice. JSON, the text summary and review copies stay readable.
         ensure_document_operable(invoice.document, f"export_{format}")
-    basename = export_basename(invoice)
+
+    # One rule for every file that leaves the system: failing critical checks block it unless an admin override
+    # covers this exact state of the invoice. A review copy skips the rule because it is labelled as not
+    # export-ready; JSON is the structured record and is never gated (it states export_status itself).
+    found = None if review else await active_override(db, invoice)
+    override = found if found is not None and critical_check_blockers(invoice) else None
+    if format in ("txt", "csv") and not review:
+        blocked, _ = critical_check_gate(invoice, override)
+        if blocked:
+            raise ValidationError(
+                message=blocked,
+                detail={"invoice_id": str(invoice.id), "blocking_checks": critical_check_blockers(invoice),
+                        "review_copy": f"/api/v1/invoices/{invoice.id}/export?format={format}&purpose=review"})
     headers: dict[str, str] = {}
+    suffix = ""
+    if review:
+        headers = {"X-Export-Purpose": "review-only", "X-Export-Ready": "false"}
+        suffix = f"_{REVIEW_FILE_TAG}"
+    elif override is not None:
+        headers = {"X-Export-Override-Id": str(override.id)}
+        suffix = f"_{OVERRIDE_FILE_TAG}" if format != "pdi" else ""
+    basename = export_basename(invoice)
+
     if format == "txt":
-        content = build_txt(invoice)
+        content = build_txt(invoice, banner=review_banner(invoice) if review else
+                            override_banner(override) if override is not None else None, override=override)
         media_type = "text/plain"
-        filename = f"{basename}.txt"
+        filename = f"{basename}{suffix}.txt"
     elif format == "csv":
-        content = build_items_csv(invoice)
+        content = build_items_csv(invoice, banner=review_banner(invoice) if review else None)
         media_type = "text/csv"
-        filename = f"{basename}_items.csv"
+        filename = f"{basename}_items{suffix}.csv"
     elif format == "pdi":
         resolution = await invoice_commercial_resolution(db, invoice)
         units = resolution.units
-        eligibility = persisted_pdi_export_eligibility(invoice, units)
+        eligibility = persisted_pdi_export_eligibility(invoice, units, override)
         if not eligibility.allowed:
             raise ValidationError(
                 message=eligibility.blocked_reason
@@ -124,14 +171,24 @@ async def export_invoice(
         filename = f"{basename}_pdi.txt"
         if get_settings().edi_export_ledger:
             # The delivered file is recorded before it leaves, exactly as sent.
-            record = await record_pdi_export(db, invoice, content, resolution, user)
-            await db.commit()
-            headers = {"X-EDI-Export-Id": str(record.id), "X-EDI-Export-Number": str(record.export_number),
+            record = await record_pdi_export(db, invoice, content, resolution, user, override=override)
+            headers = {**headers, "X-EDI-Export-Id": str(record.id), "X-EDI-Export-Number": str(record.export_number),
                        "X-EDI-SHA256": record.sha256}
+            if override is not None:
+                await log_override_export(db, invoice, override, user, export_format="pdi", content=content,
+                                          export_number=record.export_number)
+            await db.commit()
+        elif override is not None:
+            await log_override_export(db, invoice, override, user, export_format="pdi", content=content)
+            await db.commit()
     else:
-        content = json.dumps(build_export_payload(invoice), indent=2, ensure_ascii=False)
+        content = json.dumps(build_export_payload(invoice, override), indent=2, ensure_ascii=False)
         media_type = "application/json"
         filename = f"{basename}.json"
+
+    if override is not None and format in ("txt", "csv"):  # the PDI branch logs its own, with the ledger row
+        await log_override_export(db, invoice, override, user, export_format=format, content=content)
+        await db.commit()
 
     return Response(
         content=content,

@@ -219,7 +219,9 @@ class TestLegitimateRepeatedUpc:
         items = reconciled_30()
         items[6] = item(7, [1], qty=2.0)
         items.append(item(7, [3], qty=1.0))
-        _, status = await process_photos(api_client, app, items, subtotal=320.0, grand_total=320.0)
+        # The second appearance is really printed in photo 3 (the OCR text must show what the model was shown).
+        texts = {**PHOTOS, "p3.jpg": PHOTOS["p3.jpg"] + "\n" + row_text(7)}
+        _, status = await process_photos(api_client, app, items, texts=texts, subtotal=320.0, grand_total=320.0)
         assert status["status"] == "COMPLETED"
         detail = (await api_client.get(f"/api/v1/invoices/{status['invoice_id']}")).json()["data"]
         sevens = [i for i in detail["line_items"] if i["description"] == "PRODUCT 07"]
@@ -238,8 +240,11 @@ class TestAmbiguousDuplicateIsFlaggedNotMerged:
                           duplicate_reason="same UPC, qty, price and total; neighbouring rows differ"))
         return items
 
+    # Photo 3 really does start with the row photo 2 ended with — what the model was shown.
+    TEXTS = {**PHOTOS, "p3.jpg": photo_text(22, 30) + "\n" + row_text(20)}
+
     async def test_flagged_pair_blocks_the_invoice_and_is_visible(self, api_client, app):  # noqa: F811
-        _, status = await process_photos(api_client, app, self._items(), subtotal=300.0, grand_total=300.0)
+        _, status = await process_photos(api_client, app, self._items(), texts=self.TEXTS, subtotal=300.0, grand_total=300.0)
         assert status["status"] == "REVIEW_REQUIRED"
         detail = (await api_client.get(f"/api/v1/invoices/{status['invoice_id']}")).json()["data"]
         assert len(detail["line_items"]) == 31                     # both rows kept
@@ -261,7 +266,7 @@ class TestAmbiguousDuplicateIsFlaggedNotMerged:
         assert detail["pdi_export_allowed"] is False
 
     async def test_same_row_decision_keeps_the_row_but_drops_it_from_totals_and_edi(self, api_client, app, db_session):  # noqa: F811
-        _, status = await process_photos(api_client, app, self._items(), subtotal=300.0, grand_total=300.0)
+        _, status = await process_photos(api_client, app, self._items(), texts=self.TEXTS, subtotal=300.0, grand_total=300.0)
         invoice_id = status["invoice_id"]
         r = await api_client.post(f"/api/v1/invoices/{invoice_id}/items/30/duplicate-decision",
                                   json={"decision": "same_row", "decided_by": "data-team:shashwat",
@@ -290,7 +295,7 @@ class TestAmbiguousDuplicateIsFlaggedNotMerged:
 
     async def test_separate_rows_decision_keeps_both_and_the_totals_must_then_agree(self, api_client, app):  # noqa: F811
         # printed subtotal 310 = both rows are real
-        _, status = await process_photos(api_client, app, self._items(), subtotal=310.0, grand_total=310.0)
+        _, status = await process_photos(api_client, app, self._items(), texts=self.TEXTS, subtotal=310.0, grand_total=310.0)
         invoice_id = status["invoice_id"]
         r = await api_client.post(f"/api/v1/invoices/{invoice_id}/items/30/duplicate-decision",
                                   json={"decision": "separate_rows", "decided_by": "reviewer"})
@@ -301,7 +306,7 @@ class TestAmbiguousDuplicateIsFlaggedNotMerged:
 
     async def test_a_wrong_decision_is_caught_by_the_totals_not_hidden(self, api_client, app):  # noqa: F811
         # printed subtotal 300 says one of them is a duplicate; the reviewer says both are real
-        _, status = await process_photos(api_client, app, self._items(), subtotal=300.0, grand_total=300.0)
+        _, status = await process_photos(api_client, app, self._items(), texts=self.TEXTS, subtotal=300.0, grand_total=300.0)
         r = await api_client.post(f"/api/v1/invoices/{status['invoice_id']}/items/30/duplicate-decision",
                                   json={"decision": "separate_rows", "decided_by": "reviewer"})
         assert r.status_code == 200
@@ -311,7 +316,7 @@ class TestAmbiguousDuplicateIsFlaggedNotMerged:
         assert d["pdi_export_allowed"] is False
 
     async def test_a_decision_is_made_once_and_only_on_a_flagged_row(self, api_client, app):  # noqa: F811
-        _, status = await process_photos(api_client, app, self._items(), subtotal=300.0, grand_total=300.0)
+        _, status = await process_photos(api_client, app, self._items(), texts=self.TEXTS, subtotal=300.0, grand_total=300.0)
         invoice_id = status["invoice_id"]
         base = f"/api/v1/invoices/{invoice_id}/items"
         assert (await api_client.post(f"{base}/3/duplicate-decision",
@@ -335,7 +340,8 @@ class TestInvoiceReviewVisibility:
             texts={"r.jpg": photo_text(1, 2)}, subtotal=20.0, grand_total=20.0)
         invoice_id = status["invoice_id"]
         detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
-        assert detail["review"] == {"status": "NONE", "pending": 0, "approved": 0, "rejected": 0, "proposals": []}
+        assert detail["review"] == {"status": "NONE", "pending": 0, "approved": 0, "rejected": 0,
+                                    "approved_not_applied": 0, "proposals": []}
 
         # two case mappings confirmed from the invoice page → two pending proposals
         codes = [r["item_code"] for r in detail["case_mappings"]]

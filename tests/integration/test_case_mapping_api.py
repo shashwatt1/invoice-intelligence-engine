@@ -22,12 +22,12 @@ UPC = "611269321210"          # as printed, 12 digits
 NORMALIZED = "61126932121"    # check digit dropped — the mapping key
 
 
-async def _process(api_client, app, items, filename, pad):  # noqa: F811
+async def _process(api_client, app, items, filename, pad, subtotal=50.20):  # noqa: F811
     from app.api.v1.invoices import get_pipeline
 
     app.dependency_overrides[get_pipeline] = lambda: InvoiceProcessingPipeline(
         structuring_service=FakeStructuring(
-            extracted_invoice(line_items=items, subtotal=50.20, grand_total=50.20)
+            extracted_invoice(line_items=items, subtotal=subtotal, grand_total=subtotal)
         )
     )
     accepted = await process_file(
@@ -151,7 +151,7 @@ class TestConfirmingAMapping:
                 quantity=1.0, unit_price=18.96, line_total=18.96,
             ),
         ]
-        invoice_id = await _process(api_client, app, items, "multi.pdf", "multi")
+        invoice_id = await _process(api_client, app, items, "multi.pdf", "multi", subtotal=69.16)  # 50.20 + 18.96
         detail = (await api_client.get(f"/api/v1/invoices/{invoice_id}")).json()["data"]
         assert sum(1 for r in detail["case_mappings"] if not r["mapped"]) == 2
 

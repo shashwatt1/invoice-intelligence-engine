@@ -58,6 +58,7 @@ from app.schemas.processing import (
     DocumentPhoto,
     DuplicateDecision,
     DuplicateDecisionResult,
+    ExportOverrideSummary,
     HistoryRow,
     InvoiceDateCorrection,
     InvoiceDateCorrectionResult,
@@ -89,6 +90,13 @@ from app.services.document_lifecycle import (
     ensure_document_visible,
     ensure_invoice_operable,
 )
+from app.services.export_override_service import (
+    STATE_ACTIVE,
+    active_override,
+    active_overrides,
+    list_overrides,
+    override_state,
+)
 from app.services.export_service import (
     PdiExportEligibility,
     normalize_item_code,
@@ -101,7 +109,7 @@ from app.services.invoice_workflow_service import completion_state, current_fact
 from app.services.pipeline_service import InvoiceProcessingPipeline, PageUpload
 from app.services.printed_code import printed_code_incompleteness
 from app.services.product_master.commercial_resolution import line_product_names, resolution_fields
-from app.services.proposal_service import pending_by_item_code, propose_case_mapping
+from app.services.proposal_service import applied_states, pending_by_item_code, propose_case_mapping
 from app.services.revalidation_service import revalidate_invoice
 from app.services.storage_service import get_storage_service
 from app.services.store_guard import ensure_physical_store, require_store_choice
@@ -343,17 +351,19 @@ async def list_invoices(
     mapping_and_edi: dict[uuid.UUID, tuple[int, str]] = {}
     completion: dict[uuid.UUID, str] = {}
     if user.role != UserRole.USER.value:
+        overrides = await active_overrides(db, [i for _, i in rows if i is not None])
         for _, invoice in rows:
             if invoice is None or invoice.store_id is None:
                 continue
             units = await invoice_units_by_item_code(db, invoice)
-            eligibility = persisted_pdi_export_eligibility(invoice, units)
+            eligibility = persisted_pdi_export_eligibility(invoice, units, overrides.get(invoice.id))
             # Retailed reads as current only while the invoice is VALIDATED and
             # everything attested is unchanged (see invoice_workflow_service).
             fingerprint = current_facts(invoice, units)[2] if invoice.retailed_at is not None else None
             completion[invoice.id] = status_for(invoice, fingerprint)
             edi_status = (
                 "blocked" if not eligibility.allowed
+                else "overridden" if eligibility.overridden
                 else "needs_confirmation" if eligibility.requires_confirmation
                 else "ready"
             )
@@ -436,7 +446,9 @@ async def get_invoice(
             for status in build_case_mapping_status(invoice, units, reference, pending)
         ]
         proposals = await ProductDataProposalRepository(db).list(invoice_id=invoice.id, store_id=store)
-    pdi_eligibility = persisted_pdi_export_eligibility(invoice, pdi_eligibility_units)
+    export_overrides = await list_overrides(db, invoice.id) if user.role != UserRole.USER.value else []
+    in_force = next((o for o in export_overrides if override_state(o, invoice) == STATE_ACTIVE), None)
+    pdi_eligibility = persisted_pdi_export_eligibility(invoice, pdi_eligibility_units, in_force)
     if document.status in INACTIVE_DOCUMENT_STATUSES:
         # In the Recycle Bin or a reference copy: never exported (the export route refuses it too).
         pdi_eligibility = PdiExportEligibility(allowed=False, requires_confirmation=False, blocked_reason=(
@@ -466,6 +478,8 @@ async def get_invoice(
         grand_total=float(invoice.grand_total) if invoice.grand_total is not None else None,
         deposit_total=float(invoice.deposit_total) if invoice.deposit_total is not None else None,
         fuel_surcharge=float(invoice.fuel_surcharge) if invoice.fuel_surcharge is not None else None,
+        other_charges=[{**c, "amount": float(c["amount"])} for c in (invoice.other_charges or [])],
+        blocking_checks=list(invoice.blocking_checks or []),
         corrected_fields=invoice.corrected_fields or [],
         correction_history=invoice.correction_history or [],
         status=invoice.status,
@@ -477,6 +491,12 @@ async def get_invoice(
         pdi_export_allowed=pdi_eligibility.allowed,
         pdi_export_requires_confirmation=pdi_eligibility.requires_confirmation,
         pdi_export_blocked_reason=pdi_eligibility.blocked_reason,
+        pdi_export_overridden=pdi_eligibility.overridden,
+        export_override=(ExportOverrideSummary(
+            id=export_overrides[0].id, state=override_state(export_overrides[0], invoice),
+            reason=export_overrides[0].reason, blocked_checks=list(export_overrides[0].blocked_checks),
+            granted_by=export_overrides[0].granted_by, created_at=export_overrides[0].created_at)
+            if export_overrides else None),
         photos=[DocumentPhoto(
             page_number=p.page_number, filename=p.filename, mime_type=p.mime_type,
             file_size_bytes=p.file_size_bytes, source_type=p.source_type,
@@ -487,7 +507,7 @@ async def get_invoice(
             item.duplicate_candidate and not item.duplicate_candidate.get("resolution")
             for item in invoice.items
         ),
-        review=InvoiceReviewSummary.from_proposals(proposals),
+        review=InvoiceReviewSummary.from_proposals(proposals, await applied_states(db, proposals)),
         case_mappings=case_mappings,
         vendor=VendorData.model_validate(invoice.vendor, from_attributes=True)
         if invoice.vendor
@@ -775,7 +795,7 @@ async def confirm_case_mappings(
 
     # Re-read: mappings are unchanged by design, but the queue is not.
     pending = await pending_by_item_code(db, store, list(review_by_code))
-    eligibility = persisted_pdi_export_eligibility(invoice, units)
+    eligibility = await _eligibility(db, invoice, units)
     return APIResponse(
         data=CaseMappingResult(
             saved=submitted,
@@ -917,7 +937,7 @@ async def correct_line_item(
     report = await revalidate_invoice(db, invoice)
 
     units = await invoice_units_by_item_code(db, invoice)
-    eligibility = persisted_pdi_export_eligibility(invoice, units)
+    eligibility = await _eligibility(db, invoice, units)
     await db.commit()
 
     return APIResponse(
@@ -1008,7 +1028,7 @@ async def decide_duplicate(
     invoice = await repository.get_detail(invoice_id)
     report = await revalidate_invoice(db, invoice)
     units = await invoice_units_by_item_code(db, invoice)
-    eligibility = persisted_pdi_export_eligibility(invoice, units)
+    eligibility = await _eligibility(db, invoice, units)
     await db.commit()
 
     return APIResponse(data=DuplicateDecisionResult(
@@ -1096,12 +1116,17 @@ async def _log_correction(db, invoice, event: str, by: str | None, note: str | N
     )
 
 
+async def _eligibility(db, invoice, units):
+    """The PDI gate with the administrator override that covers this exact invoice state, if any."""
+    return persisted_pdi_export_eligibility(invoice, units, await active_override(db, invoice))
+
+
 async def _revalidated(db, invoice_id: uuid.UUID):
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     report = await revalidate_invoice(db, invoice)
     units = await invoice_units_by_item_code(db, invoice)
-    return invoice, report, persisted_pdi_export_eligibility(invoice, units)
+    return invoice, report, await _eligibility(db, invoice, units)
 
 
 @router.post(

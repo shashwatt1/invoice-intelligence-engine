@@ -126,14 +126,18 @@ def endpoint(app, monkeypatch):
     async def resolve(_db, _invoice):
         return resolution()
 
-    async def record(db, invoice, content, res, user):
+    async def record(db, invoice, content, res, user, override=None):
         recorded.append((content, user.username, res.lines[CODE].path))
         return SimpleNamespace(id=uuid.uuid4(), export_number=1, sha256=hashlib.sha256(content.encode()).hexdigest())
 
     monkeypatch.setattr(api, "InvoiceRepository", Invoices)
     monkeypatch.setattr(api, "invoice_commercial_resolution", resolve)
     monkeypatch.setattr(api, "persisted_pdi_export_eligibility",
-                        lambda invoice, units: SimpleNamespace(allowed=True, blocked_reason=None))
+                        lambda invoice, units, override=None: SimpleNamespace(allowed=True, blocked_reason=None))
+    async def no_override(_db, _invoice):
+        return None
+
+    monkeypatch.setattr(api, "active_override", no_override)
     monkeypatch.setattr(api, "build_pdi_export", lambda invoice, units: CONTENT if units == {CODE: 1} else "wrong")
     monkeypatch.setattr(api, "record_pdi_export", record)
     app.dependency_overrides[get_db] = fake_db
