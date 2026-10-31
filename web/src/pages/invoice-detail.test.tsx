@@ -230,7 +230,7 @@ describe("InvoiceDetailPage — MANAGER", () => {
     await waitFor(() => expect(screen.getByTestId("financial-summary")).toBeInTheDocument());
 
     // Header / totals / line items — the business data must be visible.
-    expect(screen.getByText(/RED CLIFF PETROLEUM/)).toBeInTheDocument();
+    expect(screen.getAllByText(/RED CLIFF PETROLEUM/).length).toBeGreaterThan(0);   // the eyebrow and the declarations card
     expect(screen.getAllByText(/536\.81/).length).toBeGreaterThan(0);
     expect(screen.getAllByTestId("line-item-row")).toHaveLength(4);
     expect(screen.getAllByText("GM VAN MINI CRE").length).toBeGreaterThan(0);
@@ -257,7 +257,7 @@ describe("InvoiceDetailPage — USER", () => {
 
     await waitFor(() => expect(screen.getByTestId("financial-summary")).toBeInTheDocument());
 
-    expect(screen.getByText(/RED CLIFF PETROLEUM/)).toBeInTheDocument();
+    expect(screen.getAllByText(/RED CLIFF PETROLEUM/).length).toBeGreaterThan(0);   // the eyebrow and the declarations card
     expect(screen.getAllByTestId("line-item-row")).toHaveLength(4);
     expect(screen.getAllByText("GM VAN MINI CRE").length).toBeGreaterThan(0);
     expect(screen.getAllByText("00025328").length).toBeGreaterThan(0);

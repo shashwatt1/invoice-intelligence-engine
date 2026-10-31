@@ -17,6 +17,7 @@ const listVendors = vi.fn();
 const getVendor = vi.fn();
 const confirmVendor = vi.fn();
 const reopenVendor = vi.fn();
+const listVendorRequests = vi.fn(async () => []);
 
 vi.mock("@/api/endpoints", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/endpoints")>()),
@@ -24,6 +25,7 @@ vi.mock("@/api/endpoints", async (importOriginal) => ({
   getVendor: (...a: unknown[]) => getVendor(...a),
   confirmVendor: (...a: unknown[]) => confirmVendor(...a),
   reopenVendor: (...a: unknown[]) => reopenVendor(...a),
+  listVendorRequests: (...a: unknown[]) => listVendorRequests(...(a as [])),
 }));
 
 const { VendorsPage } = await import("./vendors");
