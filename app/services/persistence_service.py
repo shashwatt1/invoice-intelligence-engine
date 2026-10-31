@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.document import Document
-from app.models.invoice import Invoice
+from app.models.invoice import SOURCE_EXTRACTED, SOURCE_OPERATOR, SOURCE_REQUESTED, Invoice
 from app.models.processing_log import PipelineStage
 from app.models.vendor import Vendor
 from app.repositories.document_repository import DocumentRepository
@@ -72,7 +72,15 @@ class PersistenceService:
         logs = ProcessingLogRepository(session)
 
         decision = validation.report.decision
-        vendor, vendor_created = await vendors.get_or_create(validation.invoice)
+        # A vendor a person chose at upload is the invoice's vendor; the printed wording stays on the invoice as
+        # provenance and is only compared with it (VENDOR_MATCHES_CHECK). Otherwise the vendor is what extraction read,
+        # marked 'requested' when a USER asked for a vendor a manager has not yet approved.
+        vendor = await vendors.get(document.chosen_vendor_id) if document.chosen_vendor_id else None
+        if vendor is not None:
+            vendor_created, vendor_source = False, SOURCE_OPERATOR
+        else:
+            vendor, vendor_created = await vendors.get_or_create(validation.invoice)
+            vendor_source = SOURCE_REQUESTED if document.vendor_request_id else SOURCE_EXTRACTED
 
         invoice = await invoices.create_with_items(
             document_id=document.id,
@@ -84,6 +92,8 @@ class PersistenceService:
             extraction_model=structuring.metadata.model,
             raw_extraction_json=structuring.raw_response,
             blocking_checks=validation.report.blocking_check_names(),
+            vendor_source=vendor_source,
+            delivery_date=document.declared_delivery_date,
         )
 
         final_status = document_status_for(decision)
@@ -100,6 +110,8 @@ class PersistenceService:
                 "store_pending": store_id is None,
                 "vendor_id": str(vendor.id) if vendor else None,
                 "vendor_created": vendor_created,
+                "vendor_source": vendor_source,
+                "delivery_date": document.declared_delivery_date.isoformat() if document.declared_delivery_date else None,
                 "line_item_count": len(validation.invoice.line_items),
                 "final_status": final_status.value,
             },

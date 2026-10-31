@@ -42,6 +42,7 @@ from app.services.validation.checks import (
     check_required_fields,
     check_subtotal,
     check_tax_consistency,
+    check_vendor_matches_choice,
 )
 from app.services.validation.confidence import compute_confidence
 from app.services.validation.normalization import normalize_invoice
@@ -52,6 +53,7 @@ from app.services.validation.report import (
     ValidationReport,
     ValidationResult,
 )
+from app.services.vendor_matching import ExpectedVendor
 
 logger = get_logger(__name__)
 
@@ -90,6 +92,7 @@ class ValidationService:
         ocr_confidence: float | None = None,
         filename: str = "",
         ocr_text: str | None = None,
+        expected_vendor: ExpectedVendor | None = None,
     ) -> ValidationResult:
         """
         Validate an extracted invoice and decide its processing route.
@@ -124,6 +127,7 @@ class ValidationService:
         checks += check_date_order(normalized)
         checks += check_cross_photo_duplicates(normalized)
         checks += check_product_code_complete(normalized)
+        checks += check_vendor_matches_choice(normalized.vendor_name, normalized.vendor_tax_id, expected_vendor)
 
         confidence = compute_confidence(
             ocr_confidence, self._aggregate_ai_confidence(extracted), checks

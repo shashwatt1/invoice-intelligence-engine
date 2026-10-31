@@ -23,6 +23,7 @@ from app.schemas.extraction import LINE_TYPE_CHARGE
 from app.schemas.normalized import NormalizedInvoice
 from app.services.printed_code import printed_code_incompleteness
 from app.services.validation.report import CheckResult, CheckStatus
+from app.services.vendor_matching import ExpectedVendor, vendor_agrees
 
 
 def _within(a: Decimal, b: Decimal, tolerance: Decimal) -> bool:
@@ -571,3 +572,25 @@ def check_product_code_complete(invoice: NormalizedInvoice) -> list[CheckResult]
             actual=item.product_code,
         ))
     return results
+
+
+def check_vendor_matches_choice(printed_name: str | None, printed_tax_id: str | None,
+                                expected: ExpectedVendor | None) -> list[CheckResult]:
+    """
+    When a person chose the vendor (at upload or later), the vendor the document prints should be that vendor. A mismatch
+    is a review reason, never a pause: the choice stands, a person looks. Nothing is appended when no vendor was chosen.
+    """
+    if expected is None:
+        return []
+    agrees = vendor_agrees(expected.names, printed_name, selected_tax_id=expected.tax_id, extracted_tax_id=printed_tax_id)
+    if agrees is None:
+        return [CheckResult("VENDOR_MATCHES_CHOICE", CheckStatus.SKIPPED, field="vendor",
+                            message="The document printed no vendor to compare with the vendor chosen.")]
+    if agrees:
+        return [CheckResult("VENDOR_MATCHES_CHOICE", CheckStatus.PASSED, field="vendor")]
+    return [CheckResult(
+        "VENDOR_MATCHES_CHOICE", CheckStatus.FAILED, field="vendor",
+        message=(f"The document prints the vendor {printed_name or printed_tax_id!r}, which does not match the vendor "
+                 f"chosen ({expected.names[0]!r}). Check that the right vendor was chosen and the right document uploaded."),
+        expected=expected.names[0], actual=printed_name)]
+
