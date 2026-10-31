@@ -79,7 +79,9 @@ class TestItCannotWriteWhatItMustNotTouch:
         source = SCRIPT.read_text()
         for forbidden in ("INSERT ", "UPDATE ", "DELETE ", "session.add", "commit()", "flush("):
             assert forbidden not in source.replace("await session.commit()", ""), forbidden
-        assert source.count(".execute(") == 1 and 'text("select current_database()")' in source
+        assert ".execute(" not in source and "text(" not in source, "the one read of the database name lives in db_target"
+        target = (SCRIPT.parent.parent / "app/services/db_target.py").read_text()
+        assert target.count(".execute(") == 1 and 'text("select current_database()")' in target
 
 
 class TestDetectingTheRewritesTheDeployedRevalidationWouldMake:
