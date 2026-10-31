@@ -49,6 +49,18 @@ export function IntelligencePanel({ detail: d, rowLinks }: { detail: InvoiceDeta
         </div>
         <div className="mt-3">
           <ConfidenceMeter score={d.composite_confidence} />
+          {report?.confidence.completeness === "INCOMPLETE" ? (
+            <p className="mt-1.5 text-[0.75rem] font-medium text-danger" data-testid="completeness-incomplete">
+              Incomplete: the lines do not account for everything printed. The score is capped
+              {report.confidence.composite_uncapped != null
+                ? ` (reading quality was ${formatPercent(report.confidence.composite_uncapped, 0)})`
+                : ""}.
+            </p>
+          ) : report?.confidence.completeness === "UNVERIFIED" ? (
+            <p className="t-meta mt-1.5" data-testid="completeness-unverified">Completeness not verified.</p>
+          ) : report?.confidence.completeness === "COMPLETE" ? (
+            <p className="t-meta mt-1.5" data-testid="completeness-complete">Every printed line is accounted for.</p>
+          ) : null}
           {report ? (
             <div className="t-meta mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums">
               <span>OCR {formatPercent(report.confidence.ocr_confidence, 0)}</span>

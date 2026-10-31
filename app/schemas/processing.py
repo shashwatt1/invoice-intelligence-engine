@@ -87,6 +87,12 @@ class InvoiceReviewProposal(BaseModel):
     revised_from: uuid.UUID | None = Field(
         default=None, description="The proposal this one corrected, when it is a revision."
     )
+    applied: str | None = Field(
+        default=None,
+        description=("For an APPROVED units-per-case proposal: APPLIED (it is the store's mapping now), SUPERSEDED "
+                     "(a later approval replaced it) or NOT_APPLIED (the store holds no mapping with that value). "
+                     "Null for anything else. The status is the reviewer's decision; this is whether it still holds."),
+    )
 
 
 class InvoiceReviewSummary(BaseModel):
@@ -101,10 +107,11 @@ class InvoiceReviewSummary(BaseModel):
     pending: int = 0
     approved: int = 0
     rejected: int = 0
+    approved_not_applied: int = Field(default=0, description="Approved proposals whose mapping does not exist.")
     proposals: list[InvoiceReviewProposal] = Field(default_factory=list)
 
     @classmethod
-    def from_proposals(cls, rows: list[Any]) -> InvoiceReviewSummary:
+    def from_proposals(cls, rows: list[Any], applied: dict[Any, str] | None = None) -> InvoiceReviewSummary:
         pending = sum(1 for r in rows if r.status == "PENDING")
         approved = sum(1 for r in rows if r.status == "APPROVED")
         rejected = sum(1 for r in rows if r.status == "REJECTED")
@@ -116,14 +123,17 @@ class InvoiceReviewSummary(BaseModel):
             status = REVIEW_APPROVED
         else:
             status = REVIEW_REJECTED
+        applied = applied or {}
         return cls(
             status=status, pending=pending, approved=approved, rejected=rejected,
+            approved_not_applied=sum(1 for r in rows if applied.get(r.id) == "NOT_APPLIED"),
             proposals=[InvoiceReviewProposal(
                 id=r.id, entity_key=r.entity_key, field=r.field, current_value=r.current_value,
                 proposed_value=r.proposed_value, status=r.status, source=r.source,
                 proposed_by=r.proposed_by, reviewed_by=r.reviewed_by, reviewed_at=r.reviewed_at,
                 review_note=r.review_note,
                 revised_from=((r.evidence or {}).get("revised_from") or None),
+                applied=applied.get(r.id),
             ) for r in rows],
         )
 
@@ -582,7 +592,38 @@ class EdiExportRecord(BaseModel):
     byte_size: int
     resolution_snapshot: dict[str, Any]
     build: dict[str, Any]
+    export_override_id: uuid.UUID | None = Field(
+        default=None, description="Set when the file was delivered under an administrator export override.")
     created_at: datetime
+
+
+class ExportOverrideSummary(BaseModel):
+    """An administrator's override of the export block, as the invoice screen shows it."""
+
+    id: uuid.UUID
+    state: str = Field(description="ACTIVE (covers the invoice as it stands), STALE (the invoice changed since) or REVOKED.")
+    reason: str
+    blocked_checks: list[str] = Field(description="The critical checks that were failing when it was granted.")
+    granted_by: str
+    created_at: datetime
+
+
+class ExportOverrideRecord(ExportOverrideSummary):
+    """One override with its audit detail, including the failed validation results preserved at grant time."""
+
+    invoice_id: uuid.UUID | None = None
+    invoice_number: str | None = None
+    granted_by_role: str
+    validation_snapshot: dict[str, Any]
+    revoked_at: datetime | None = None
+    revoked_by: str | None = None
+    revoke_reason: str | None = None
+
+
+class ExportOverrideRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000,
+                        description="Why this invoice may be exported although its critical checks fail; "
+                                    "kept with the record and the invoice's audit trail.")
 
 
 class ResultingMapping(BaseModel):
@@ -1163,6 +1204,16 @@ class InvoiceDetailData(BaseModel):
     discount_amount: float | None = None
     deposit_total: float | None = None
     fuel_surcharge: float | None = None
+    other_charges: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Typed additional charges [{kind, label, amount}] from the totals area (state container "
+                    "deposit, other jurisdiction charge, ...). Never tax, never merchandise.",
+    )
+    blocking_checks: list[str] = Field(
+        default_factory=list,
+        description="Critical validation checks that fail now (completeness, financial reconciliation); "
+                    "while any is listed the PDI export is blocked.",
+    )
     corrected_fields: list[str] = Field(
         default_factory=list, description="Header fields a person replaced; the extracted value is in the history."
     )
@@ -1186,6 +1237,15 @@ class InvoiceDetailData(BaseModel):
     )
     pdi_export_blocked_reason: str | None = Field(
         default=None, description="Why the export is blocked, when pdi_export_allowed is false."
+    )
+    pdi_export_overridden: bool = Field(
+        default=False,
+        description="True when pdi_export_allowed only because an administrator override covers the invoice "
+                    "as it stands; its critical checks still fail (see blocking_checks).",
+    )
+    export_override: ExportOverrideSummary | None = Field(
+        default=None,
+        description="The newest override for this invoice (ACTIVE, STALE or REVOKED); null if none was ever granted.",
     )
     photos: list[DocumentPhoto] = Field(
         default_factory=list,

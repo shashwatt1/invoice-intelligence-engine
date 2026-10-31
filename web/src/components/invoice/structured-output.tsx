@@ -12,7 +12,7 @@ import {
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { invoiceExportUrl } from "@/api/endpoints";
+import { invoiceExportUrl, invoiceReviewCopyUrl } from "@/api/endpoints";
 import { PdiExportConfirmDialog } from "@/components/invoice/pdi-export-confirm-dialog";
 import { ErrorState } from "@/components/shared/states";
 import { Button } from "@/components/ui/button";
@@ -88,12 +88,15 @@ export function StructuredOutput({
   pdiExportAllowed,
   pdiExportRequiresConfirmation,
   pdiExportBlockedReason,
+  criticalBlocked = false,
   enabled,
 }: {
   invoiceId: string;
   pdiExportAllowed: boolean;
   pdiExportRequiresConfirmation: boolean;
   pdiExportBlockedReason: string | null;
+  /** Critical checks fail and no administrator override covers the invoice: TXT and CSV are refused by the server. */
+  criticalBlocked?: boolean;
   enabled: boolean;
 }) {
   const { data, isPending, isError, error, refetch } = useInvoiceExport(invoiceId, enabled);
@@ -157,12 +160,24 @@ export function StructuredOutput({
             <DropdownMenuItem onClick={() => download("json")}>
               <FileJson className="size-3.5" /> Download JSON
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => download("txt")}>
+            <DropdownMenuItem onClick={() => download("txt")} disabled={criticalBlocked}
+                              title={criticalBlocked ? "Blocked while critical checks fail — use the review copy." : undefined}>
               <FileText className="size-3.5" /> Download TXT
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => download("csv")}>
+            <DropdownMenuItem onClick={() => download("csv")} disabled={criticalBlocked}
+                              title={criticalBlocked ? "Blocked while critical checks fail — use the review copy." : undefined}>
               <FileSpreadsheet className="size-3.5" /> Download CSV
             </DropdownMenuItem>
+            {criticalBlocked ? (
+              <>
+                <DropdownMenuItem onClick={() => window.location.assign(invoiceReviewCopyUrl(invoiceId, "txt"))}>
+                  <FileText className="size-3.5" /> Review copy TXT (not for import)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => window.location.assign(invoiceReviewCopyUrl(invoiceId, "csv"))}>
+                  <FileSpreadsheet className="size-3.5" /> Review copy CSV (not for import)
+                </DropdownMenuItem>
+              </>
+            ) : null}
             <DropdownMenuItem
               onClick={handlePdiClick}
               disabled={!pdiExportAllowed}

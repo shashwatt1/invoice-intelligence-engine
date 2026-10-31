@@ -112,6 +112,22 @@ export function ValidationReportCard({ report, rowLinks }: { report: ValidationR
         <ConfidenceMeter score={report.confidence.composite} className="w-48" />
       </CardHeader>
       <CardContent className="space-y-1.5">
+        {report.completeness && report.completeness.status !== "COMPLETE" ? (
+          <div
+            className={report.completeness.status === "INCOMPLETE"
+              ? "rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-[0.8rem]"
+              : "rounded-md border px-3 py-2 text-[0.8rem] text-muted-foreground"}
+            data-testid="completeness-banner"
+          >
+            <strong>{report.completeness.status === "INCOMPLETE" ? "Incomplete extraction." : "Completeness not verified."}</strong>{" "}
+            {report.completeness.status === "INCOMPLETE"
+              ? "The extracted lines do not account for everything printed on the document; a high reading score does not mean the invoice is whole. It cannot be exported until this is resolved."
+              : "There was nothing printed to compare the lines with."}
+            {report.completeness.findings.filter((f) => f.status === "FAILED").map((f) => (
+              <div key={f.name} className="mt-1">• {f.message}</div>
+            ))}
+          </div>
+        ) : null}
         {blockers.length > 0 ? (
           rowLinks ? (
             <>

@@ -36,6 +36,7 @@ const EDI_STATUS_META: Record<string, { label: string; tone: "success" | "warnin
   ready: { label: "Ready", tone: "success" },
   needs_confirmation: { label: "Needs confirmation", tone: "warning" },
   blocked: { label: "Blocked", tone: "danger" },
+  overridden: { label: "Admin override", tone: "warning" },
 };
 
 export function InvoiceRow({

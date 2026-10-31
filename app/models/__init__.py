@@ -9,6 +9,7 @@ to ensure autogenerate detects all tables.
 from app.models.document import Document, DocumentStatus
 from app.models.document_page import DocumentPage
 from app.models.edi_export import EdiExport
+from app.models.export_override import ExportOverride
 from app.models.inventory import InventoryMovement, InventoryReceipt, StoreInventoryBaseline
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
@@ -35,6 +36,7 @@ from app.models.vendor_item_crosswalk import VendorItemCrosswalk
 __all__ = [
     "Document",
     "EdiExport",
+    "ExportOverride",
     "MasterCommercialMapping",
     "MasterCommercialReview",
     "MasterPackComposition",

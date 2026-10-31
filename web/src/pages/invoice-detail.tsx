@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import type { DocumentStatus, InvoiceDetail, LineItem, ValidationCheck, Vendor } from "@/api/types";
 import { invoiceExportUrl } from "@/api/endpoints";
+import { ExportOverridePanel } from "@/components/invoice/export-override-panel";
 import { PageHeader, SectionHeader } from "@/components/layout/page-header";
 import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
 import { AddRowForm, CorrectingAs, EditableInvoiceDate, HistoryNote, VoidRowButton } from "@/components/invoice/corrections";
@@ -1051,6 +1052,7 @@ export function InvoiceDetailPage() {
             }
           />
           <InactiveNotice status={data.document_status} />
+          {isInactive(data.document_status) ? null : <ExportOverridePanel detail={data} />}
           <DetailBody detail={data} by={by} setBy={setBy} />
         </>
       )}

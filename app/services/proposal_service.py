@@ -83,6 +83,18 @@ SCOPE_SHARED = "shared"      # every physical store: a shared Product Master val
 VALID_SCOPES = frozenset({SCOPE_STORE, SCOPE_SHARED})
 
 
+class ApprovalIntegrityError(RuntimeError):
+    """
+    An approval whose mapping did not land as approved. Raised inside the approving transaction, so nothing is
+    committed: the proposal is never left APPROVED without the mapping it stands for.
+    """
+
+
+APPLIED = "APPLIED"            # an approved value is the store's mapping now
+SUPERSEDED = "SUPERSEDED"      # a later approval for the same product replaced it (history, not a gap)
+NOT_APPLIED = "NOT_APPLIED"    # approved, but the store holds no mapping with that value: a gap
+
+
 @dataclass(frozen=True)
 class ApprovalResult:
     proposal: ProductDataProposal
@@ -138,7 +150,8 @@ def _classify(status: CaseMappingStatus | None, value: int) -> tuple[str, dict[s
     if status.suggestion_source == "description_ambiguous":
         # Whatever they chose, the document only narrowed it to candidates.
         return SOURCE_DOCUMENT_AMBIGUOUS, evidence
-    if status.suggestion_source in ("description", "pack_size") and value == status.suggested_units_per_case:
+    if (status.suggestion_source in ("description", "pack_size", "printed_units", "printed_units_and_pack")
+            and value == status.suggested_units_per_case):
         return SOURCE_DOCUMENT_DERIVED, evidence
     # A suggestion existed but the operator typed something else, or
     # nothing was suggested at all: it is their number.
@@ -261,6 +274,13 @@ async def approve(
     )
     mapping.approved_proposal_id = proposal.id
     await session.flush()
+    # The invariant, checked where it is made: an approved case-mapping proposal has its mapping, with its
+    # value, linked back to it. If anything above failed to write it, fail the whole approval (no commit).
+    landed = await mappings.get(proposal.store_id, proposal.entity_key)
+    if landed is None or landed.units_per_case != units or landed.approved_proposal_id != proposal.id:
+        raise ApprovalIntegrityError(
+            f"Approval of proposal {proposal.id} did not produce the mapping it approves "
+            f"({proposal.entity_key} = {units}); nothing was committed.")
     return ApprovalResult(
         proposal=proposal,
         applied_to=f"product_case_mappings:{proposal.store_id}:{proposal.entity_key}",
@@ -457,3 +477,73 @@ async def resolve_difference(
         adopted_store_ids=tuple(v.store_id for v in adopt),
         kept_store_ids=tuple(o.store_id for o in outcome.overrides),
     )
+
+
+# ---- is an approval still applied? -------------------------------------------------------------------
+# A proposal's status is a frozen record of what a reviewer decided; whether the decision is still the store's
+# mapping is a different, live question. A mapping removed by hand afterwards leaves an APPROVED proposal behind
+# on purpose (the audit trail is never rewritten) — these functions make that gap visible instead of silent.
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def applied_states(session: AsyncSession, rows: list[ProductDataProposal]) -> dict[uuid.UUID, str]:
+    """
+    For each APPROVED case-mapping proposal in `rows`: APPLIED, SUPERSEDED or NOT_APPLIED. Other proposals are
+    absent from the result. Read-only.
+    """
+    approved = [r for r in rows if r.status == "APPROVED" and r.entity_type == ENTITY_CASE_MAPPING
+                and r.field == FIELD_UNITS_PER_CASE]
+    if not approved:
+        return {}
+    mappings = ProductCaseMappingRepository(session)
+    by_store: dict[uuid.UUID, list[str]] = {}
+    for r in approved:
+        by_store.setdefault(r.store_id, []).append(r.entity_key)
+    held = {sid: await mappings.units_by_item_code(sid, keys) for sid, keys in by_store.items()}
+    later = ProductDataProposalRepository(session)
+    states: dict[uuid.UUID, str] = {}
+    for r in approved:
+        newer = [o for o in await later.list(status="APPROVED", entity_type=ENTITY_CASE_MAPPING,
+                                             entity_key=r.entity_key, store_id=r.store_id)
+                 if o.id != r.id and o.field == FIELD_UNITS_PER_CASE and o.reviewed_at and r.reviewed_at
+                 and o.reviewed_at > r.reviewed_at]
+        if newer:
+            states[r.id] = SUPERSEDED
+        elif held.get(r.store_id, {}).get(r.entity_key) == _int_or_none(r.proposed_value):
+            states[r.id] = APPLIED
+        else:
+            states[r.id] = NOT_APPLIED
+    return states
+
+
+@dataclass(frozen=True)
+class UnappliedApproval:
+    proposal_id: uuid.UUID
+    store_id: uuid.UUID
+    item_code: str
+    approved_value: Any
+    mapping_value: int | None        # None: the store has no mapping for the product at all
+    invoice_id: uuid.UUID | None
+    reviewed_by: str | None
+    reviewed_at: Any
+
+
+async def find_unapplied_approvals(session: AsyncSession, *, store_id: uuid.UUID | None = None) -> list[UnappliedApproval]:
+    """Every APPROVED case-mapping proposal whose approval is not the store's mapping and was not superseded."""
+    approved = await ProductDataProposalRepository(session).list(
+        status="APPROVED", entity_type=ENTITY_CASE_MAPPING, store_id=store_id)
+    states = await applied_states(session, approved)
+    gaps = [r for r in approved if states.get(r.id) == NOT_APPLIED]
+    mappings = ProductCaseMappingRepository(session)
+    out = []
+    for r in gaps:
+        held = await mappings.units_by_item_code(r.store_id, [r.entity_key])
+        out.append(UnappliedApproval(
+            r.id, r.store_id, r.entity_key, r.proposed_value, held.get(r.entity_key), r.invoice_id,
+            r.reviewed_by, r.reviewed_at))
+    return out

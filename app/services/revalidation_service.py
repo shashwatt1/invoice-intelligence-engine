@@ -45,10 +45,12 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.document import Document
 from app.models.invoice import Invoice
 from app.models.processing_log import LogStatus, PipelineStage
 from app.repositories.processing_log_repository import ProcessingLogRepository
-from app.schemas.normalized import NormalizedInvoice, NormalizedLineItem
+from app.schemas.normalized import NormalizedCharge, NormalizedInvoice, NormalizedLineItem
+from app.services.completeness import apply_completeness_gate
 from app.services.document_lifecycle import document_status_for, sync_document_status
 from app.services.validation.checks import (
     check_cross_photo_duplicates,
@@ -86,6 +88,10 @@ def normalized_from_persisted(invoice: Invoice) -> NormalizedInvoice:
         discount_amount=invoice.discount_amount,
         deposit_total=getattr(invoice, "deposit_total", None),
         fuel_surcharge=getattr(invoice, "fuel_surcharge", None),
+        other_charges=tuple(
+            NormalizedCharge(kind=c["kind"], label=c.get("label"), amount=Decimal(str(c["amount"])))
+            for c in (getattr(invoice, "other_charges", None) or [])
+        ),
         grand_total=invoice.grand_total,
         line_items=tuple(
             NormalizedLineItem(
@@ -93,6 +99,9 @@ def normalized_from_persisted(invoice: Invoice) -> NormalizedInvoice:
                 description=item.description,
                 product_code=item.product_sku,
                 pack_size=item.pack_size,
+                printed_units=getattr(item, "printed_units", None),
+                section_label=getattr(item, "section_label", None),
+                duplicate_resolved=(item.duplicate_candidate or {}).get("resolution") == "separate_rows",
                 quantity=item.quantity,
                 unit_price=item.unit_price,
                 unit_discount=item.discount,
@@ -129,8 +138,13 @@ def build_report(
     ai_confidence: float | None,
     tolerance: Decimal | None = None,
     threshold: float | None = None,
+    ocr_text: str | None = None,
 ) -> ValidationReport:
-    """Re-judge the stored invoice with the pipeline's own rules."""
+    """
+    Re-judge the stored invoice with the pipeline's own rules. `ocr_text` is the document's stored OCR text:
+    with it the completeness gate runs again against the rows as they stand now (a reviewer who adds the missing
+    rows by hand can make an INCOMPLETE invoice COMPLETE); without it completeness is UNVERIFIED.
+    """
     service = ValidationService()
     tolerance = tolerance if tolerance is not None else service._tolerance
     threshold = threshold if threshold is not None else service._threshold
@@ -152,6 +166,7 @@ def build_report(
     checks += check_product_code_complete(normalized)
 
     confidence = compute_confidence(ocr_confidence, ai_confidence, checks)
+    checks, confidence, completeness = apply_completeness_gate(checks, confidence, ocr_text, normalized.line_items)
     failed = [c for c in checks if c.status is CheckStatus.FAILED]
     review_reasons = [f"{c.name}: {c.message or 'check failed'}" for c in failed]
     if confidence.composite < threshold:
@@ -169,6 +184,7 @@ def build_report(
             else ProcessingDecision.REVIEW_REQUIRED
         ),
         review_reasons=review_reasons,
+        completeness=completeness.to_dict(),
         duration_ms=int((time.monotonic() - start) * 1000),
     )
 
@@ -268,11 +284,14 @@ async def revalidate_invoice(session: AsyncSession, invoice: Invoice) -> Validat
         previous[-1] if previous else None
     )
 
+    document = await session.get(Document, invoice.document_id)
     report = build_report(
-        invoice, ocr_confidence=ocr_confidence, ai_confidence=ai_confidence
+        invoice, ocr_confidence=ocr_confidence, ai_confidence=ai_confidence,
+        ocr_text=getattr(document, "raw_ocr_text", None),
     )
 
     invoice.status = report.decision.value
+    invoice.blocking_checks = report.blocking_check_names()
     invoice.composite_confidence = Decimal(str(report.confidence.composite))
     await session.flush()
     # The document's lifecycle state follows the decision, exactly as it

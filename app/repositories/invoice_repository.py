@@ -23,6 +23,11 @@ from app.schemas.normalized import NormalizedInvoice, NormalizedLineItem
 from app.services.validation.report import ProcessingDecision
 
 
+def _charges_json(normalized: NormalizedInvoice) -> list[dict[str, str | None]] | None:
+    """The typed additional charges as stored: amounts as strings (exact), None when there are none."""
+    return [{"kind": c.kind, "label": c.label, "amount": str(c.amount)} for c in normalized.other_charges] or None
+
+
 class InvoiceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -38,6 +43,7 @@ class InvoiceRepository:
         composite_confidence: float,
         extraction_model: str | None,
         raw_extraction_json: dict[str, Any] | None,
+        blocking_checks: list[str] | None = None,
     ) -> Invoice:
         """Persist the invoice header and all line items (flush, no commit)."""
         invoice = Invoice(
@@ -52,6 +58,8 @@ class InvoiceRepository:
             discount_amount=normalized.discount_amount,
             deposit_total=normalized.deposit_total,
             fuel_surcharge=normalized.fuel_surcharge,
+            other_charges=_charges_json(normalized),
+            blocking_checks=blocking_checks,
             grand_total=normalized.grand_total,
             currency=normalized.currency or "USD",
             vendor_name=normalized.vendor_name,
@@ -237,6 +245,8 @@ class InvoiceRepository:
             line_total=item.line_total,
             tax_rate=item.tax_rate,
             pack_size=item.pack_size,
+            printed_units=item.printed_units,
+            section_label=(item.section_label or None) and item.section_label[:64],
             line_type=item.line_type,
             discount=item.unit_discount,
             deposit=item.unit_deposit,
@@ -259,6 +269,7 @@ class InvoiceRepository:
         composite_confidence: float,
         extraction_model: str | None,
         raw_extraction_json: dict[str, Any] | None,
+        blocking_checks: list[str] | None = None,
     ) -> Invoice:
         """
         Replace the operational extraction result on an EXISTING invoice.
@@ -284,6 +295,8 @@ class InvoiceRepository:
         invoice.discount_amount = normalized.discount_amount
         invoice.deposit_total = normalized.deposit_total
         invoice.fuel_surcharge = normalized.fuel_surcharge
+        invoice.other_charges = _charges_json(normalized)
+        invoice.blocking_checks = blocking_checks
         invoice.grand_total = normalized.grand_total
         invoice.currency = normalized.currency or "USD"
         invoice.vendor_name = normalized.vendor_name

@@ -233,6 +233,8 @@ export interface InvoiceReviewProposal {
   reviewed_at: string | null;
   review_note: string | null;
   revised_from: string | null;
+  /** For an approved units-per-case proposal: is it the store's mapping now? */
+  applied?: "APPLIED" | "SUPERSEDED" | "NOT_APPLIED" | null;
 }
 
 /** This invoice's master-data review, from its proposal rows. Separate from
@@ -242,6 +244,8 @@ export interface InvoiceReviewSummary {
   pending: number;
   approved: number;
   rejected: number;
+  /** Approved proposals whose mapping does not exist (removed afterwards, or never written). */
+  approved_not_applied?: number;
   proposals: InvoiceReviewProposal[];
 }
 
@@ -261,6 +265,34 @@ export interface DuplicateDecisionResult {
   review_reasons: string[];
   pdi_export_allowed: boolean;
   pdi_export_blocked_reason: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Export override (administrator, audited)
+// ---------------------------------------------------------------------------
+
+export type ExportOverrideState = "ACTIVE" | "STALE" | "REVOKED";
+
+export interface ExportOverrideSummary {
+  id: string;
+  /** ACTIVE covers the invoice as it stands; STALE means the invoice changed since; REVOKED was withdrawn. */
+  state: ExportOverrideState;
+  reason: string;
+  /** The critical checks that were failing when it was granted. */
+  blocked_checks: string[];
+  granted_by: string;
+  created_at: string;
+}
+
+export interface ExportOverrideRecord extends ExportOverrideSummary {
+  invoice_id: string | null;
+  invoice_number: string | null;
+  granted_by_role: string;
+  /** The latest stored validation report at grant time, verbatim. */
+  validation_snapshot: Record<string, unknown>;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  revoke_reason: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -427,14 +459,31 @@ export interface ValidationCheck {
   actual?: string;
 }
 
+/** Whether the extracted lines account for everything the OCR saw printed (see app/services/completeness.py).
+ *  A confidence score says how well text was read; this says whether the invoice is whole. */
+export type CompletenessStatus = "COMPLETE" | "INCOMPLETE" | "UNVERIFIED";
+
+export interface CompletenessSummary {
+  status: CompletenessStatus;
+  anchors: number;
+  lines: number;
+  missing_codes: string[];
+  duplicate_codes: string[];
+  findings: ValidationCheck[];
+}
+
 export interface ValidationReport {
   decision: InvoiceDecision;
+  completeness?: CompletenessSummary;
   confidence: {
     composite: number;
     ocr_confidence: number | null;
     ai_confidence: number | null;
     validation_score: number;
     weights: Record<string, number>;
+    completeness?: CompletenessStatus;
+    /** The score before it was capped for an incomplete invoice. */
+    composite_uncapped?: number;
   };
   review_reasons: string[];
   summary: { passed: number; failed: number; warnings: number; skipped: number };
@@ -480,6 +529,9 @@ export type SuggestionSource =
   | "reference_retail"      // invoice case cost vs the store's own unit retail
   | "pack_size"
   | "description"
+  | "printed_units"             // the invoice's own Units column ÷ its Cases
+  | "printed_units_and_pack"    // ... and the pack text, which agrees
+  | "conflict"                  // two printed sources disagree: nothing is prefilled
   | "description_ambiguous";
 
 export type NormalizedDescriptionSource =
@@ -692,6 +744,10 @@ export interface InvoiceDetail {
   discount_amount: number | null;
   deposit_total: number | null;
   fuel_surcharge: number | null;
+  /** Typed additional charges from the totals area; never tax, never merchandise. */
+  other_charges?: { kind: string; label: string | null; amount: number }[];
+  /** Critical checks failing now; the PDI export is blocked while any is listed. */
+  blocking_checks?: string[];
   /** Header fields a person replaced; the extracted value is in the history. */
   corrected_fields: string[];
   correction_history: CorrectionEntry[];
@@ -710,6 +766,11 @@ export interface InvoiceDetail {
    * should confirm with the user first (possible extraction inaccuracies). */
   pdi_export_requires_confirmation: boolean;
   pdi_export_blocked_reason: string | null;
+  /** True when pdi_export_allowed only because an administrator override covers the invoice as it stands;
+   * its critical checks (blocking_checks) still fail and its status is unchanged. */
+  pdi_export_overridden?: boolean;
+  /** The newest administrator export override (ACTIVE, STALE or REVOKED); MANAGER+ only, null if none. */
+  export_override?: ExportOverrideSummary | null;
   /** Units-per-case state per product. A row with mapped=false is why
    * pdi_export_allowed is false; confirming it unblocks the download. */
   /** The photos of a multi-photo intake, in order; empty for one file. */
@@ -992,7 +1053,7 @@ export interface HistoryRow {
    * (no invoice yet, store not yet assigned, or hidden for this role). MANAGER+ only. */
   mapping_required: number | null;
   /** 'ready' | 'needs_confirmation' | 'blocked', or null when not applicable. MANAGER+ only. */
-  edi_status: "ready" | "needs_confirmation" | "blocked" | null;
+  edi_status: "ready" | "needs_confirmation" | "blocked" | "overridden" | null;
   /** MANAGER+ only: Retailed status; null for USER and invoices without a store. */
   completion_status?: CompletionStatus | null;
   created_at: string;

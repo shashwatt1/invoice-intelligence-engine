@@ -61,6 +61,22 @@ class NormalizedLineItem(BaseModel):
     # True when Rule E replaced a quantity the invoice's own arithmetic
     # proved was corrupted (see reconciliation.py).
     quantity_reconciled: bool = False
+    # The row's printed Units figure and the pack-size heading it sits under (grouped layouts).
+    printed_units: int | None = None
+    section_label: str | None = None
+    # A reviewer decided a flagged cross-photo pair is two real rows ("separate_rows"): the completeness gate must
+    # not count it as an unmerged overlap again.
+    duplicate_resolved: bool = False
+
+
+class NormalizedCharge(BaseModel):
+    """A typed additional charge from the totals area (never tax, never merchandise)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: str                                # see ExtractedCharge.kind
+    label: str | None = None
+    amount: Decimal                          # 2 dp, positive
 
 
 class NormalizedInvoice(BaseModel):
@@ -87,6 +103,13 @@ class NormalizedInvoice(BaseModel):
     deposit_total: Decimal | None = None     # 2 dp — container deposits, positive
     fuel_surcharge: Decimal | None = None    # 2 dp — delivery/fuel fee, positive
     grand_total: Decimal | None = None       # 2 dp
+    # Typed additional charges (state container deposits, other jurisdiction charges, ...). They sit outside
+    # the merchandise subtotal and inside the amount payable.
+    other_charges: tuple[NormalizedCharge, ...] = ()
+
+    @property
+    def other_charges_total(self) -> Decimal:
+        return sum((c.amount for c in self.other_charges), Decimal("0.00"))
 
     line_items: tuple[NormalizedLineItem, ...] = ()
     ai_confidence: float | None = None       # model's self-reported confidence

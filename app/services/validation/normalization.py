@@ -27,7 +27,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.schemas.extraction import ExtractedInvoice, ExtractedLineItem
-from app.schemas.normalized import NormalizedInvoice, NormalizedLineItem
+from app.schemas.normalized import NormalizedCharge, NormalizedInvoice, NormalizedLineItem
 from app.services.validation.report import CheckResult, CheckStatus
 
 MONEY_EXP = Decimal("0.01")      # 2 dp — NUMERIC(14,2) columns
@@ -165,7 +165,18 @@ def normalize_line_item(
         duplicate_reason=clean_text(getattr(item, "duplicate_reason", None)),
         unit_price_derived=unit_price_derived,
         line_total_derived=line_total_derived,
+        printed_units=getattr(item, "printed_units", None),
+        section_label=clean_text(getattr(item, "section_label", None)),
     )
+
+
+def _normalize_charges(extracted: ExtractedInvoice) -> tuple[NormalizedCharge, ...]:
+    charges = []
+    for charge in getattr(extracted, "other_charges", None) or []:
+        amount = to_decimal(abs(charge.amount))
+        if amount is not None and amount > 0:
+            charges.append(NormalizedCharge(kind=charge.kind, label=clean_text(charge.label), amount=amount))
+    return tuple(charges)
 
 
 def normalize_invoice(
@@ -229,6 +240,7 @@ def normalize_invoice(
         deposit_total=to_decimal(extracted.deposit_total),
         fuel_surcharge=to_decimal(extracted.fuel_surcharge),
         grand_total=to_decimal(extracted.grand_total),
+        other_charges=_normalize_charges(extracted),
         line_items=line_items,
         ai_confidence=extracted.confidence,
     )

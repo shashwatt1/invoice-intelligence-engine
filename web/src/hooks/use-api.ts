@@ -74,7 +74,9 @@ import {
   listStores,
   listUsers,
   listVendors,
+  grantExportOverride,
   markRetailed,
+  revokeExportOverride,
   moveDocumentToBin,
   approveReceipt,
   listPendingApprovals,
@@ -251,6 +253,21 @@ export function useRetailed(invoiceId: string) {
       void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
       void queryClient.invalidateQueries({ queryKey: ["inventory"] });
+    },
+  });
+}
+
+/** Grant or revoke the administrator export override. Either way the invoice and the list are re-read. */
+export function useExportOverride(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (action: { kind: "grant"; reason: string } | { kind: "revoke"; overrideId: string; reason: string }) =>
+      action.kind === "grant"
+        ? grantExportOverride(invoiceId, action.reason)
+        : revokeExportOverride(action.overrideId, action.reason),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
     },
   });
 }

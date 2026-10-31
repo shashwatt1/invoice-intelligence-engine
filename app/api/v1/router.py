@@ -18,6 +18,7 @@ from app.api.v1 import (
     auth,
     dashboard,
     documents,
+    export_overrides,
     exports,
     health,
     inventory,
@@ -49,6 +50,7 @@ api_router.include_router(upload.router, prefix="")
 api_router.include_router(invoices.router, prefix="")
 api_router.include_router(invoice_workflow.router, prefix="")
 api_router.include_router(exports.router, prefix="")
+api_router.include_router(export_overrides.router, prefix="")
 api_router.include_router(documents.router, prefix="")
 api_router.include_router(recycle_bin.router, prefix="")
 api_router.include_router(dashboard.router, prefix="")

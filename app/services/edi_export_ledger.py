@@ -44,8 +44,11 @@ async def _alembic_revision(session: AsyncSession) -> str | None:
 
 
 async def record_pdi_export(session: AsyncSession, invoice, content: str, resolution: CommercialResolution,
-                            user) -> EdiExport:
-    """Append the ledger row for one delivered PDI file. Flushed in the caller's transaction."""
+                            user, override=None) -> EdiExport:
+    """
+    Append the ledger row for one delivered PDI file. Flushed in the caller's transaction. `override` is the
+    admin export override the file was delivered under, if any (the invoice's critical checks were failing).
+    """
     raw = content.encode("utf-8")
     previous = (await session.execute(
         select(func.max(EdiExport.export_number)).where(EdiExport.invoice_id == invoice.id)
@@ -55,6 +58,7 @@ async def record_pdi_export(session: AsyncSession, invoice, content: str, resolu
         invoice_id=invoice.id, document_id=invoice.document_id, invoice_number=invoice.invoice_number,
         export_number=(previous or 0) + 1, format=FORMAT_PDI_FIXED_WIDTH, format_version=PDI_FORMAT_VERSION,
         exported_by_user_id=user.id, exported_by=user.username, exported_by_role=user.role,
+        export_override_id=override.id if override is not None else None,
         sha256=hashlib.sha256(raw).hexdigest(), byte_size=len(raw), content=content,
         resolution_snapshot=resolution_snapshot(resolution),
         build={

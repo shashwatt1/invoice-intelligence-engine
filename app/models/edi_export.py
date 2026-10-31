@@ -57,6 +57,11 @@ class EdiExport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         doc="git SHA, Alembic revision and resolution settings at export time.",
     )
 
+    export_override_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("export_overrides.id", ondelete="SET NULL"), nullable=True,
+        doc="Set when the file was delivered under an ADMIN export override (critical checks were failing).",
+    )
+
     __table_args__ = (
         UniqueConstraint("invoice_id", "export_number", name="uq_edi_exports_invoice_number"),
         Index("idx_edi_exports_invoice", "invoice_id"),

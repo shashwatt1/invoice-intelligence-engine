@@ -242,6 +242,20 @@ class ExtractedLineItem(BaseModel):
         default=None,
         description="Your confidence that this row was read correctly, 0.0 to 1.0.",
     )
+    printed_units: int | None = Field(
+        default=None, ge=0,
+        description=(
+            "The row's printed UNITS figure (the 'Units' column: how many single units the quantity of "
+            "cases amounts to, e.g. 12 for one case of twelve). Null when the document has no such column."
+        ),
+    )
+    section_label: str | None = Field(
+        default=None, max_length=64,
+        description=(
+            "The pack-size heading the row is printed under on grouped layouts (for example "
+            "'20OZ PL 1/24S'), exactly as printed. Null when the document has no section headings."
+        ),
+    )
     source_pages: list[int] = Field(
         default_factory=list,
         description=(
@@ -264,6 +278,31 @@ class ExtractedLineItem(BaseModel):
         default=None,
         description="Why possible_duplicate_of could not be decided (what agrees, what differs).",
     )
+
+
+ChargeKind = Literal[
+    "state_container_deposit",   # a government-mandated container deposit ("NY St Deposit @ .05")
+    "jurisdiction_charge",       # another state/local charge that is neither sales tax nor a deposit
+    "delivery",
+    "fuel",
+    "service",
+    "other",
+]
+
+
+class ExtractedCharge(BaseModel):
+    """One additional charge printed in the totals area, typed — never folded into tax or deposit."""
+
+    kind: ChargeKind = Field(
+        description=(
+            "state_container_deposit for a container deposit mandated by a state or locality (a "
+            "'State/Local Charges' block listing 'NY St Deposit @ .05' is this); jurisdiction_charge for "
+            "any other state or local charge that is not sales tax; delivery, fuel or service for those; "
+            "other when none fits. Never use this for sales tax."
+        )
+    )
+    label: str | None = Field(default=None, max_length=120, description="The charge as printed.")
+    amount: float = Field(description="The charge's amount as a POSITIVE number.")
 
 
 class ExtractedInvoice(BaseModel):
@@ -326,6 +365,16 @@ class ExtractedInvoice(BaseModel):
             "If the same charge is printed as a row of the item table, report it "
             "there as a line item with line_type 'charge' as well; the two are "
             "reconciled deterministically downstream."
+        ),
+    )
+    other_charges: list[ExtractedCharge] = Field(
+        default_factory=list,
+        description=(
+            "Additional charges printed in the totals area that are not sales tax: e.g. a 'State/Local "
+            "Charges' amount (kind state_container_deposit or jurisdiction_charge). One entry per printed "
+            "charge amount. They are NOT part of the merchandise subtotal and are added to it, with tax, "
+            "to reach the invoice total. Leave empty when none is printed. A charge already reported as "
+            "deposit_total or fuel_surcharge must not be repeated here."
         ),
     )
     grand_total: float | None = Field(

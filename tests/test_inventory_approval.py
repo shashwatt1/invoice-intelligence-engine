@@ -664,9 +664,10 @@ class TestTheMigration:
         assert revisions["0036"] == "0035"          # store inventory baselines, on top of 0035
         assert revisions["0037"] == "0036"          # recycle bin, on top of 0036
         assert revisions["0038"] == "0037"          # shared mappings + vendor item crosswalk
+        assert revisions["0039"] == "0038"          # typed other charges + printed units
         heads = set(revisions) - {d for d in revisions.values() if d}
         # 0025 is an unreleased branch off 0024, re-parented when released (see 0033's docstring).
-        assert heads - {"0025"} == {"0038"}, heads
+        assert heads - {"0025"} == {"0039"}, heads
 
     def test_the_database_checks_are_exactly_the_models(self):
         m0035 = _load(MIGRATION)

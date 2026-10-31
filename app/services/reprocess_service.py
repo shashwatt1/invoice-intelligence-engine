@@ -57,7 +57,8 @@ from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.repositories.vendor_repository import VendorRepository
 from app.services.document_lifecycle import document_status_for, ensure_document_operable
 from app.services.inventory_service import ensure_invoice_changeable
-from app.services.photo_context import PhotoOCR, combine_photos
+from app.services.photo_context import PhotoOCR
+from app.services.photo_order import combine_in_detected_order
 from app.services.storage_service import get_storage_service
 
 logger = get_logger(__name__)
@@ -193,11 +194,11 @@ async def reprocess_document(
             content = await storage.read(file_path)
             result = await pipeline.extraction.extract_text(content, mime_type, filename)
             photos.append(PhotoOCR(page_number=page_number, filename=filename, result=result))
-        ocr_result = combine_photos(photos)
+        ocr_result, _order = combine_in_detected_order(photos)
 
         structuring = await pipeline.structuring.structure_invoice(ocr_result, document.filename)
         validation = pipeline.validation.validate_invoice(
-            structuring.invoice, ocr_result.mean_confidence, document.filename
+            structuring.invoice, ocr_result.mean_confidence, document.filename, ocr_text=ocr_result.full_text
         )
     except Exception as exc:
         # The attempt is recorded in its own transaction so a failure is
@@ -269,6 +270,7 @@ async def reprocess_document(
         composite_confidence=validation.report.confidence.composite,
         extraction_model=structuring.metadata.model,
         raw_extraction_json=structuring.raw_response,
+        blocking_checks=validation.report.blocking_check_names(),
     )
     if settled.discrepancy is not None:
         observed = settled.discrepancy["observed_vendor_name"] or "no vendor"

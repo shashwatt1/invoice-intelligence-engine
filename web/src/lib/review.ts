@@ -7,8 +7,10 @@ export function reviewHeadline(review: InvoiceReviewSummary): string {
       return "No master-data review raised";
     case "PENDING":
       return `${review.pending} item${review.pending === 1 ? "" : "s"} pending review`;
-    case "APPROVED":
-      return `${review.approved} item${review.approved === 1 ? "" : "s"} approved${review.rejected ? `, ${review.rejected} superseded or rejected` : ""}`;
+    case "APPROVED": {
+      const gap = review.approved_not_applied ?? 0;
+      return `${review.approved} item${review.approved === 1 ? "" : "s"} approved${gap ? ` · ${gap} not applied (no mapping)` : ""}${review.rejected ? `, ${review.rejected} superseded or rejected` : ""}`;
+    }
     case "REJECTED":
       return `${review.rejected} item${review.rejected === 1 ? "" : "s"} rejected`;
   }
