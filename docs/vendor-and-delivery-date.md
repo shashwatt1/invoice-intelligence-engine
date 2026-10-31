@@ -19,7 +19,9 @@ Neither replaces what the document prints. The vendor and the dates read from th
 | Approval | A MANAGER or ADMIN approves (creates the vendor, or adopts the unconfirmed row the invoice's printed vendor already created), or names the existing vendor the request duplicates, or rejects with a reason. Every waiting invoice then has the approved vendor, as a person's choice, and is revalidated. |
 | Reprocessing | A vendor a person chose is never replaced by what the document prints on reprocess. |
 | After upload | A MANAGER or ADMIN can set the delivery date or the vendor on the invoice (`PATCH /invoices/{id}/delivery-date`, `/vendor`). Changes are kept in the correction history. |
-| Lock | Both are locked (409, same as every other correction) while a POSTED inventory receipt holds the invoice. Reverse the receipt first. |
+| Changeable until Retailed | The vendor, the delivery date **and the store** can be set (if unset) or changed on an invoice until it is marked Retailed — by a MANAGER or ADMIN, before and after the invoice is VALIDATED, while the line maths and checks are still being worked out. Once Retailed (even if it later needs re-verifying) they are refused with 409 `ERR_INVOICE_RETAILED`; reopen the Retailed mark first. They are also refused while a POSTED receipt holds the invoice (reverse the receipt first). |
+| Invoices already processed | Nothing is forced on them. Their vendor stays as the document read it and they have no delivery date; the vendor and date are set on the invoice itself (the card above the line items, or the "Set the vendor and delivery date" button beside Mark Retailed), and only Mark Retailed waits for them. |
+| Moving an invoice to another store | `POST /invoices/{id}/change-store`. The store is replaced on the invoice and its document, and the new store's case mappings and review queue apply from then on. Refused while product proposals made from the invoice are still PENDING (decide them in Master Data Review first). Decided proposals stay as history at the store they were made for, and mappings they applied stay with that store. Export files already generated carry the old store and must be generated again (the response and the screen say how many). Not a physical store, or the same store: refused. |
 | Receipt | The receipt approval dialog starts with the declared delivery date. The approver may enter another day; it is allowed, posts as entered, and is logged as `receipt_date_differs_from_declared_delivery`. |
 
 ## API
@@ -28,7 +30,7 @@ Neither replaces what the document prints. The vendor and the dates read from th
 * `GET /vendors/options?store_id=` — the picker: names only, vendors that last supplied that store first, then confirmed, then by name. Any authenticated account.
 * `POST /vendors` `{name}` — MANAGER/ADMIN.
 * `POST /vendor-requests` `{name}` — any account. `GET /vendor-requests` — MANAGER/ADMIN. `POST /vendor-requests/{id}/approve` `{existing_vendor_id?, note?}` and `/reject` `{note}` — MANAGER/ADMIN.
-* `PATCH /invoices/{id}/delivery-date` `{delivery_date, note?}` and `PATCH /invoices/{id}/vendor` `{vendor_id | vendor_request_id, note?}` — MANAGER/ADMIN.
+* `PATCH /invoices/{id}/delivery-date` `{delivery_date, note?}`, `PATCH /invoices/{id}/vendor` `{vendor_id | vendor_request_id, note?}` and `POST /invoices/{id}/change-store` `{store_id, note?}` — MANAGER/ADMIN, until Retailed.
 * Invoice detail gains `vendor_source` (`extracted`, `operator`, `requested`), `delivery_date`, `vendor_request`, `declarations_missing`, `vendor_mismatch` (all roles). The receipt preview gains `declared_delivery_date`.
 
 ## Data

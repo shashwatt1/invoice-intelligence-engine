@@ -1047,7 +1047,7 @@ export function InvoiceDetailPage() {
                 <DownloadPdiButton invoiceId={data.invoice_id} allowed={data.pdi_export_allowed}
                                    requiresConfirmation={data.pdi_export_requires_confirmation}
                                    blockedReason={data.pdi_export_blocked_reason} />
-                {isInactive(data.document_status) ? null : <RetailedControl invoiceId={data.invoice_id} completion={data.completion} />}
+                {isInactive(data.document_status) ? null : <RetailedControl invoiceId={data.invoice_id} completion={data.completion} declarationsMissing={data.declarations_missing} />}
                 {isAdmin ? <DeleteInvoiceButton invoiceId={data.invoice_id} /> : null}
               </>
             }

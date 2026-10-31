@@ -1790,3 +1790,14 @@ export interface InvoiceDeclarationResult {
   /** What still has to be declared before Retailed, if anything. */
   retailed_blocker: string | null;
 }
+
+export interface StoreChangeResult {
+  store_id: string;
+  store_label: string;
+  previous_store_id: string | null;
+  previous_store_label: string | null;
+  /** Approved/rejected proposals made from this invoice; they stay as history at the old store. */
+  decided_proposals_left_at_old_store: number;
+  /** Export files already generated for this invoice; they carry the old store. */
+  export_files_for_old_store: number;
+}

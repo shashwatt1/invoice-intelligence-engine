@@ -124,6 +124,25 @@ describe("Retailed control", () => {
     expect(screen.getByTestId("retailed-reason")).toHaveTextContent("No delivered PDI file is recorded");
   });
 
+  it("offers the way to the vendor and delivery date when those are what Retailed waits for", async () => {
+    const user = userEvent.setup();
+    const scrollIntoView = vi.fn();
+    const target = document.createElement("section");
+    target.id = "declarations";
+    target.scrollIntoView = scrollIntoView;
+    document.body.appendChild(target);
+    wrap(<tr><td><RetailedControl invoiceId="i" completion={completion({ reason: "Before this invoice can be marked Retailed: set the delivery date." })}
+                                  declarationsMissing="Before this invoice can be marked Retailed: set the delivery date." /></td></tr>);
+    await user.click(screen.getByTestId("retailed-set-declarations"));
+    expect(scrollIntoView).toHaveBeenCalled();
+    target.remove();
+  });
+
+  it("does not offer it when nothing is missing, when already Retailed, or to a USER", () => {
+    wrap(<tr><td><RetailedControl invoiceId="i" completion={completion()} declarationsMissing={null} /></td></tr>);
+    expect(screen.queryByTestId("retailed-set-declarations")).toBeNull();
+  });
+
   it("marks when the server says it can, after reminding what the person attests", async () => {
     const user = userEvent.setup();
     wrap(<tr><td><RetailedControl invoiceId="inv-1" completion={completion({ can_mark: true, latest_export_number: 1 })} /></td></tr>);

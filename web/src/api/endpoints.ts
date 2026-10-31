@@ -14,6 +14,7 @@ import type {
   RestoreResult,
   ApiEnvelope,
   InvoiceDeclarationResult,
+  StoreChangeResult,
   UploadDeclarations,
   VendorOption,
   VendorRequest,
@@ -917,6 +918,19 @@ export async function chooseInvoiceVendor(
     vendor_id: choice.vendorId ?? null,
     vendor_request_id: choice.vendorRequestId ?? null,
     note: choice.note ?? null,
+  });
+  return data.data!;
+}
+
+/** MANAGER/ADMIN: move an invoice to another physical store, until it is marked Retailed. */
+export async function changeInvoiceStore(
+  invoiceId: string,
+  storeId: string,
+  note?: string | null,
+): Promise<StoreChangeResult> {
+  const { data } = await apiClient.post<ApiEnvelope<StoreChangeResult>>(`/invoices/${invoiceId}/change-store`, {
+    store_id: storeId,
+    note: note ?? null,
   });
   return data.data!;
 }

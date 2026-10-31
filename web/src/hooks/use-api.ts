@@ -14,6 +14,7 @@ import {
   addVendor,
   approveVendorRequest,
   cancelDeletionRequest,
+  changeInvoiceStore,
   chooseInvoiceVendor,
   listVendorOptions,
   listVendorRequests,
@@ -1139,5 +1140,20 @@ export function useChooseInvoiceVendor(invoiceId: string) {
     mutationFn: (choice: { vendorId?: string | null; vendorRequestId?: string | null; note?: string | null }) =>
       chooseInvoiceVendor(invoiceId, choice),
     onSettled: () => refreshInvoice(queryClient, invoiceId),
+  });
+}
+
+export function useChangeInvoiceStore(invoiceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ storeId, note }: { storeId: string; note?: string | null }) =>
+      changeInvoiceStore(invoiceId, storeId, note),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      void queryClient.invalidateQueries({ queryKey: ["stores"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["proposals"] });
+    },
   });
 }

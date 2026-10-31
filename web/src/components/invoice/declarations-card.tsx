@@ -1,4 +1,4 @@
-import { CalendarDays, Clock, TriangleAlert, Truck } from "lucide-react";
+import { CalendarDays, Clock, Lock, Store, TriangleAlert, Truck } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -7,10 +7,13 @@ import type { InvoiceDetail } from "@/api/types";
 import { VendorPicker, type VendorChoice } from "@/components/processing/vendor-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useChooseInvoiceVendor, useSetDeliveryDate } from "@/hooks/use-api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { StoreChip } from "@/components/shared/store-chip";
+import { useChangeInvoiceStore, useChooseInvoiceVendor, useSetDeliveryDate, useStores } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { formatPlainDate } from "@/lib/format";
 import { todayIso } from "@/lib/inventory";
+import { physicalStores } from "@/lib/stores";
 import { plainDate } from "@/lib/vendors";
 
 /** Why a change was refused, in the server's own words (a POSTED receipt, a future date, ...). */
@@ -20,9 +23,11 @@ function why(error: unknown): string {
 }
 
 /**
- * The two things a person declares about an invoice rather than reading off the document: the vendor it belongs to and
- * the day its goods arrived. Both are asked at upload; whoever missed them, and a manager correcting them, sets them
- * here. Mark Retailed waits for both. They lock once a receipt is POSTED (reverse the receipt first).
+ * What a person declares about an invoice rather than reads off the document: the store it was received at, the vendor it
+ * belongs to and the day its goods arrived. The vendor and the day are asked at upload; whoever missed them, and a manager
+ * correcting any of the three, sets them here. All three stay changeable until the invoice is marked Retailed (the person's
+ * attestation that it is right); after that, reopen the mark first. Mark Retailed waits for the vendor and the day. They also
+ * lock while a receipt is POSTED (reverse the receipt first).
  *
  * A vendor the document prints differently from the one chosen is shown here in plain words, for every role: the choice
  * stands, a person decides which is right.
@@ -36,6 +41,14 @@ export function DeclarationsCard({ detail }: { detail: InvoiceDetail }) {
   const [dateText, setDateText] = useState("");
   const [changingVendor, setChangingVendor] = useState(false);
   const [vendorPick, setVendorPick] = useState<VendorChoice | null>(null);
+  const changeStore = useChangeInvoiceStore(detail.invoice_id);
+  const stores = useStores();
+  const [changingStore, setChangingStore] = useState(false);
+  const [newStore, setNewStore] = useState("");
+  // Marked Retailed (even if it needs re-verifying): the declarations are fixed until the mark is reopened.
+  const retailed = detail.completion?.status === "retailed" || detail.completion?.status === "retailed_stale";
+  const editable = canEdit && !retailed;
+  const otherStores = physicalStores(stores.data).filter((s) => s.id !== detail.store?.id);
 
   const typed = dateText.trim() ? plainDate(dateText) : null;
   const waiting = detail.vendor_source === "requested";
@@ -52,6 +65,25 @@ export function DeclarationsCard({ detail }: { detail: InvoiceDetail }) {
         toast.success(`Delivery date set to ${formatPlainDate(typed)}.`);
       },
       onError: (error) => toast.error(why(error), { duration: 10_000 }),
+    });
+  };
+
+  const saveStore = () => {
+    if (!newStore) return;
+    changeStore.mutate({ storeId: newStore }, {
+      onSuccess: (moved) => {
+        setChangingStore(false);
+        setNewStore("");
+        toast.success(`Moved to ${moved.store_label}.`);
+        if (moved.export_files_for_old_store > 0) {
+          toast.warning(
+            `${moved.export_files_for_old_store} export file${moved.export_files_for_old_store === 1 ? " was" : "s were"} ` +
+              `already generated for ${moved.previous_store_label ?? "the old store"}. Generate it again for the new store.`,
+            { duration: 15_000 },
+          );
+        }
+      },
+      onError: (error) => toast.error(why(error), { duration: 12_000 }),
     });
   };
 
@@ -75,8 +107,46 @@ export function DeclarationsCard({ detail }: { detail: InvoiceDetail }) {
   };
 
   return (
-    <section className="surface space-y-3 px-5 py-4" aria-label="Vendor and delivery date" data-testid="declarations">
-      <div className="grid grid-cols-2 gap-x-8 gap-y-3 max-md:grid-cols-1">
+    <section id="declarations" className="surface space-y-3 px-5 py-4" aria-label="Store, vendor and delivery date" data-testid="declarations">
+      {retailed ? (
+        <p className="flex items-center gap-2 text-[0.78rem] text-muted-foreground" data-testid="declarations-locked">
+          <Lock className="size-3.5 shrink-0" aria-hidden />
+          Marked Retailed{detail.completion?.retailed_by ? ` by ${detail.completion.retailed_by}` : ""}. Reopen it to change the
+          store, vendor or delivery date.
+        </p>
+      ) : null}
+      <div className="grid grid-cols-3 gap-x-8 gap-y-3 max-lg:grid-cols-2 max-md:grid-cols-1">
+        {detail.store ? (
+          <div>
+            <div className="t-eyebrow flex items-center gap-1.5"><Store className="size-3.5" aria-hidden /> Store</div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.85rem]">
+              <span data-testid="declared-store"><StoreChip store={detail.store} link={false} /></span>
+              {editable && !changingStore ? (
+                <Button type="button" variant="ghost" size="sm" className="h-6 px-2" onClick={() => setChangingStore(true)}>
+                  Change
+                </Button>
+              ) : null}
+            </div>
+            {changingStore ? (
+              <div className="mt-2 max-w-xs space-y-2">
+                <Select value={newStore} onValueChange={setNewStore}>
+                  <SelectTrigger aria-label="New store"><SelectValue placeholder="Choose the correct store" /></SelectTrigger>
+                  <SelectContent>
+                    {otherStores.map((s) => <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <p className="text-[0.72rem] text-muted-foreground">
+                  The new store's mappings and review queue apply from now on. Proposals made from this invoice must be
+                  decided first; export files already generated have to be generated again.
+                </p>
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" disabled={!newStore || changeStore.isPending} onClick={saveStore}>Move invoice</Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => { setChangingStore(false); setNewStore(""); }}>Cancel</Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div>
           <div className="t-eyebrow flex items-center gap-1.5"><Truck className="size-3.5" aria-hidden /> Vendor</div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.85rem]">
@@ -89,7 +159,7 @@ export function DeclarationsCard({ detail }: { detail: InvoiceDetail }) {
                   ? "chosen from the vendor list"
                   : "read from the document, not yet chosen from the list"}
             </span>
-            {canEdit && !changingVendor ? (
+            {editable && !changingVendor ? (
               <Button type="button" variant="ghost" size="sm" className="h-6 px-2" onClick={() => setChangingVendor(true)}>
                 {chosenByPerson ? "Change" : "Choose"}
               </Button>
@@ -112,7 +182,7 @@ export function DeclarationsCard({ detail }: { detail: InvoiceDetail }) {
               {detail.delivery_date ? formatPlainDate(detail.delivery_date) : "Not set"}
             </span>
             <span className="text-[0.72rem] text-muted-foreground">the day the goods arrived</span>
-            {canEdit && !editingDate ? (
+            {editable && !editingDate ? (
               <Button
                 type="button" variant="ghost" size="sm" className="h-6 px-2"
                 onClick={() => { setDateText(detail.delivery_date ?? ""); setEditingDate(true); }}
