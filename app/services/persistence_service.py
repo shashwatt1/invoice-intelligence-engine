@@ -75,7 +75,7 @@ class PersistenceService:
         # A vendor a person chose at upload is the invoice's vendor; the printed wording stays on the invoice as
         # provenance and is only compared with it (VENDOR_MATCHES_CHECK). Otherwise the vendor is what extraction read,
         # marked 'requested' when a USER asked for a vendor a manager has not yet approved.
-        vendor = await vendors.get(document.chosen_vendor_id) if document.chosen_vendor_id else None
+        vendor = await vendors.resolve(await vendors.get(document.chosen_vendor_id)) if document.chosen_vendor_id else None
         if vendor is not None:
             vendor_created, vendor_source = False, SOURCE_OPERATOR
         else:

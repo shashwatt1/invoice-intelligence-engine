@@ -55,6 +55,7 @@ from app.models.processing_log import LogStatus, PipelineStage
 from app.models.vendor import Vendor
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
+from app.repositories.vendor_repository import resolve_vendor
 from app.services.document_lifecycle import ensure_document_active
 from app.services.extraction_service import ExtractionService
 from app.services.ocr.base import OCRResult
@@ -578,7 +579,7 @@ class InvoiceProcessingPipeline:
 
         # ---- Validation -----------------------------------------------------
         expected_vendor = ExpectedVendor.of(
-            await session.get(Vendor, document.chosen_vendor_id) if document.chosen_vendor_id else None)
+            await resolve_vendor(session, await session.get(Vendor, document.chosen_vendor_id)) if document.chosen_vendor_id else None)
         validation = self.validation.validate_invoice(
             structuring.invoice, ocr_result.mean_confidence, filename, ocr_text=ocr_result.full_text,
             expected_vendor=expected_vendor,

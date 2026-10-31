@@ -32,6 +32,7 @@ from app.models.vendor_request import (
     REQUEST_REJECTED,
     VendorRequest,
 )
+from app.repositories.vendor_repository import resolve_vendor
 from app.services import vendor_identity_service
 from app.services.vendor_matching import names_match, normalize_vendor_name
 
@@ -51,7 +52,7 @@ def clean_name(name: str | None) -> str:
 
 async def existing_vendor_named(session: AsyncSession, name: str) -> Vendor | None:
     """A vendor already listed under this name (or a spelling that matches it), if any."""
-    for vendor in (await session.execute(select(Vendor))).scalars().all():
+    for vendor in (await session.execute(select(Vendor).where(Vendor.merged_into_id.is_(None)))).scalars().all():
         if names_match(name, vendor.display_name) or names_match(name, vendor.name):
             return vendor
     return None
@@ -138,7 +139,7 @@ async def approve_request(session: AsyncSession, request_id: uuid.UUID, user: Us
                                     detail={"required_role": UserRole.MANAGER.value, "actual_role": user.role})
     request = await _locked_pending(session, request_id)
     if existing_vendor_id is not None:
-        vendor = await session.get(Vendor, existing_vendor_id)
+        vendor = await resolve_vendor(session, await session.get(Vendor, existing_vendor_id))
         if vendor is None:
             raise RecordNotFoundError(message="Vendor not found.", detail={"vendor_id": str(existing_vendor_id)})
     else:

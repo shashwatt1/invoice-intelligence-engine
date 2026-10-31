@@ -53,6 +53,7 @@ from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
 from app.repositories.product_data_proposal_repository import ProductDataProposalRepository
 from app.repositories.store_repository import StoreRepository
+from app.repositories.vendor_repository import resolve_vendor
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import (
     CaseMappingRequest,
@@ -1410,7 +1411,7 @@ async def choose_vendor(
     ensure_document_operable(invoice.document, "choose_vendor")
     ensure_not_retailed(invoice, "choose_vendor")
     if payload.vendor_id is not None:
-        vendor = await db.get(Vendor, payload.vendor_id)
+        vendor = await resolve_vendor(db, await db.get(Vendor, payload.vendor_id))     # a merged-away vendor is the one that stays
         if vendor is None:
             raise RecordNotFoundError(message="That vendor is not in the vendor list.", detail={"vendor_id": str(payload.vendor_id)})
         await repository.set_vendor(invoice, vendor, source=SOURCE_OPERATOR, by=user.username, note=payload.note)

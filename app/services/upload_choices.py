@@ -23,6 +23,7 @@ from app.core.exceptions import ValidationError
 from app.models.user import UserRole
 from app.models.vendor import Vendor
 from app.models.vendor_request import REQUEST_APPROVED, REQUEST_PENDING, VendorRequest
+from app.repositories.vendor_repository import resolve_vendor
 
 EARLIEST_DELIVERY = date(2000, 1, 1)
 
@@ -76,14 +77,19 @@ async def resolve_upload_choices(session: AsyncSession, role: str, *, vendor_id:
         if when is None:
             raise ValidationError(message="Enter the delivery date (the day the goods arrived) before processing the invoice.",
                                   detail={"field": "delivery_date", "reason": "required_for_role", "role": role})
-    if vendor is not None and await session.get(Vendor, vendor) is None:
-        raise ValidationError(message="That vendor is not in the vendor list.",
-                              detail={"field": "vendor_id", "reason": "unknown_vendor", "value": str(vendor)})
+    if vendor is not None:
+        # A vendor merged away since the picker was loaded is the vendor it was merged into.
+        chosen = await resolve_vendor(session, await session.get(Vendor, vendor))
+        if chosen is None:
+            raise ValidationError(message="That vendor is not in the vendor list.",
+                                  detail={"field": "vendor_id", "reason": "unknown_vendor", "value": str(vendor)})
+        vendor = chosen.id
     if request_id is not None:
         row = await session.get(VendorRequest, request_id)
         if row is None or row.status not in (REQUEST_PENDING, REQUEST_APPROVED):
             raise ValidationError(message="That vendor request is not open.",
                                   detail={"field": "vendor_request_id", "reason": "request_not_open"})
         if row.status == REQUEST_APPROVED and row.vendor_id is not None:      # approved meanwhile: it is the vendor now
-            return UploadChoices(vendor_id=row.vendor_id, delivery_date=when)
+            approved = await resolve_vendor(session, await session.get(Vendor, row.vendor_id))
+            return UploadChoices(vendor_id=approved.id if approved else row.vendor_id, delivery_date=when)
     return UploadChoices(vendor_id=vendor, vendor_request_id=request_id, delivery_date=when)
