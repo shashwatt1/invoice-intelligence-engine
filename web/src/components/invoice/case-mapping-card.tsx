@@ -146,6 +146,19 @@ export function Evidence({ row }: { row: CaseMappingRow }) {
       </span>
     );
   }
+  if (row.suggestion_source === "printed_units_and_pack") {
+    return <span className="text-muted-foreground">printed units ÷ cases, and pack “{row.pack_size ?? ""}”, agree</span>;
+  }
+  if (row.suggestion_source === "printed_units") {
+    return <span className="text-muted-foreground">printed units ÷ cases</span>;
+  }
+  if (row.suggestion_source === "conflict" && row.suggestion_candidates.length) {
+    return (
+      <span className="text-warning" data-testid="units-conflict">
+        printed units and pack text disagree: {row.suggestion_candidates.join(" or ")}. Check the document.
+      </span>
+    );
+  }
   if (row.suggestion_source === "pack_size") {
     return <span className="text-muted-foreground">pack size “{row.pack_size ?? ""}”</span>;
   }

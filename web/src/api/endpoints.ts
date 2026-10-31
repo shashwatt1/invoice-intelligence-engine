@@ -6,6 +6,7 @@
 import { apiClient, BULK_APPROVAL_PATH, PROCESS_TIMEOUT_MS } from "./client";
 import type {
   BinEntryStatus,
+  ExportOverrideRecord,
   DeletionRequest,
   DeletionRequestStatus,
   RecycleBinEntry,
@@ -290,6 +291,26 @@ export type ExportFormat = "json" | "txt" | "csv" | "pdi";
  * Content-Disposition attachment header). */
 export function invoiceExportUrl(invoiceId: string, format: ExportFormat): string {
   return `/api/v1/invoices/${invoiceId}/export?format=${format}`;
+}
+
+/** A labelled TXT/CSV copy for internal investigation. Available while the invoice is blocked from export;
+ * the file says REVIEW COPY inside and in its name, so it cannot be mistaken for an export. */
+export function invoiceReviewCopyUrl(invoiceId: string, format: "txt" | "csv"): string {
+  return `/api/v1/invoices/${invoiceId}/export?format=${format}&purpose=review`;
+}
+
+/** Allow this invoice, as it stands, to be exported although its critical checks fail. ADMIN; reason required. */
+export async function grantExportOverride(invoiceId: string, reason: string): Promise<ExportOverrideRecord> {
+  const { data } = await apiClient.post<ApiEnvelope<ExportOverrideRecord>>(
+    `/invoices/${invoiceId}/export-override`, { reason });
+  return data.data!;
+}
+
+/** Withdraw an export override. ADMIN; reason required. */
+export async function revokeExportOverride(overrideId: string, reason: string): Promise<ExportOverrideRecord> {
+  const { data } = await apiClient.post<ApiEnvelope<ExportOverrideRecord>>(
+    `/export-overrides/${overrideId}/revoke`, { reason });
+  return data.data!;
 }
 
 /** The final validated invoice object (post-validation, as persisted). */

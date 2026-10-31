@@ -75,7 +75,17 @@ export function InvoiceReviewCard({ invoiceId, review }: { invoiceId: string; re
                     {p.current_value === null || p.current_value === undefined ? "—" : String(p.current_value)}
                   </TableCell>
                   <TableCell className="text-right font-semibold tabular-nums">{String(p.proposed_value)}</TableCell>
-                  <TableCell><ProposalStatusBadge status={p.status} /></TableCell>
+                  <TableCell>
+                    <ProposalStatusBadge status={p.status} />
+                    {p.applied === "NOT_APPLIED" ? (
+                      <span className="ml-1.5 text-[0.7rem] font-medium text-warning" data-testid="not-applied"
+                            title="A reviewer approved this value, but the store holds no mapping with it now.">
+                        not applied
+                      </span>
+                    ) : p.applied === "SUPERSEDED" ? (
+                      <span className="ml-1.5 text-[0.7rem] text-muted-foreground" title="A later approval replaced it.">superseded</span>
+                    ) : null}
+                  </TableCell>
                   <TableCell className="text-[0.72rem] text-muted-foreground">
                     {p.reviewed_by ? (
                       <span title={p.review_note ?? undefined}>

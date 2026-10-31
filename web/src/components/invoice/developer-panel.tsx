@@ -89,6 +89,7 @@ export function DeveloperPanel({ detail }: { detail: InvoiceDetail }) {
                   pdiExportAllowed={detail.pdi_export_allowed}
                   pdiExportRequiresConfirmation={detail.pdi_export_requires_confirmation}
                   pdiExportBlockedReason={detail.pdi_export_blocked_reason}
+                  criticalBlocked={(detail.blocking_checks ?? []).length > 0 && !detail.pdi_export_overridden}
                   enabled={open}
                 />
               </TabsContent>

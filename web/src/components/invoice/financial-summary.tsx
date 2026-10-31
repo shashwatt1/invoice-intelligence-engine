@@ -2,6 +2,15 @@ import type { InvoiceDetail } from "@/api/types";
 import { EditableTotal } from "@/components/invoice/corrections";
 import { formatMoney } from "@/lib/format";
 
+const CHARGE_LABEL: Record<string, string> = {
+  state_container_deposit: "State container deposit",
+  jurisdiction_charge: "State/local charge",
+  delivery: "Delivery",
+  fuel: "Fuel",
+  service: "Service",
+  other: "Other charge",
+};
+
 /**
  * The invoice's money, kept as separate concepts: content, discount,
  * deposits, delivery/fuel, tax, and the grand total. The right-hand
@@ -34,6 +43,14 @@ export function FinancialSummary({
           <EditableTotal detail={detail} field="deposit_total" by={by} readOnly={readOnly} />
           <EditableTotal detail={detail} field="fuel_surcharge" by={by} readOnly={readOnly} />
           <EditableTotal detail={detail} field="tax_amount" by={by} readOnly={readOnly} />
+          {(detail.other_charges ?? []).map((c, i) => (
+            <div key={`${c.kind}-${i}`} className="flex items-baseline justify-between py-1 text-[0.85rem]" data-testid="other-charge">
+              <span className="text-muted-foreground" title="A typed additional charge: not tax, not merchandise.">
+                {c.label || CHARGE_LABEL[c.kind] || "Other charge"}
+              </span>
+              <span className="t-money">{formatMoney(c.amount)}</span>
+            </div>
+          ))}
           <div className="mt-2 border-t pt-2">
             <EditableTotal detail={detail} field="grand_total" by={by} emphasized readOnly={readOnly} />
           </div>
