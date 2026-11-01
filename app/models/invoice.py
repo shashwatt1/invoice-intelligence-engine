@@ -37,6 +37,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
+SOURCE_EXTRACTED = "extracted"
+SOURCE_OPERATOR = "operator"
+SOURCE_REQUESTED = "requested"
+
 
 class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """
@@ -74,6 +78,13 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=True,
         doc="Reference to the extracted vendor.",
     )
+
+    # Where the vendor came from: 'extracted' (the model's reading), 'operator' (chosen from the Vendor Master at upload or
+    # later by a person) or 'requested' (a USER asked for a vendor a manager has not yet approved). NULL on invoices
+    # stored before this existed; a person must choose the vendor before such an invoice can be marked Retailed.
+    vendor_source: Mapped[str | None] = mapped_column(String(16), nullable=True)  # see the SOURCE_* constants below
+    # The day the goods arrived (declared by a person; the receipt's own received_on is what posts to inventory).
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # Invoice header fields
     invoice_number: Mapped[str | None] = mapped_column(
@@ -193,6 +204,8 @@ class Invoice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     __table_args__ = (
+        CheckConstraint("vendor_source IS NULL OR vendor_source IN ('extracted', 'operator', 'requested')",
+                        name="ck_invoices_vendor_source"),
         Index("idx_invoices_document_id", "document_id"),
         Index("idx_invoices_vendor_id", "vendor_id"),
         Index("idx_invoices_status", "status"),

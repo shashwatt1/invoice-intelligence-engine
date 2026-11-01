@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ValidationError
 from app.core.logging import get_logger
 from app.models.document import Document
-from app.models.invoice import Invoice
+from app.models.invoice import SOURCE_OPERATOR, SOURCE_REQUESTED, Invoice
 from app.models.processing_log import LogStatus, PipelineStage, ProcessingLog
 from app.models.vendor import VENDOR_CONFIRMED, Vendor
 from app.repositories.document_repository import DocumentRepository
@@ -59,6 +59,7 @@ from app.services.document_lifecycle import document_status_for, ensure_document
 from app.services.inventory_service import ensure_invoice_changeable
 from app.services.photo_context import PhotoOCR
 from app.services.photo_order import combine_in_detected_order
+from app.services.revalidation_service import expected_vendor_of
 from app.services.storage_service import get_storage_service
 
 logger = get_logger(__name__)
@@ -115,6 +116,10 @@ async def settle_reprocess_vendor(session: AsyncSession, invoice: Invoice, norma
     """
     vendors = VendorRepository(session)
     current = await session.get(Vendor, invoice.vendor_id) if invoice.vendor_id else None
+    if current is not None and getattr(invoice, "vendor_source", None) in (SOURCE_OPERATOR, SOURCE_REQUESTED):
+        # A vendor a person chose (or asked for) at upload is theirs: a new reading never replaces it. The mismatch check
+        # compares the new reading with it, so a disagreement is a review reason, not a silent change.
+        return VendorSettlement(current.id)
     if current is not None and current.identity_status == VENDOR_CONFIRMED:
         observed = await vendors.find_existing(normalized)
         if observed is not None and observed.id == current.id:
@@ -198,7 +203,8 @@ async def reprocess_document(
 
         structuring = await pipeline.structuring.structure_invoice(ocr_result, document.filename)
         validation = pipeline.validation.validate_invoice(
-            structuring.invoice, ocr_result.mean_confidence, document.filename, ocr_text=ocr_result.full_text
+            structuring.invoice, ocr_result.mean_confidence, document.filename, ocr_text=ocr_result.full_text,
+            expected_vendor=expected_vendor_of(invoice),
         )
     except Exception as exc:
         # The attempt is recorded in its own transaction so a failure is

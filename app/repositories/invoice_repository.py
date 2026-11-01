@@ -44,12 +44,16 @@ class InvoiceRepository:
         extraction_model: str | None,
         raw_extraction_json: dict[str, Any] | None,
         blocking_checks: list[str] | None = None,
+        vendor_source: str | None = None,
+        delivery_date: date | None = None,
     ) -> Invoice:
         """Persist the invoice header and all line items (flush, no commit)."""
         invoice = Invoice(
             document_id=document_id,
             store_id=store_id,
             vendor_id=vendor_id,
+            vendor_source=vendor_source,
+            delivery_date=delivery_date,
             invoice_number=normalized.invoice_number,
             invoice_date=normalized.invoice_date,
             due_date=normalized.due_date,
@@ -219,6 +223,26 @@ class InvoiceRepository:
         invoice.invoice_date = value
         invoice.corrected_fields = sorted(set(invoice.corrected_fields or []) | {"invoice_date"})
         invoice.correction_history = history
+        await self._session.flush()
+        return invoice
+
+    async def set_delivery_date(self, invoice: Invoice, value: date, *, by: str | None, note: str | None) -> Invoice:
+        """
+        Record the day the goods arrived. The change goes into the correction history but not into `corrected_fields`:
+        a delivery date is declared, not extracted, so it never blocks a reprocess the way a corrected figure does.
+        """
+        invoice.correction_history = [*(invoice.correction_history or []),
+                                      self._entry("delivery_date", invoice.delivery_date, value, by, note)]
+        invoice.delivery_date = value
+        await self._session.flush()
+        return invoice
+
+    async def set_vendor(self, invoice: Invoice, vendor: Any, *, source: str, by: str | None, note: str | None) -> Invoice:
+        """Point the invoice at a vendor a person chose (history only, like the delivery date)."""
+        old = invoice.vendor.label if getattr(invoice, "vendor", None) is not None else None
+        invoice.correction_history = [*(invoice.correction_history or []),
+                                      self._entry("vendor", old, getattr(vendor, "label", None), by, note)]
+        invoice.vendor_id, invoice.vendor_source = vendor.id, source
         await self._session.flush()
         return invoice
 

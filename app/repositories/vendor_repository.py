@@ -34,9 +34,24 @@ from app.repositories.document_repository import document_is_active
 from app.schemas.normalized import NormalizedInvoice
 
 
+async def resolve_vendor(session: AsyncSession, vendor: Vendor | None) -> Vendor | None:
+    """
+    The vendor that stays: `vendor` itself, or the one it was merged into. A merged-away duplicate is a tombstone and is never
+    used; merges never chain (the merge refuses a vendor that was itself merged away), the bound is only a guard.
+    """
+    hops = 0
+    while vendor is not None and vendor.merged_into_id is not None and hops < 5:
+        vendor = await session.get(Vendor, vendor.merged_into_id)
+        hops += 1
+    return vendor
+
+
 class VendorRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def resolve(self, vendor: Vendor | None) -> Vendor | None:
+        return await resolve_vendor(self._session, vendor)
 
     async def get_or_create(self, invoice: NormalizedInvoice) -> tuple[Vendor | None, bool]:
         """
@@ -90,8 +105,9 @@ class VendorRepository:
                 .where(Vendor.name == name, Vendor.tax_id.is_(None))
                 .limit(1)
             )
-        result = await self._session.execute(query)
-        return result.scalar_one_or_none()
+        result = await self._session.execute(query.order_by(Vendor.merged_into_id.is_not(None), Vendor.created_at))
+        # A vendor that was merged away resolves to the vendor that stays: an old spelling never recreates the duplicate.
+        return await self.resolve(result.scalars().first())
 
     @staticmethod
     def _fill_missing_contact_fields(vendor: Vendor, invoice: NormalizedInvoice) -> None:
@@ -105,7 +121,7 @@ class VendorRepository:
 
     # ---- Vendor Master reads (governance; never called by the pipeline) ----
     def _filtered(self, *, identity_status: str | None, search: str | None):
-        query = select(Vendor)
+        query = select(Vendor).where(Vendor.merged_into_id.is_(None))      # merged-away duplicates are not listed
         if identity_status:
             query = query.where(Vendor.identity_status == identity_status)
         if search:
@@ -168,6 +184,7 @@ class VendorRepository:
     async def confirmed_with_name(self, display_name: str, *, excluding: uuid.UUID) -> Vendor | None:
         """Another confirmed vendor already holding this canonical name (case-insensitive)."""
         query = (select(Vendor).where(Vendor.identity_status == VENDOR_CONFIRMED, Vendor.id != excluding,
+                                      Vendor.merged_into_id.is_(None),
                                       func.lower(Vendor.display_name) == display_name.lower()).limit(1))
         return (await self._session.execute(query)).scalar_one_or_none()
 
@@ -192,3 +209,19 @@ class VendorRepository:
         await self._session.flush()
         return review
 
+    async def options(self, store_id: uuid.UUID | None = None) -> list[tuple[Vendor, Any]]:
+        """
+        Every vendor for the upload picker, with when it last had an invoice at `store_id` (None if never or no store):
+        recent at this store first, then confirmed, then by name.
+        """
+        if store_id is None:
+            rows: list[tuple[Vendor, Any]] = [(v, None) for v in (await self._session.execute(
+                select(Vendor).where(Vendor.merged_into_id.is_(None)))).scalars().all()]
+        else:
+            last_used = (select(Invoice.vendor_id, func.max(Invoice.created_at).label("last_used_at"))
+                         .where(Invoice.store_id == store_id).group_by(Invoice.vendor_id).subquery())
+            rows = [(v, last) for v, last in (await self._session.execute(
+                select(Vendor, last_used.c.last_used_at).outerjoin(last_used, last_used.c.vendor_id == Vendor.id)
+                .where(Vendor.merged_into_id.is_(None)))).all()]
+        return sorted(rows, key=lambda r: (r[1] is None, -(r[1].timestamp() if r[1] else 0),
+                                           r[0].identity_status != "confirmed", (r[0].display_name or r[0].name).casefold()))

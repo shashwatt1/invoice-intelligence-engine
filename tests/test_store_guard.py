@@ -40,6 +40,7 @@ from app.models.store import (
     StoreIdentifier,
 )
 from app.models.user import User, UserRole
+from app.services import upload_choices as upload_choices_module
 from app.services.store_guard import REASON_SOURCE_IDENTITY, ensure_physical_store
 
 PDF = ("ok.pdf", b"%PDF-1.4 " + b"x" * 2048, "application/pdf")
@@ -75,7 +76,10 @@ class _FakeSession:
 
 
 @pytest.fixture(autouse=True)
-def _manager_without_database(app):
+def _manager_without_database(app, monkeypatch):
+    # The vendor and delivery-date requirement has its own tests; these are about the store rule only.
+    monkeypatch.setattr(upload_choices_module, "get_settings",
+                        lambda: SimpleNamespace(upload_requires_vendor_and_delivery=False))
     manager = User(id=uuid.uuid4(), username="guard-test", password_hash="x",
                    role=UserRole.MANAGER.value, is_active=True)
 
@@ -224,7 +228,7 @@ class TestConfirmStore:
 
 class TestAssignStore:
     def _pending(self, monkeypatch):
-        invoice = SimpleNamespace(id=uuid.uuid4(), store_id=None, document_id=uuid.uuid4(),
+        invoice = SimpleNamespace(id=uuid.uuid4(), store_id=None, document_id=uuid.uuid4(), retailed_at=None, retailed_by=None,
                                   document=SimpleNamespace(store_id=None, status="REVIEW_REQUIRED"))
 
         async def get_detail(self, invoice_id):

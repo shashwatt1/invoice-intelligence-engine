@@ -129,6 +129,7 @@ async def _preview_out(db: AsyncSession, invoice_id: uuid.UUID, user: User) -> R
     p = review.preview
     return ReceiptPreviewOut(
         invoice_id=p.invoice.id, invoice_number=p.invoice.invoice_number,
+        declared_delivery_date=getattr(p.invoice, "delivery_date", None),
         store=StoreRef.from_store(p.store) if p.store else None, eligibility_reasons=p.eligibility_reasons,
         lines=[_line_out(line) for line in p.lines],
         blockers=[ReceiptBlockerOut(**vars(b)) for b in p.blockers],

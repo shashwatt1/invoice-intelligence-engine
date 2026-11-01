@@ -25,7 +25,12 @@ import { RECEIPT_STATUS, staleReason } from "@/lib/inventory";
  * approval; its state is shown beside the mark (InventoryReceiptStatus) for an account
  * that may use the invoice's store — and nothing at all otherwise.
  */
-export function RetailedControl({ invoiceId, completion }: { invoiceId: string; completion: Completion | null | undefined }) {
+export function RetailedControl({ invoiceId, completion, declarationsMissing }: {
+  invoiceId: string;
+  completion: Completion | null | undefined;
+  /** What the vendor and delivery-date declaration still lacks, when it does; offers a way to the place to set them. */
+  declarationsMissing?: string | null;
+}) {
   const { hasRole } = useAuth();
   const canAct = hasRole("MANAGER");
   const retailed = useRetailed(invoiceId);
@@ -86,6 +91,12 @@ export function RetailedControl({ invoiceId, completion }: { invoiceId: string; 
       ) : null}
       {canAct && completion.status !== "retailed" && !completion.can_mark && completion.reason ? (
         <span className="t-meta max-w-72 basis-full" data-testid="retailed-reason">{completion.reason}</span>
+      ) : null}
+      {canAct && completion.status !== "retailed" && declarationsMissing ? (
+        <Button size="sm" variant="outline" data-testid="retailed-set-declarations"
+                onClick={() => document.getElementById("declarations")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+          Set the vendor and delivery date
+        </Button>
       ) : null}
     </div>
   );

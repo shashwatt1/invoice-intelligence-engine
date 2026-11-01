@@ -41,6 +41,18 @@ export function formatDate(iso: string | null | undefined): string {
   return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/**
+ * A calendar day (YYYY-MM-DD) as a person wrote it, shown as that same day in every time zone. `formatDate` reads the text
+ * as midnight UTC and prints it in local time, which shows the day before in the Americas; a delivery day must not move.
+ */
+export function formatPlainDate(day: string | null | undefined): string {
+  if (!day) return "—";
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(day);
+  if (!match) return day;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
+}
+
 export function formatTokens(count: number): string {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;

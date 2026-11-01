@@ -199,6 +199,14 @@ class InvoiceReceivedError(InvoiceBaseException):
     message = "This invoice has been received into inventory; reverse the receipt before changing it."
 
 
+class InvoiceRetailedError(InvoiceBaseException):
+    """Raised when a change to what a person declares about an invoice (vendor, delivery date, store) comes after Retailed."""
+
+    error_code = "ERR_INVOICE_RETAILED"
+    http_status = 409
+    message = "This invoice has been marked Retailed; reopen it before changing the vendor, delivery date or store."
+
+
 # ---------------------------------------------------------------------------
 # Authorization Errors
 # ---------------------------------------------------------------------------

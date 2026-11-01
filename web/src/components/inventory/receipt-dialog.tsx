@@ -19,7 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useApproveReceipt, useReceiptPreview, useRejectReceipt, useReverseReceipt } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
-import { formatDate, formatDateTime } from "@/lib/format";
+import { formatDate, formatDateTime, formatPlainDate } from "@/lib/format";
 import {
   formatUnits,
   isDiscrepancy,
@@ -349,7 +349,10 @@ function ApprovalForm({ preview, submission, ownSubmission, onClose }: {
   preview: ReceiptPreview; submission: ReceiptSubmission; ownSubmission: boolean; onClose: () => void;
 }) {
   const approve = useApproveReceipt();
-  const [receivedOn, setReceivedOn] = useState(todayIso());
+  // The day a person declared the goods arrived, when one did; otherwise today, as before. Never the browser's clock when
+  // a delivery day is known: that is the guess the declaration exists to replace.
+  const declared = preview.declared_delivery_date ?? null;
+  const [receivedOn, setReceivedOn] = useState(declared ?? todayIso());
   const [note, setNote] = useState("");
   const [entries, setEntries] = useState<Record<string, LineEntry>>({});
   const [serverProblems, setServerProblems] = useState<Record<string, string>>({});
@@ -456,7 +459,15 @@ function ApprovalForm({ preview, submission, ownSubmission, onClose }: {
       <div className="grid gap-3 sm:grid-cols-[180px_1fr]">
         <label className="space-y-1">
           <span className="text-xs font-medium text-muted-foreground">Received on</span>
-          <Input type="date" value={receivedOn} max={todayIso()} onChange={(e) => setReceivedOn(e.target.value)} aria-label="Received on" />
+          <Input type="date" value={receivedOn} max={declared && declared > todayIso() ? declared : todayIso()}
+                 onChange={(e) => setReceivedOn(e.target.value)} aria-label="Received on" />
+          {declared ? (
+            <span className="block text-[0.7rem] text-muted-foreground" data-testid="received-on-hint">
+              {receivedOn === declared
+                ? "The delivery date declared at upload."
+                : `Differs from the delivery date declared at upload (${formatPlainDate(declared)}). That is allowed and recorded.`}
+            </span>
+          ) : null}
         </label>
         <label className="space-y-1">
           <span className="text-xs font-medium text-muted-foreground">Note (optional)</span>

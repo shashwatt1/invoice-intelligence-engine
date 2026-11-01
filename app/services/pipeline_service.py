@@ -36,6 +36,7 @@ import asyncio
 import hashlib
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,8 +52,10 @@ from app.core.logging import get_logger
 from app.models.document import Document, DocumentStatus
 from app.models.document_page import DocumentPage
 from app.models.processing_log import LogStatus, PipelineStage
+from app.models.vendor import Vendor
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
+from app.repositories.vendor_repository import resolve_vendor
 from app.services.document_lifecycle import ensure_document_active
 from app.services.extraction_service import ExtractionService
 from app.services.ocr.base import OCRResult
@@ -63,6 +66,7 @@ from app.services.store_identification_service import candidate_ids, identify_st
 from app.services.structuring_service import StructuringService
 from app.services.validation.report import ProcessingDecision
 from app.services.validation.service import ValidationService
+from app.services.vendor_matching import ExpectedVendor
 
 logger = get_logger(__name__)
 
@@ -211,6 +215,9 @@ class InvoiceProcessingPipeline:
         *,
         store_id: uuid.UUID | None = None,
         uploaded_by_user_id: uuid.UUID | None = None,
+        chosen_vendor_id: uuid.UUID | None = None,
+        vendor_request_id: uuid.UUID | None = None,
+        delivery_date: date | None = None,
     ) -> Document:
         """
         Synchronous intake: duplicate check + Document(UPLOADED) + one
@@ -266,6 +273,9 @@ class InvoiceProcessingPipeline:
             uploaded_by_user_id=uploaded_by_user_id,
         )
         document.store_id = store_id
+        document.chosen_vendor_id = chosen_vendor_id
+        document.vendor_request_id = vendor_request_id
+        document.declared_delivery_date = delivery_date
         for number, page in enumerate(pages, start=1):
             session.add(DocumentPage(
                 document_id=document.id, page_number=number, filename=page.filename,
@@ -293,6 +303,9 @@ class InvoiceProcessingPipeline:
                            "file_size_bytes": p.file_size_bytes}
                           for i, p in enumerate(pages, start=1)],
                 "store_id": str(store_id) if store_id else None,
+                "chosen_vendor_id": str(chosen_vendor_id) if chosen_vendor_id else None,
+                "vendor_request_id": str(vendor_request_id) if vendor_request_id else None,
+                "delivery_date": delivery_date.isoformat() if delivery_date else None,
             },
         )
         await session.commit()
@@ -565,8 +578,11 @@ class InvoiceProcessingPipeline:
         await session.commit()
 
         # ---- Validation -----------------------------------------------------
+        expected_vendor = ExpectedVendor.of(
+            await resolve_vendor(session, await session.get(Vendor, document.chosen_vendor_id)) if document.chosen_vendor_id else None)
         validation = self.validation.validate_invoice(
-            structuring.invoice, ocr_result.mean_confidence, filename, ocr_text=ocr_result.full_text
+            structuring.invoice, ocr_result.mean_confidence, filename, ocr_text=ocr_result.full_text,
+            expected_vendor=expected_vendor,
         )
         decision = validation.report.decision
         await documents.set_status(

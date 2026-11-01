@@ -77,6 +77,12 @@ class Vendor(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         doc="'unresolved' until a MANAGER/ADMIN confirms the vendor's identity.",
     )
 
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("vendors.id", ondelete="RESTRICT"), nullable=True,
+        doc="Set on a duplicate that was merged away: the vendor that stays. The row is kept as a tombstone (never "
+            "listed, never chosen, resolved to its target when an invoice prints its old spelling).",
+    )
+
     # Relationship to invoices
     invoices = relationship("Invoice", back_populates="vendor")
 
@@ -87,6 +93,8 @@ class Vendor(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Index("idx_vendors_name", "name"),
         Index("idx_vendors_tax_id", "tax_id"),
         Index("idx_vendors_identity_status", "identity_status"),
+        CheckConstraint("merged_into_id IS NULL OR merged_into_id <> id", name="ck_vendors_not_merged_into_itself"),
+        Index("idx_vendors_merged_into", "merged_into_id"),
     )
 
     @property
@@ -98,6 +106,29 @@ class Vendor(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<Vendor id={self.id} name={self.name!r} tax_id={self.tax_id!r}>"
+
+
+class VendorMerge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """
+    The record of one vendor being merged into another (app/services/vendor_merge_service.py): who, why, from which plan
+    fingerprint, and what was repointed. One row per merged-away vendor; never changed.
+    """
+
+    __tablename__ = "vendor_merges"
+
+    loser_vendor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vendors.id", ondelete="RESTRICT"), nullable=False)
+    winner_vendor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vendors.id", ondelete="RESTRICT"), nullable=False)
+    merged_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    merged_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    basis: Mapped[str] = mapped_column(Text, nullable=False, doc="Why these are the same vendor.")
+    plan_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, doc="Counts and ids repointed, rows retired.")
+
+    __table_args__ = (
+        CheckConstraint("loser_vendor_id <> winner_vendor_id", name="ck_vendor_merges_distinct"),
+        UniqueConstraint("loser_vendor_id", name="uq_vendor_merges_loser"),
+        Index("idx_vendor_merges_winner", "winner_vendor_id"),
+    )
 
 
 class VendorIdentityReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):

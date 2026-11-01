@@ -395,7 +395,16 @@ async def approve_receipt(
                {"event": "inventory_receipt_approved", "receipt_id": str(receipt.id), "by": user.username,
                 "role": user.role, "submitted_by": receipt.submitted_by, "self_approved": self_approved,
                 "received_on": business_date.isoformat(), "line_count": len(confirmed),
-                "discrepancy_count": receipt.discrepancy_count})
+                "discrepancy_count": receipt.discrepancy_count,
+                "declared_delivery_date": (preview.invoice.delivery_date.isoformat()
+                                           if getattr(preview.invoice, "delivery_date", None) else None)})
+    declared = getattr(preview.invoice, "delivery_date", None)
+    if declared is not None and declared != business_date:
+        # The approver's date is what posts to inventory; a different date from the declared delivery is allowed and recorded.
+        await _log(session, preview.invoice.document_id,
+                   f"Receipt date {business_date.isoformat()} differs from the declared delivery date {declared.isoformat()}.",
+                   {"event": "receipt_date_differs_from_declared_delivery", "receipt_id": str(receipt.id), "by": user.username,
+                    "received_on": business_date.isoformat(), "declared_delivery_date": declared.isoformat()})
     return receipt
 
 

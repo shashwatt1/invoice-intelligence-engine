@@ -13,6 +13,12 @@ import type {
   RecycleBinSummary,
   RestoreResult,
   ApiEnvelope,
+  InvoiceDeclarationResult,
+  StoreChangeResult,
+  UploadDeclarations,
+  VendorOption,
+  VendorRequest,
+  VendorRequestStatus,
   BulkDecisionResult,
   BulkProposalDecision,
   CaseMappingConfirmation,
@@ -191,10 +197,15 @@ export async function resetUserPassword(
 export async function processInvoice(
   files: File[],
   storeId: string | null,
+  declared: UploadDeclarations = {},
 ): Promise<ProcessAccepted> {
   const form = new FormData();
   for (const file of files) form.append("files", file);
   if (storeId) form.append("store_id", storeId);
+  // The vendor and the delivery day the person declared. The date goes as the plain text they entered.
+  if (declared.vendorId) form.append("vendor_id", declared.vendorId);
+  if (declared.vendorRequestId) form.append("vendor_request_id", declared.vendorRequestId);
+  if (declared.deliveryDate) form.append("delivery_date", declared.deliveryDate);
   const { data } = await apiClient.post<ApiEnvelope<ProcessAccepted>>(
     "/invoices/process",
     form,
@@ -835,5 +846,91 @@ export async function resolveCrossStoreDifference(
 ): Promise<DifferenceResolutionResult> {
   const { data } = await apiClient.post<ApiEnvelope<DifferenceResolutionResult>>(
     `/product-master/differences/${encodeURIComponent(itemCode)}/resolve`, body);
+  return data.data!;
+}
+
+
+// ---- Vendor and delivery date declared at upload ---------------------------
+
+/** The upload picker: every vendor by name, recent at the store first. */
+export async function listVendorOptions(storeId?: string | null): Promise<VendorOption[]> {
+  const { data } = await apiClient.get<ApiEnvelope<VendorOption[]>>("/vendors/options", {
+    params: storeId ? { store_id: storeId } : undefined,
+  });
+  return data.data!;
+}
+
+/** MANAGER/ADMIN: add a vendor now; it is listed at once. */
+export async function addVendor(name: string): Promise<VendorOption> {
+  const { data } = await apiClient.post<ApiEnvelope<VendorOption>>("/vendors", { name });
+  return data.data!;
+}
+
+/** Any account: ask for a vendor that is not listed; it takes effect once a manager or administrator approves it. */
+export async function requestVendor(name: string): Promise<VendorRequest> {
+  const { data } = await apiClient.post<ApiEnvelope<VendorRequest>>("/vendor-requests", { name });
+  return data.data!;
+}
+
+/** MANAGER/ADMIN: the vendor requests, open ones by default. */
+export async function listVendorRequests(status: VendorRequestStatus | "" = "PENDING"): Promise<VendorRequest[]> {
+  const { data } = await apiClient.get<ApiEnvelope<VendorRequest[]>>("/vendor-requests", { params: { status } });
+  return data.data!;
+}
+
+/** MANAGER/ADMIN: approve a request, optionally pointing it at a vendor that already exists. */
+export async function approveVendorRequest(
+  id: string,
+  body: { existingVendorId?: string | null; note?: string | null } = {},
+): Promise<VendorRequest> {
+  const { data } = await apiClient.post<ApiEnvelope<VendorRequest>>(`/vendor-requests/${id}/approve`, {
+    existing_vendor_id: body.existingVendorId ?? null,
+    note: body.note ?? null,
+  });
+  return data.data!;
+}
+
+/** MANAGER/ADMIN: reject a request; the reason is required. */
+export async function rejectVendorRequest(id: string, note: string): Promise<VendorRequest> {
+  const { data } = await apiClient.post<ApiEnvelope<VendorRequest>>(`/vendor-requests/${id}/reject`, { note });
+  return data.data!;
+}
+
+/** MANAGER/ADMIN: the day the goods arrived, as typed. Locked once a receipt is POSTED. */
+export async function setDeliveryDate(
+  invoiceId: string,
+  deliveryDate: string,
+  note?: string | null,
+): Promise<InvoiceDeclarationResult> {
+  const { data } = await apiClient.patch<ApiEnvelope<InvoiceDeclarationResult>>(
+    `/invoices/${invoiceId}/delivery-date`,
+    { delivery_date: deliveryDate, note: note ?? null },
+  );
+  return data.data!;
+}
+
+/** MANAGER/ADMIN: the vendor of an invoice, from the list or a pending request. Locked once a receipt is POSTED. */
+export async function chooseInvoiceVendor(
+  invoiceId: string,
+  choice: { vendorId?: string | null; vendorRequestId?: string | null; note?: string | null },
+): Promise<InvoiceDeclarationResult> {
+  const { data } = await apiClient.patch<ApiEnvelope<InvoiceDeclarationResult>>(`/invoices/${invoiceId}/vendor`, {
+    vendor_id: choice.vendorId ?? null,
+    vendor_request_id: choice.vendorRequestId ?? null,
+    note: choice.note ?? null,
+  });
+  return data.data!;
+}
+
+/** MANAGER/ADMIN: move an invoice to another physical store, until it is marked Retailed. */
+export async function changeInvoiceStore(
+  invoiceId: string,
+  storeId: string,
+  note?: string | null,
+): Promise<StoreChangeResult> {
+  const { data } = await apiClient.post<ApiEnvelope<StoreChangeResult>>(`/invoices/${invoiceId}/change-store`, {
+    store_id: storeId,
+    note: note ?? null,
+  });
   return data.data!;
 }

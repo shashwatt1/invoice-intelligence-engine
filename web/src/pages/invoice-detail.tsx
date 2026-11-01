@@ -13,6 +13,7 @@ import { CaseMappingCard } from "@/components/invoice/case-mapping-card";
 import { AddRowForm, CorrectingAs, EditableInvoiceDate, HistoryNote, VoidRowButton } from "@/components/invoice/corrections";
 import { BusinessStatusPanel } from "@/components/invoice/business-status-panel";
 import { ReferenceLinkCard } from "@/components/invoice/reference-link-card";
+import { DeclarationsCard } from "@/components/invoice/declarations-card";
 import { RetailedControl } from "@/components/invoice/retailed-control";
 import { FinancialSummary } from "@/components/invoice/financial-summary";
 import { IntelligencePanel } from "@/components/invoice/intelligence-panel";
@@ -1046,13 +1047,14 @@ export function InvoiceDetailPage() {
                 <DownloadPdiButton invoiceId={data.invoice_id} allowed={data.pdi_export_allowed}
                                    requiresConfirmation={data.pdi_export_requires_confirmation}
                                    blockedReason={data.pdi_export_blocked_reason} />
-                {isInactive(data.document_status) ? null : <RetailedControl invoiceId={data.invoice_id} completion={data.completion} />}
+                {isInactive(data.document_status) ? null : <RetailedControl invoiceId={data.invoice_id} completion={data.completion} declarationsMissing={data.declarations_missing} />}
                 {isAdmin ? <DeleteInvoiceButton invoiceId={data.invoice_id} /> : null}
               </>
             }
           />
           <InactiveNotice status={data.document_status} />
           {isInactive(data.document_status) ? null : <ExportOverridePanel detail={data} />}
+          {isInactive(data.document_status) ? null : <DeclarationsCard detail={data} />}
           <DetailBody detail={data} by={by} setBy={setBy} />
         </>
       )}

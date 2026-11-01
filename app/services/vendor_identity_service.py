@@ -86,6 +86,10 @@ async def confirm(
     """Establish the vendor's canonical identity and name."""
     repository = VendorRepository(session)
     vendor = await _vendor(repository, vendor_id)
+    if vendor.merged_into_id is not None:
+        raise ValidationError(
+            message="This vendor was merged into another vendor and can no longer be confirmed or changed.",
+            detail={"vendor_id": str(vendor.id), "merged_into_id": str(vendor.merged_into_id), "reason": "merged"})
     name = _require_text(display_name, field="display_name", what="the canonical vendor name", limit=MAX_NAME)
 
     if vendor.identity_status == VENDOR_CONFIRMED:

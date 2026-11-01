@@ -7,6 +7,7 @@ import { FilterBar } from "@/components/shared/filter-bar";
 import { Pagination } from "@/components/shared/pagination";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/shared/states";
 import { VendorIdentityPill } from "@/components/vendors/vendor-identity-pill";
+import { VendorRequestsPanel } from "@/components/vendors/vendor-requests-panel";
 import { VendorReviewPanel } from "@/components/vendors/vendor-review-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +49,8 @@ export function VendorsPage() {
           "What each invoice printed is kept exactly as printed."
         }
       />
+
+      <VendorRequestsPanel />
 
       <FilterBar>
         <Input

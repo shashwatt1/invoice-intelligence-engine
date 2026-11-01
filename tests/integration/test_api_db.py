@@ -73,6 +73,12 @@ async def api_client(app, db_engine, db_session, monkeypatch):
     app.dependency_overrides[get_pipeline] = lambda: pipeline
     monkeypatch.setattr(invoices_module, "get_session_factory", lambda: factory)
     monkeypatch.setattr(documents_module, "get_session_factory", lambda: factory)
+    # Every test written before uploads asked for a vendor and a delivery date uploads without them, as it did then.
+    # tests/integration/test_vendor_delivery_db.py turns the requirement back on and tests it.
+    from app.services import upload_choices
+    real_settings = upload_choices.get_settings
+    monkeypatch.setattr(upload_choices, "get_settings", lambda: real_settings().model_copy(
+        update={"upload_requires_vendor_and_delivery": False}))
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:

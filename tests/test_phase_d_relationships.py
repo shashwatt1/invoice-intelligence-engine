@@ -36,6 +36,7 @@ from app.models.user import User, UserRole
 from app.models.vendor import VENDOR_CONFIRMED, VENDOR_UNRESOLVED, Vendor
 from app.services import receiving_eligibility as rx
 from app.services import reprocess_service
+from app.services import upload_choices as upload_choices_module
 from app.services.store_guard import require_store_choice
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -129,6 +130,9 @@ class TestTheStoreRuleAtProcessing:
     @pytest.mark.parametrize("role", [UserRole.USER.value, UserRole.MANAGER.value])
     async def test_a_physical_store_satisfies_the_rule(self, client, act_as, monkeypatch, role):
         act_as(role)
+        # The vendor and delivery-date requirement has its own tests; this one is about the store rule only.
+        monkeypatch.setattr(upload_choices_module, "get_settings",
+                            lambda: SimpleNamespace(upload_requires_vendor_and_delivery=False))
         store = physical_store()
         _directory(monkeypatch, store)
         monkeypatch.setattr(invoices_module.UploadService, "handle_upload", _async(_sentinel))
@@ -376,6 +380,7 @@ ALLOWED_STORE_WRITES = {
     ("app/api/v1/documents.py", "confirm_store"),          # after ensure_physical_store
     ("app/api/v1/documents.py", "defer_store"),            # clears it — ADMIN only
     ("app/api/v1/invoices.py", "assign_store"),            # after ensure_physical_store
+    ("app/api/v1/invoices.py", "change_store"),            # after ensure_physical_store; MANAGER/ADMIN, until Retailed
     ("app/services/pipeline_service.py", "intake_pages"),  # the operator's choice, via resolve_chosen_store
     ("app/services/pipeline_service.py", "_settle_store"), # the same choice, when the document agrees
     ("app/repositories/invoice_repository.py", "create_with_items"),  # persists the document's store
@@ -429,6 +434,9 @@ class TestStoreWritePaths:
     def test_the_entry_points_apply_the_physical_store_guard(self):
         assert "ensure_physical_store" in _calls(_function("app/api/v1/documents.py", "confirm_store"))
         assert "ensure_physical_store" in _calls(_function("app/api/v1/invoices.py", "assign_store"))
+        change = _function("app/api/v1/invoices.py", "change_store")
+        assert {"ensure_physical_store", "ensure_not_retailed", "ensure_invoice_changeable"} <= _calls(change)
+        assert "require_manager" in ast.unparse(change.args)
         assert "ensure_physical_store" in _calls(_function("app/api/v1/invoices.py", "resolve_chosen_store"))
         process = _calls(_function("app/api/v1/invoices.py", "process_invoice"))
         assert {"resolve_chosen_store", "require_store_choice"} <= process

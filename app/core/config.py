@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     # Record every delivered PDI file in edi_exports (migration 0030). Off by
     # default so this code can be deployed before the migration is applied.
     edi_export_ledger: bool = False
+    # Upload asks which vendor the invoice is from and the day the goods were delivered (migration 0040). USER and MANAGER
+    # must give both (an ADMIN may leave them to be set later); either way both are required before an invoice can be
+    # marked Retailed. Turn off only to roll back.
+    upload_requires_vendor_and_delivery: bool = True
     # Store inventory (receipts, the movement ledger and receipt approval,
     # migrations 0033-0035). Off by default. Apply migrations through 0035
     # before deploying this code (docs/inventory-phase1-release.md); the

@@ -44,6 +44,7 @@ from tests.integration.conftest import (
     KNOWN_USERS,
     TEST_URL,
     approve_all_pending,
+    declare_vendor_and_delivery,
     requires_db,
     store_id,
 )
@@ -117,6 +118,7 @@ async def received(api_client, app, db_session, monkeypatch):  # noqa: F811
     status = (await api_client.get(accepted["status_url"])).json()["data"]
     detail = (await api_client.get(f"/api/v1/invoices/{status['invoice_id']}")).json()["data"]
     assert detail["status"] == "VALIDATED", detail["status"]
+    await declare_vendor_and_delivery(db_session, status["invoice_id"])     # Retailed requires both
     yield SimpleNamespace(invoice_id=status["invoice_id"], store_id=store_id(STORE),
                           document_id=detail["document_id"])
     await switch_off(db_session, monkeypatch)

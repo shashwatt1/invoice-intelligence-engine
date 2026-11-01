@@ -62,6 +62,7 @@ from app.services.validation.checks import (
     check_required_fields,
     check_subtotal,
     check_tax_consistency,
+    check_vendor_matches_choice,
 )
 from app.services.validation.confidence import compute_confidence
 from app.services.validation.reconciliation import reconcile_invoice
@@ -123,6 +124,16 @@ def normalized_from_persisted(invoice: Invoice) -> NormalizedInvoice:
     )
 
 
+def expected_vendor_of(invoice: Invoice):
+    """The vendor a person chose for this invoice (None when the vendor is only what extraction read)."""
+    from app.models.invoice import SOURCE_OPERATOR
+    from app.services.vendor_matching import ExpectedVendor
+
+    if getattr(invoice, "vendor_source", None) != SOURCE_OPERATOR:
+        return None
+    return ExpectedVendor.of(invoice.vendor)
+
+
 def _previous_confidence_parts(
     payload: dict[str, Any] | None,
 ) -> tuple[float | None, float | None]:
@@ -164,6 +175,7 @@ def build_report(
     checks += check_date_order(normalized)
     checks += check_cross_photo_duplicates(normalized)
     checks += check_product_code_complete(normalized)
+    checks += check_vendor_matches_choice(invoice.vendor_name, invoice.vendor_tax_id, expected_vendor_of(invoice))
 
     confidence = compute_confidence(ocr_confidence, ai_confidence, checks)
     checks, confidence, completeness = apply_completeness_gate(checks, confidence, ocr_text, normalized.line_items)
