@@ -117,7 +117,7 @@ from app.services.export_service import (
     unmapped_item_codes,
 )
 from app.services.gtin import classify as classify_printed_code
-from app.services.inventory_service import ensure_invoice_changeable
+from app.services.inventory_service import ensure_invoice_changeable, lock_invoice, posted_receipt
 from app.services.invoice_workflow_service import (
     completion_state,
     current_facts,
@@ -134,7 +134,7 @@ from app.services.storage_service import get_storage_service
 from app.services.store_guard import ensure_physical_store, require_store_choice
 from app.services.store_reference_service import match_invoice_against_reference
 from app.services.supplier_item_context import digits, supplier_item_ids
-from app.services.upload_choices import parse_delivery_date, resolve_upload_choices
+from app.services.upload_choices import ensure_listed, parse_delivery_date, resolve_upload_choices
 from app.services.upload_service import UploadService
 
 logger = get_logger(__name__)
@@ -1403,17 +1403,22 @@ async def choose_vendor(
 ) -> APIResponse[InvoiceDeclarationResult]:
     if (payload.vendor_id is None) == (payload.vendor_request_id is None):
         raise ValidationError(message="Give either vendor_id or vendor_request_id.", detail={"field": "vendor_id"})
-    await ensure_invoice_changeable(db, invoice_id, "choose_vendor")
+    await lock_invoice(db, invoice_id)
     repository = InvoiceRepository(db)
     invoice = await repository.get_detail(invoice_id)
     if invoice is None:
         raise RecordNotFoundError(message="Invoice not found.", detail={"invoice_id": str(invoice_id)})
     ensure_document_operable(invoice.document, "choose_vendor")
-    ensure_not_retailed(invoice, "choose_vendor")
+    # Changing a vendor is locked once the invoice is Retailed or received. Filling in a vendor it never had (a request the
+    # administrator rejected, or an older invoice) is not a change of anything attested or received, so it stays possible.
+    if invoice.vendor_id is not None:
+        await ensure_invoice_changeable(db, invoice_id, "choose_vendor")
+        ensure_not_retailed(invoice, "choose_vendor")
     if payload.vendor_id is not None:
         vendor = await resolve_vendor(db, await db.get(Vendor, payload.vendor_id))     # a merged-away vendor is the one that stays
         if vendor is None:
             raise RecordNotFoundError(message="That vendor is not in the vendor list.", detail={"vendor_id": str(payload.vendor_id)})
+        ensure_listed(vendor)
         await repository.set_vendor(invoice, vendor, source=SOURCE_OPERATOR, by=user.username, note=payload.note)
         invoice.document.chosen_vendor_id, invoice.document.vendor_request_id = vendor.id, None
     else:
@@ -1421,19 +1426,26 @@ async def choose_vendor(
         if request is None or request.status not in (REQUEST_PENDING, REQUEST_APPROVED):
             raise ValidationError(message="That vendor request is not open.", detail={"field": "vendor_request_id"})
         if request.status == REQUEST_APPROVED and request.vendor_id is not None:
-            vendor = await db.get(Vendor, request.vendor_id)
+            vendor = await resolve_vendor(db, await db.get(Vendor, request.vendor_id))
             await repository.set_vendor(invoice, vendor, source=SOURCE_OPERATOR, by=user.username, note=payload.note)
             invoice.document.chosen_vendor_id = vendor.id
         else:
+            # Waiting for an administrator: the invoice has no vendor until the request is decided.
             invoice.correction_history = [*(invoice.correction_history or []), repository._entry(
                 "vendor", invoice.vendor.label if invoice.vendor else None, f"requested: {request.requested_name}",
                 user.username, payload.note)]
-            invoice.vendor_source = SOURCE_REQUESTED
+            invoice.vendor_id, invoice.vendor_source = None, SOURCE_REQUESTED
             invoice.document.vendor_request_id, invoice.document.chosen_vendor_id = request.id, None
     await _log_correction(db, invoice, "vendor_chosen", user.username, payload.note,
                           changes=(invoice.correction_history or [])[-1:])
-    invoice, report, _eligibility = await _revalidated(db, invoice_id)
-    result = _declaration_result(invoice, status=report.decision.value, reasons=report.review_reasons)
+    if invoice.retailed_at is not None or await posted_receipt(db, invoice_id) is not None:
+        # Attested or received: only the vendor pointer was filled in; revalidation could rewrite stored lines.
+        await db.flush()
+        invoice = await repository.get_detail(invoice_id, fresh=True)
+        result = _declaration_result(invoice)
+    else:
+        invoice, report, _eligibility = await _revalidated(db, invoice_id)
+        result = _declaration_result(invoice, status=report.decision.value, reasons=report.review_reasons)
     await db.commit()
     return APIResponse(data=result)
 

@@ -1742,12 +1742,24 @@ export interface DifferenceResolutionResult {
 export type VendorSource = "extracted" | "operator" | "requested";
 export type VendorRequestStatus = "PENDING" | "APPROVED" | "REJECTED";
 
-/** One entry of the upload vendor picker (names only). */
+/** One entry of the upload vendor picker (names only): a confirmed vendor, or a vendor someone asked for that waits for an
+ * administrator (`kind` "request"; `id` is then the request's id). */
 export interface VendorOption {
   id: string;
   name: string;
+  kind: "vendor" | "request";
   confirmed: boolean;
   last_used_at: string | null;
+}
+
+/** An invoice processed against a vendor request that still waits for the decision. */
+export interface WaitingInvoice {
+  invoice_id: string;
+  invoice_number: string | null;
+  store: string | null;
+  retailed: boolean;
+  /** A receipt for it is POSTED to inventory. */
+  received: boolean;
 }
 
 export interface VendorRequestRef {
@@ -1768,6 +1780,8 @@ export interface VendorRequest {
   vendor_id: string | null;
   /** Invoices uploaded against this request that still wait for it. */
   waiting_invoices: number;
+  /** Those invoices; an administrator sees them before deciding. */
+  waiting: WaitingInvoice[];
 }
 
 /** What a person declared at upload besides the store. */

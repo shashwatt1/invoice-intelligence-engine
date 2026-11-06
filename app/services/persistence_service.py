@@ -31,6 +31,7 @@ from app.models.document import Document
 from app.models.invoice import SOURCE_EXTRACTED, SOURCE_OPERATOR, SOURCE_REQUESTED, Invoice
 from app.models.processing_log import PipelineStage
 from app.models.vendor import Vendor
+from app.models.vendor_request import REQUEST_APPROVED, REQUEST_PENDING, VendorRequest
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.processing_log_repository import ProcessingLogRepository
@@ -73,14 +74,22 @@ class PersistenceService:
 
         decision = validation.report.decision
         # A vendor a person chose at upload is the invoice's vendor; the printed wording stays on the invoice as
-        # provenance and is only compared with it (VENDOR_MATCHES_CHECK). Otherwise the vendor is what extraction read,
-        # marked 'requested' when a USER asked for a vendor a manager has not yet approved.
+        # provenance and is only compared with it (VENDOR_MATCHES_CHOICE). Otherwise the vendor is what extraction read.
         vendor = await vendors.resolve(await vendors.get(document.chosen_vendor_id)) if document.chosen_vendor_id else None
+        request = await session.get(VendorRequest, document.vendor_request_id) if document.vendor_request_id else None
         if vendor is not None:
             vendor_created, vendor_source = False, SOURCE_OPERATOR
+        elif request is not None and request.status == REQUEST_APPROVED and request.vendor_id is not None:
+            vendor = await vendors.resolve(await vendors.get(request.vendor_id))      # approved while it was being read
+            vendor_created, vendor_source = False, SOURCE_OPERATOR
+        elif request is not None:
+            # The vendor was asked for and an administrator has not approved it: the invoice gets no vendor row (nothing
+            # vendor-wise counts it yet); the printed wording stays on the invoice. A rejected request leaves it undeclared.
+            vendor, vendor_created = None, False
+            vendor_source = SOURCE_REQUESTED if request.status == REQUEST_PENDING else None
         else:
             vendor, vendor_created = await vendors.get_or_create(validation.invoice)
-            vendor_source = SOURCE_REQUESTED if document.vendor_request_id else SOURCE_EXTRACTED
+            vendor_source = SOURCE_EXTRACTED
 
         invoice = await invoices.create_with_items(
             document_id=document.id,

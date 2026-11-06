@@ -52,10 +52,14 @@ export function DeclarationsCard({ detail }: { detail: InvoiceDetail }) {
 
   const typed = dateText.trim() ? plainDate(dateText) : null;
   const waiting = detail.vendor_source === "requested";
+  const rejected = !waiting && !detail.vendor && detail.vendor_request?.status === "REJECTED";
   const vendorName = waiting
     ? (detail.vendor_request?.name ?? "a requested vendor")
     : (detail.vendor?.display_name ?? detail.vendor?.name ?? null);
   const chosenByPerson = detail.vendor_source === "operator";
+  // A vendor the invoice never had (a rejected request, an older invoice) can still be filled in after Retailed: only the
+  // missing pointer is set. Changing a vendor it already has needs the Retailed mark reopened.
+  const vendorEditable = canEdit && (!retailed || !detail.vendor);
 
   const saveDate = () => {
     if (!typed) return;
@@ -154,12 +158,14 @@ export function DeclarationsCard({ detail }: { detail: InvoiceDetail }) {
             <span className="font-medium" data-testid="declared-vendor">{vendorName ?? "Not chosen"}</span>
             <span className="text-[0.72rem] text-muted-foreground" data-testid="vendor-source">
               {waiting
-                ? "waiting for a manager or administrator to approve it"
-                : chosenByPerson
+                ? "waiting for an administrator to approve it; the invoice can be finished meanwhile"
+                : rejected
+                  ? `the request was rejected${detail.vendor_request?.name ? ` (${detail.vendor_request.name})` : ""}: choose a vendor from the list`
+                  : chosenByPerson
                   ? "chosen from the vendor list"
                   : "read from the document, not yet chosen from the list"}
             </span>
-            {editable && !changingVendor ? (
+            {vendorEditable && !changingVendor ? (
               <Button type="button" variant="ghost" size="sm" className="h-6 px-2" onClick={() => setChangingVendor(true)}>
                 {chosenByPerson ? "Change" : "Choose"}
               </Button>

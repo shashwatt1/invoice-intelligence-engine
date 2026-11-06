@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { VendorOption } from "@/api/types";
 import { compactName, exactVendorMatch, filterVendorOptions, plainDate } from "@/lib/vendors";
 
-const option = (name: string): VendorOption => ({ id: name, name, confirmed: true, last_used_at: null });
+const option = (name: string): VendorOption => ({ id: name, name, kind: "vendor", confirmed: true, last_used_at: null });
 const listed = [option("T.J. Sheehan"), option("PepsiCo Pepsi Beverages Company"), option("Acme & Sons")];
 
 describe("vendor names", () => {

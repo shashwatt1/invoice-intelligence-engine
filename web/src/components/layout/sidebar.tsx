@@ -26,6 +26,7 @@ import {
   useMappingQueueSummary,
   usePendingProposalCount,
   useRecycleBinSummary,
+  useVendorRequests,
 } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
@@ -41,7 +42,7 @@ import { cn } from "@/lib/utils";
  * Hiding is presentation only — the API refuses these areas by role.
  */
 type NavItem = {
-  to: string; label: string; icon: LucideIcon; badge?: "pending" | "mapping" | "bin"; minimum: UserRole;
+  to: string; label: string; icon: LucideIcon; badge?: "pending" | "mapping" | "bin" | "vendors"; minimum: UserRole;
   /** Shown only while the server reports the feature switched on. */
   feature?: "inventory";
 };
@@ -63,7 +64,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { to: "/requires-mapping", label: "Requires Mapping", icon: ListChecks, badge: "mapping", minimum: "MANAGER" },
       { to: "/product-master", label: "Product Master", icon: Boxes, minimum: "USER" },
       { to: "/product-master/approvals", label: "PM Approvals", icon: BadgeCheck, minimum: "MANAGER" },
-      { to: "/vendors", label: "Vendors", icon: Truck, minimum: "USER" },
+      { to: "/vendors", label: "Vendors", icon: Truck, badge: "vendors", minimum: "USER" },
       { to: "/data-review", label: "Master Data Review", icon: ClipboardCheck, badge: "pending", minimum: "MANAGER" },
       { to: "/stores", label: "Stores", icon: MapPin, minimum: "MANAGER" },
     ],
@@ -96,13 +97,18 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const binSummary = useRecycleBinSummary();
   const binCount = hasRole("ADMIN") && binSummary.isSuccess && binSummary.data.pending_requests > 0
     ? binSummary.data.pending_requests : null;
-  const badgeCount: Record<"pending" | "mapping" | "bin", number | null> = {
-    pending: pendingCount, mapping: mappingCount, bin: binCount,
+  // Administrators decide vendor requests: the Vendors entry shows how many are waiting.
+  const isAdmin = hasRole("ADMIN");
+  const vendorRequests = useVendorRequests("PENDING", isAdmin);
+  const vendorCount = isAdmin && vendorRequests.isSuccess && vendorRequests.data.length > 0 ? vendorRequests.data.length : null;
+  const badgeCount: Record<"pending" | "mapping" | "bin" | "vendors", number | null> = {
+    pending: pendingCount, mapping: mappingCount, bin: binCount, vendors: vendorCount,
   };
-  const badgeTitle: Record<"pending" | "mapping" | "bin", (n: number) => string> = {
+  const badgeTitle: Record<"pending" | "mapping" | "bin" | "vendors", (n: number) => string> = {
     pending: (n) => `${n} proposal${n === 1 ? "" : "s"} pending review`,
     mapping: (n) => `${n} product${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} mapping`,
     bin: (n) => `${n} deletion request${n === 1 ? "" : "s"} waiting for an administrator`,
+    vendors: (n) => `${n} vendor request${n === 1 ? "" : "s"} waiting for an administrator`,
   };
 
   const inventory = useInventoryStatus({ enabled: canReview });

@@ -46,6 +46,7 @@ from tests.integration.test_inventory_db import (  # noqa: F401 — fixture reus
     LAGER,
     approve,
     approve_submission,
+    ledger_counts,
     preview_of,
     received,
     refused_as_received,
@@ -199,7 +200,9 @@ class TestTheChoiceIsStored:
 
 
 class TestAskingForAVendor:
-    async def test_a_user_asks_and_a_manager_approves_and_the_waiting_invoice_follows(self, user, manager, db_session, app):
+    """A USER or MANAGER asks; only an ADMIN adds directly or decides. Nothing reaches the Vendor Master before that."""
+
+    async def test_a_user_asks_processes_fully_and_the_admin_approval_attaches_the_vendor(self, api_client, user, db_session, app):
         asked = await user.post("/api/v1/vendor-requests", json={"name": "Acme Corp"})
         assert asked.status_code == 201, asked.text
         request_id = asked.json()["data"]["id"]
@@ -207,69 +210,152 @@ class TestAskingForAVendor:
         accepted = await upload(user, app, vendor_request_id=request_id, delivery_date="2026-10-22")
         assert accepted.status_code == 202, accepted.text
         detail = await invoice_of(user, accepted)
-        assert detail["vendor_source"] == "requested"
-        assert detail["vendor_request"]["name"] == "Acme Corp"
-        assert "approved" in detail["declarations_missing"]
+        assert detail["vendor_source"] == "requested" and detail["vendor"] is None
+        assert detail["vendor_request"] == {"id": request_id, "name": "Acme Corp", "status": REQUEST_PENDING}
+        assert detail["declarations_missing"] is None, "a pending vendor does not hold the invoice back"
+        assert await count(db_session, Vendor) == 0, "no vendor row exists before an administrator approves"
 
-        pending = (await manager.get("/api/v1/vendor-requests")).json()["data"]
+        pending = (await api_client.get("/api/v1/vendor-requests")).json()["data"]
         assert [(r["id"], r["waiting_invoices"]) for r in pending] == [(request_id, 1)]
+        assert pending[0]["waiting"][0]["invoice_id"] == detail["invoice_id"]
 
-        approved = await manager.post(f"/api/v1/vendor-requests/{request_id}/approve", json={})
+        approved = await api_client.post(f"/api/v1/vendor-requests/{request_id}/approve", json={})
         assert approved.status_code == 200, approved.text
         data = approved.json()["data"]
         assert data["status"] == REQUEST_APPROVED and data["vendor_id"]
-        after = (await manager.get(f"/api/v1/invoices/{detail['invoice_id']}")).json()["data"]
+        after = (await api_client.get(f"/api/v1/invoices/{detail['invoice_id']}")).json()["data"]
         assert after["vendor"]["id"] == data["vendor_id"] and after["vendor_source"] == "operator"
-        assert after["declarations_missing"] is None
+        vendor = await db_session.get(Vendor, uuid.UUID(data["vendor_id"]), populate_existing=True)
+        assert vendor.identity_status == "confirmed"
 
-    async def test_a_user_cannot_decide_or_list_requests_or_add_a_vendor(self, user, manager):
-        asked = await user.post("/api/v1/vendor-requests", json={"name": "Some Vendor"})
+    async def test_a_manager_asks_too_and_only_an_admin_adds_lists_or_decides(self, user, manager, api_client):
+        for client in (user, manager):
+            assert (await client.post("/api/v1/vendors", json={"name": "Direct Add"})).status_code == 403
+            assert (await client.get("/api/v1/vendor-requests")).status_code == 403
+        asked = await manager.post("/api/v1/vendor-requests", json={"name": "Some Vendor"})
+        assert asked.status_code == 201, asked.text
         request_id = asked.json()["data"]["id"]
-        assert (await user.get("/api/v1/vendor-requests")).status_code == 403
-        assert (await user.post(f"/api/v1/vendor-requests/{request_id}/approve", json={})).status_code == 403
-        assert (await user.post(f"/api/v1/vendor-requests/{request_id}/reject", json={"note": "no"})).status_code == 403
-        assert (await user.post("/api/v1/vendors", json={"name": "Direct Add"})).status_code == 403
+        for client in (user, manager):
+            assert (await client.post(f"/api/v1/vendor-requests/{request_id}/approve", json={})).status_code == 403
+            assert (await client.post(f"/api/v1/vendor-requests/{request_id}/reject", json={"note": "no"})).status_code == 403
+        assert (await api_client.get("/api/v1/vendor-requests")).status_code == 200
 
-    async def test_a_manager_adds_a_vendor_directly_and_it_is_listed_at_once(self, manager, user, db_session):
-        added = await manager.post("/api/v1/vendors", json={"name": "Direct Add Distributing"})
+    async def test_an_admin_adds_a_vendor_directly_and_it_is_listed_at_once(self, api_client, user, db_session):
+        added = await api_client.post("/api/v1/vendors", json={"name": "Direct Add Distributing"})
         assert added.status_code in (200, 201), added.text
         options = (await user.get("/api/v1/vendors/options")).json()["data"]
-        assert [o["name"] for o in options] == ["Direct Add Distributing"]
-        assert options[0]["confirmed"] is True
+        assert [(o["name"], o["kind"], o["confirmed"]) for o in options] == [("Direct Add Distributing", "vendor", True)]
 
-    async def test_a_vendor_that_is_listed_cannot_be_added_or_requested_again(self, manager, user, db_session):
+    async def test_a_confirmed_vendor_cannot_be_added_or_requested_again(self, api_client, manager, db_session):
         await make_vendor(db_session, "T.J. Sheehan")
-        for client, path in ((manager, "/api/v1/vendors"), (user, "/api/v1/vendor-requests")):
+        for client, path in ((api_client, "/api/v1/vendors"), (manager, "/api/v1/vendor-requests")):
             again = await client.post(path, json={"name": "TJ SHEEHAN DISTRIBUTING INC"})
             assert again.status_code == 422, again.text
             assert again.json()["error"]["detail"].get("reason") == "already_listed"
 
-    async def test_two_users_asking_for_the_same_vendor_share_one_request(self, user, manager, db_session):
+    async def test_a_vendor_only_extraction_recorded_can_be_asked_for_and_approval_adopts_it(self, api_client, user, db_session):
+        recorded = await make_vendor(db_session, "Quartz Beverage Co", confirmed=False)
+        asked = await user.post("/api/v1/vendor-requests", json={"name": "QUARTZ BEVERAGE"})
+        assert asked.status_code == 201, asked.text
+        approved = await api_client.post(f"/api/v1/vendor-requests/{asked.json()['data']['id']}/approve", json={})
+        assert approved.json()["data"]["vendor_id"] == str(recorded.id)
+        assert await count(db_session, Vendor) == 1, "the recorded row was confirmed, not duplicated"
+
+    async def test_two_people_asking_for_the_same_vendor_share_one_request(self, user, manager, db_session):
         first = await user.post("/api/v1/vendor-requests", json={"name": "Brand New Vendor"})
         second = await manager.post("/api/v1/vendor-requests", json={"name": "BRAND NEW VENDOR INC"})
         assert first.json()["data"]["id"] == second.json()["data"]["id"]
         assert await count(db_session, VendorRequest) == 1
 
-    async def test_a_request_can_point_at_an_existing_vendor_and_a_rejection_needs_a_reason(self, user, manager, db_session):
+    async def test_a_request_can_be_approved_as_an_existing_vendor_and_a_rejection_needs_a_reason(self, api_client, user, db_session):
         existing = await make_vendor(db_session, "Existing Foods Supply")
         asked = (await user.post("/api/v1/vendor-requests", json={"name": "Brand New Vendor"})).json()["data"]
-        approved = await manager.post(f"/api/v1/vendor-requests/{asked['id']}/approve",
-                                      json={"existing_vendor_id": str(existing.id)})
+        approved = await api_client.post(f"/api/v1/vendor-requests/{asked['id']}/approve",
+                                         json={"existing_vendor_id": str(existing.id)})
         assert approved.json()["data"]["vendor_id"] == str(existing.id)
         assert await count(db_session, Vendor) == 1, "no duplicate was created"
 
         other = (await user.post("/api/v1/vendor-requests", json={"name": "Another Vendor"})).json()["data"]
-        assert (await manager.post(f"/api/v1/vendor-requests/{other['id']}/reject", json={})).status_code == 422
-        rejected = await manager.post(f"/api/v1/vendor-requests/{other['id']}/reject", json={"note": "not a supplier"})
+        assert (await api_client.post(f"/api/v1/vendor-requests/{other['id']}/reject", json={})).status_code == 422
+        rejected = await api_client.post(f"/api/v1/vendor-requests/{other['id']}/reject", json={"note": "not a supplier"})
         assert rejected.json()["data"]["status"] == REQUEST_REJECTED
-        assert (await manager.post(f"/api/v1/vendor-requests/{other['id']}/approve", json={})).status_code == 422
+        assert (await api_client.post(f"/api/v1/vendor-requests/{other['id']}/approve", json={})).status_code == 422
 
-    async def test_a_rejected_request_cannot_be_used_at_upload(self, user, manager, db_session, app):
+    async def test_a_rejected_request_cannot_be_used_at_upload(self, api_client, user, db_session, app):
         asked = (await user.post("/api/v1/vendor-requests", json={"name": "Another Vendor"})).json()["data"]
-        await manager.post(f"/api/v1/vendor-requests/{asked['id']}/reject", json={"note": "not a supplier"})
+        await api_client.post(f"/api/v1/vendor-requests/{asked['id']}/reject", json={"note": "not a supplier"})
         refused = await upload(user, app, vendor_request_id=asked["id"], delivery_date="2026-10-22")
         assert refused.status_code == 422
-        assert (await db_session.execute(select(VendorRequest.status))).scalar() != REQUEST_PENDING
+        assert (await db_session.execute(select(VendorRequest.status))).scalar() == REQUEST_REJECTED
+
+
+class TestAPendingVendorAllTheWay:
+    """Choose 'all the way': a pending vendor never holds an invoice back; the decision only attaches the vendor afterwards."""
+
+    async def _pending(self, api_client, manager, user, db_session, received):  # noqa: F811
+        asked = (await user.post("/api/v1/vendor-requests", json={"name": "Northwind Brewing"})).json()["data"]
+        chosen = await manager.patch(f"/api/v1/invoices/{received.invoice_id}/vendor", json={"vendor_request_id": asked["id"]})
+        assert chosen.status_code == 200, chosen.text
+        assert chosen.json()["data"]["vendor_id"] is None and chosen.json()["data"]["retailed_blocker"] is None
+        return asked["id"]
+
+    async def _retail_and_receive(self, api_client, db_session, received):  # noqa: F811
+        await approve(api_client, db_session, received.invoice_id, LAGER, 12)
+        await approve(api_client, db_session, received.invoice_id, ALE, 6)
+        preview = await submit(api_client, received.invoice_id)               # PDI export + Mark Retailed
+        assert (await approve_submission(api_client, received.invoice_id, preview)).status_code == 200
+
+    async def test_retailed_and_received_with_a_pending_vendor_then_approval_only_attaches_it(
+        self, api_client, manager, user, db_session, received,  # noqa: F811
+    ):
+        request_id = await self._pending(api_client, manager, user, db_session, received)
+        await self._retail_and_receive(api_client, db_session, received)
+        before = (await api_client.get(f"/api/v1/invoices/{received.invoice_id}")).json()["data"]
+        assert before["completion"]["status"] == "retailed" and before["vendor"] is None
+        waiting = (await api_client.get("/api/v1/vendor-requests")).json()["data"][0]["waiting"]
+        assert [(w["retailed"], w["received"]) for w in waiting] == [(True, True)]
+        ledger = await ledger_counts(db_session)
+        lines_before = [(i["description"], i["quantity"]) for i in before["line_items"]]
+
+        assert (await api_client.post(f"/api/v1/vendor-requests/{request_id}/approve", json={})).status_code == 200
+
+        after = (await api_client.get(f"/api/v1/invoices/{received.invoice_id}")).json()["data"]
+        assert after["vendor"]["display_name"] == "Northwind Brewing" and after["vendor_source"] == "operator"
+        assert after["completion"]["status"] == "retailed", "the attestation does not cover the vendor"
+        assert [(i["description"], i["quantity"]) for i in after["line_items"]] == lines_before
+        assert await ledger_counts(db_session) == ledger, "the receipt and its movements are untouched"
+        logged = (await db_session.execute(select(ProcessingLog.payload).where(
+            ProcessingLog.payload["event"].astext == "vendor_request_approved"))).scalars().all()
+        assert [p["revalidated"] for p in logged] == [False], "an attested, received invoice is not revalidated"
+
+    async def test_a_pending_vendor_is_counted_by_no_vendor_wise_view(self, api_client, manager, user, db_session, received):  # noqa: F811
+        await self._pending(api_client, manager, user, db_session, received)
+        await self._retail_and_receive(api_client, db_session, received)
+        options = (await api_client.get("/api/v1/inventory/supply/options")).json()["data"]
+        assert "Northwind" not in str(options)
+        assert not [o for o in (await user.get("/api/v1/vendors/options")).json()["data"] if o["kind"] == "vendor"]
+        listed = (await api_client.get("/api/v1/vendors")).json()
+        assert "Northwind" not in str(listed["items"])
+
+    async def test_after_a_rejection_the_vendor_is_chosen_even_on_a_retailed_received_invoice(
+        self, api_client, manager, user, db_session, received,  # noqa: F811
+    ):
+        request_id = await self._pending(api_client, manager, user, db_session, received)
+        await self._retail_and_receive(api_client, db_session, received)
+        assert (await api_client.post(f"/api/v1/vendor-requests/{request_id}/reject",
+                                      json={"note": "a typo of an existing vendor"})).status_code == 200
+        detail = (await api_client.get(f"/api/v1/invoices/{received.invoice_id}")).json()["data"]
+        assert detail["vendor_source"] is None and "vendor list" in detail["declarations_missing"]
+        assert detail["vendor_request"]["status"] == REQUEST_REJECTED
+
+        acme = await make_vendor(db_session, "Acme Corp Distributing")
+        chosen = await manager.patch(f"/api/v1/invoices/{received.invoice_id}/vendor", json={"vendor_id": str(acme.id)})
+        assert chosen.status_code == 200, chosen.text                       # filling a missing vendor is not a change
+        after = (await api_client.get(f"/api/v1/invoices/{received.invoice_id}")).json()["data"]
+        assert after["vendor"]["id"] == str(acme.id) and after["completion"]["status"] == "retailed"
+        other = await make_vendor(db_session, "Zenith Traders")
+        changed = await manager.patch(f"/api/v1/invoices/{received.invoice_id}/vendor", json={"vendor_id": str(other.id)})
+        assert changed.status_code == 409, "changing a vendor it already has stays locked"
 
 
 class TestDeclaringAfterTheFact:
@@ -326,12 +412,29 @@ class TestRetailedNeedsBothDeclarations:
 
 
 class TestVendorPicker:
-    async def test_the_picker_lists_vendors_by_name_only_confirmed_first(self, user, db_session):
-        await make_vendor(db_session, "Zeta Supply", confirmed=False)
+    async def test_the_picker_offers_confirmed_vendors_then_pending_requests_names_only(self, user, db_session):
+        await make_vendor(db_session, "Zeta Supply", confirmed=False)                 # only ever extracted: not offered
         await make_vendor(db_session, "Alpha Distributing")
+        asked = (await user.post("/api/v1/vendor-requests", json={"name": "Brand New Vendor"})).json()["data"]
         options = (await user.get("/api/v1/vendors/options")).json()["data"]
-        assert [o["name"] for o in options][0] == "Alpha Distributing"
-        assert set(options[0]) == {"id", "name", "confirmed", "last_used_at"}, "no tax id, address or contact"
+        assert [(o["name"], o["kind"]) for o in options] == [("Alpha Distributing", "vendor"), ("Brand New Vendor", "request")]
+        assert options[1]["id"] == asked["id"]
+        assert set(options[0]) == {"id", "name", "kind", "confirmed", "last_used_at"}, "no tax id, address or contact"
+
+    async def test_a_second_invoice_joins_the_pending_request_from_the_picker(self, user, manager, db_session, app):
+        asked = (await user.post("/api/v1/vendor-requests", json={"name": "Brand New Vendor"})).json()["data"]
+        for client in (user, manager):
+            accepted = await upload(client, app, vendor_request_id=asked["id"], delivery_date="2026-10-22")
+            assert accepted.status_code == 202, accepted.text
+        assert await count(db_session, VendorRequest) == 1 and await count(db_session, Vendor) == 0
+
+    async def test_an_unconfirmed_vendor_cannot_be_chosen_at_upload_or_on_an_invoice(self, api_client, manager, db_session, app):
+        recorded = await make_vendor(db_session, "Zeta Supply", confirmed=False)
+        refused = await upload(manager, app, vendor_id=recorded.id, delivery_date="2026-10-22")
+        assert refused.status_code == 422 and refused.json()["error"]["detail"]["reason"] == "not_confirmed"
+        detail = await invoice_of(api_client, await upload(api_client, app))
+        chosen = await manager.patch(f"/api/v1/invoices/{detail['invoice_id']}/vendor", json={"vendor_id": str(recorded.id)})
+        assert chosen.status_code == 422 and chosen.json()["error"]["detail"]["reason"] == "not_confirmed"
 
 
 class TestTheReceiptAndTheDeclaredDate:

@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
 class VendorOption(BaseModel):
-    """One entry of the vendor picker (names only: no tax id, address or contact)."""
+    """
+    One entry of the vendor picker (names only: no tax id, address or contact): a vendor an administrator confirmed, or a
+    vendor someone asked for that waits for an administrator (`kind` "request"; `id` is then the request's id).
+    """
 
     id: uuid.UUID
-    name: str = Field(description="The confirmed canonical name, else the name first observed.")
+    name: str = Field(description="The confirmed canonical name, or the name as it was asked for.")
+    kind: Literal["vendor", "request"] = "vendor"
     confirmed: bool
     last_used_at: datetime | None = Field(default=None, description="The latest invoice at the given store, if any.")
 
@@ -31,6 +36,16 @@ class VendorRequestDecision(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class WaitingInvoice(BaseModel):
+    """An invoice processed against a request that still waits for its decision."""
+
+    invoice_id: uuid.UUID
+    invoice_number: str | None = None
+    store: str | None = None
+    retailed: bool = False
+    received: bool = Field(default=False, description="A receipt for it is POSTED to inventory.")
+
+
 class VendorRequestOut(BaseModel):
     id: uuid.UUID
     requested_name: str
@@ -42,3 +57,5 @@ class VendorRequestOut(BaseModel):
     decision_note: str | None = None
     vendor_id: uuid.UUID | None = None
     waiting_invoices: int = Field(default=0, description="Invoices uploaded against this request that still wait for it.")
+    waiting: list[WaitingInvoice] = Field(default_factory=list,
+                                          description="Those invoices (administrators see them before deciding).")

@@ -17,14 +17,15 @@ function say(error: unknown): string {
 }
 
 /**
- * Vendors that people asked for when the one they needed was not in the list. Approving creates the vendor (or adopts the
- * unconfirmed one an invoice already printed) and every invoice waiting on the request gets it at once; naming an existing
- * vendor instead is how a duplicate request is resolved without creating a second vendor. Rejecting needs a reason. Only a
- * MANAGER or ADMIN sees this.
+ * Vendors that people asked for when the one they needed was not in the list, with the invoices that wait on each.
+ * Approving creates the vendor (or adopts the unconfirmed one extraction recorded) and every waiting invoice gets it at once;
+ * naming an existing vendor instead is how a duplicate request is resolved without creating a second vendor. Rejecting needs
+ * a reason and leaves those invoices to have a vendor chosen. Only an ADMIN sees and decides this.
  */
 export function VendorRequestsPanel() {
   const { user } = useAuth();
-  const allowed = user?.role === "MANAGER" || user?.role === "ADMIN";
+  // Only an administrator decides vendor requests (and sees them); managers and users ask from the upload page.
+  const allowed = user?.role === "ADMIN";
   const requests = useVendorRequests("PENDING", allowed);
   if (!allowed || !requests.data || requests.data.length === 0) return null;
   return (
@@ -64,7 +65,7 @@ function RequestRow({ request }: { request: VendorRequest }) {
             : ""}
         </span>
         {mode === "idle" ? (
-          <span className="ml-auto flex gap-2">
+          <span className="ml-auto flex gap-2" data-testid="request-actions">
             <Button
               size="sm" disabled={busy}
               onClick={() => approve.mutate({ id: request.id }, {
@@ -80,12 +81,25 @@ function RequestRow({ request }: { request: VendorRequest }) {
         ) : null}
       </div>
 
+      {request.waiting.length ? (
+        <ul className="ml-1 space-y-0.5 text-[0.76rem] text-muted-foreground" data-testid="waiting-invoices">
+          {request.waiting.map((w) => (
+            <li key={w.invoice_id}>
+              Invoice {w.invoice_number ? `#${w.invoice_number}` : "(no number)"}{w.store ? ` · ${w.store}` : ""}
+              {w.received ? " · received into inventory" : w.retailed ? " · Retailed" : ""}
+              {w.received || w.retailed ? " (only its vendor is filled in)" : ""}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       {mode === "existing" ? (
         <div className="flex flex-wrap items-center gap-2">
           <Select value={existing} onValueChange={setExisting}>
             <SelectTrigger className="w-[320px]" aria-label="Existing vendor"><SelectValue placeholder="Choose the vendor it duplicates" /></SelectTrigger>
             <SelectContent>
-              {(options.data ?? []).map((vendor) => <SelectItem key={vendor.id} value={vendor.id}>{vendor.name}</SelectItem>)}
+              {(options.data ?? []).filter((vendor) => vendor.kind === "vendor")
+                .map((vendor) => <SelectItem key={vendor.id} value={vendor.id}>{vendor.name}</SelectItem>)}
             </SelectContent>
           </Select>
           <Button
