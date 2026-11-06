@@ -151,8 +151,10 @@ class TestRetailedDeclarationGate:
     def test_a_missing_delivery_date_blocks(self):
         assert "delivery date" in missing_declarations(_invoice(delivery_date=None))
 
-    def test_a_vendor_still_awaiting_approval_blocks(self):
-        assert "approved" in missing_declarations(_invoice(vendor_source=SOURCE_REQUESTED))
+    def test_a_vendor_still_awaiting_approval_does_not_block(self):
+        # The invoice is processed all the way; the administrator's approval only attaches the vendor afterwards.
+        assert missing_declarations(_invoice(vendor_source=SOURCE_REQUESTED)) is None
+        assert "delivery date" in missing_declarations(_invoice(vendor_source=SOURCE_REQUESTED, delivery_date=None))
 
     @pytest.mark.parametrize("source", [SOURCE_EXTRACTED, None])
     def test_a_vendor_nobody_chose_blocks(self, source):

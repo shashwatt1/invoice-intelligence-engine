@@ -37,7 +37,6 @@ from app.models.vendor_request import VendorRequest
 from app.services import vendor_identity_service
 from app.services import vendor_merge_service as merge
 from tests.integration.conftest import (
-    MANAGER_PASSWORD,
     MANAGER_USERNAME,
     PHYSICAL_STORE,
     USER_USERNAME,
@@ -54,7 +53,6 @@ from tests.integration.test_inventory_db import (  # noqa: F401 — fixture reus
     received,
     submit,
 )
-from tests.integration.test_store_access_db import client_as
 from tests.integration.test_vendor_delivery_db import invoice_of, upload
 
 pytestmark = requires_db
@@ -121,12 +119,33 @@ async def counts(db_session, model) -> int:
     return (await db_session.execute(select(func.count()).select_from(model))).scalar()
 
 
+async def attached(db_session, api_client, app, owner, printed="TJ Sheehan") -> str:
+    """
+    An invoice whose vendor is `owner`, as a duplicate's invoices are in production. Only a confirmed vendor can be chosen at
+    upload, so the invoice is processed without a choice and then pointed at `owner` here; the vendor row extraction made for
+    it is removed so the counts stay about the two vendors under test.
+    """
+    accepted = await upload(api_client, app, printed=printed)
+    assert accepted.status_code == 202, accepted.text
+    invoice_id = uuid.UUID((await invoice_of(api_client, accepted))["invoice_id"])
+    invoice = await db_session.get(Invoice, invoice_id, populate_existing=True)
+    extracted = invoice.vendor_id
+    invoice.vendor_id, invoice.vendor_source = owner.id, "operator"
+    document = await db_session.get(Document, invoice.document_id, populate_existing=True)
+    document.chosen_vendor_id = owner.id
+    await db_session.flush()
+    if extracted is not None and extracted != owner.id:
+        await db_session.execute(text("DELETE FROM vendors WHERE id = :id"), {"id": extracted})
+    await db_session.commit()
+    return str(invoice_id)
+
+
 class TestTheDryRun:
     async def test_it_lists_what_would_move_and_writes_nothing(self, api_client, app, db_session):
         winner = await vendor(db_session, "T.J. Sheehan Distributing", confirmed=True)
         loser = await vendor(db_session, "TJ SHEEHAN")
         for _ in range(2):
-            await upload(api_client, app, vendor_id=loser.id, delivery_date="2026-10-22", printed="TJ Sheehan")
+            await attached(db_session, api_client, app, loser)
         await proposal(db_session, loser)
         await crosswalk(db_session, loser, "A1", "11111111111")
         request = VendorRequest(requested_name="x", normalized_name="x", requested_by="a", status="APPROVED",
@@ -156,18 +175,20 @@ class TestTheDryRun:
     async def test_the_fingerprint_changes_when_anything_it_covers_changes(self, api_client, app, db_session):
         winner, loser = await vendor(db_session, "Acme Foods"), await vendor(db_session, "ACME")
         first = await plan_of(db_session, winner, loser)
-        await upload(api_client, app, vendor_id=loser.id, delivery_date="2026-10-22")
+        await db_session.rollback()                      # the dry run's READ ONLY transaction ends here
+        await attached(db_session, api_client, app, loser, printed="ACME")
         second = await plan_of(db_session, winner, loser)
+        await db_session.rollback()
         assert first.fingerprint != second.fingerprint
         assert (await plan_of(db_session, winner, loser, allow_different_names=True)).fingerprint != second.fingerprint
+        await db_session.rollback()
 
 
 class TestApplying:
     async def test_everything_moves_and_the_duplicate_stays_as_a_tombstone(self, api_client, app, db_session):
         winner = await vendor(db_session, "T.J. Sheehan Distributing", confirmed=True)
         loser = await vendor(db_session, "TJ SHEEHAN")
-        accepted = await upload(api_client, app, vendor_id=loser.id, delivery_date="2026-10-22", printed="TJ Sheehan")
-        invoice_id = (await invoice_of(api_client, accepted))["invoice_id"]
+        invoice_id = await attached(db_session, api_client, app, loser)
         pending = await proposal(db_session, loser)
         decided = await proposal(db_session, loser, status=STATUS_APPROVED)
         moved = await crosswalk(db_session, loser, "A1", "11111111111")
@@ -290,10 +311,8 @@ class TestAfterTheMerge:
         with pytest.raises(Exception, match="merged"):
             await vendor_identity_service.confirm(db_session, loser.id, display_name="Acme Corp", basis="x", reviewer="r")
         await db_session.rollback()
-        manager = await client_as(api_client._transport.app, MANAGER_USERNAME, MANAGER_PASSWORD)
-        again = await manager.post("/api/v1/vendors", json={"name": "ACME CORP DISTRIBUTING"})
+        again = await api_client.post("/api/v1/vendors", json={"name": "ACME CORP DISTRIBUTING"})     # only an ADMIN adds
         assert again.status_code == 422 and again.json()["error"]["detail"]["vendor_id"] == str(winner.id)
-        await manager.aclose()
 
 
 class TestFindingDuplicates:
@@ -389,7 +408,7 @@ class TestRefusals:
         winner, loser = await vendor(db_session, "Acme Foods"), await vendor(db_session, "ACME")
         reviewed = await plan_of(db_session, winner, loser)
         await db_session.rollback()
-        await upload(api_client, app, vendor_id=loser.id, delivery_date="2026-10-22")
+        await attached(db_session, api_client, app, loser, printed="ACME")
         with pytest.raises(merge.VendorMergeRefusal, match="no longer match"):
             await apply(db_session, winner, loser, plan=reviewed)
         db_session.expire_all()
