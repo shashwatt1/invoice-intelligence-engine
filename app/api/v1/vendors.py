@@ -20,7 +20,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import require_authenticated_user, require_manager
+from app.core.dependencies import require_admin, require_authenticated_user, require_manager
 from app.core.exceptions import RecordNotFoundError
 from app.database.session import get_db
 from app.models.user import User
@@ -57,21 +57,27 @@ def _row(vendor: Vendor, stats: dict) -> VendorRow:
 
 
 @router.get("/options", response_model=APIResponse[list[VendorOption]],
-            summary="The vendor picker for upload: every vendor, names only (any authenticated account)")
+            summary="The vendor picker for upload: confirmed vendors, then pending requests (any authenticated account)")
 async def vendor_options(
     store_id: uuid.UUID | None = Query(default=None, description="Vendors that last supplied this store are listed first."),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[VendorOption]]:
+    """
+    The vendors an administrator confirmed, names only, then the vendors people asked for that wait for an administrator
+    (`kind` "request"): choosing one of those processes the invoice now and attaches the vendor when it is approved, and a
+    second invoice from the same new supplier joins the same request instead of asking again.
+    """
     rows = await VendorRepository(db).options(store_id)
-    return APIResponse(data=[
-        VendorOption(id=v.id, name=v.display_name or v.name, confirmed=v.identity_status == "confirmed", last_used_at=last)
-        for v, last in rows])
+    listed = [VendorOption(id=v.id, name=v.display_name or v.name, confirmed=True, last_used_at=last) for v, last in rows]
+    waiting = [VendorOption(id=r.id, name=r.requested_name, kind="request", confirmed=False)
+               for r in await vendor_request_service.pending_requests(db)]
+    return APIResponse(data=[*listed, *waiting])
 
 
 @router.post("", response_model=APIResponse[VendorOption], status_code=201,
-             summary="Add a vendor that is not listed (MANAGER/ADMIN; it is confirmed and listed at once)")
+             summary="Add a vendor that is not listed (ADMIN; it is confirmed and listed at once)")
 async def add_vendor(body: VendorAddRequest, db: AsyncSession = Depends(get_db),
-                     user: User = Depends(require_manager)) -> APIResponse[VendorOption]:
+                     user: User = Depends(require_admin)) -> APIResponse[VendorOption]:
     vendor = await vendor_request_service.add_vendor(db, user, body.name)
     option = VendorOption(id=vendor.id, name=vendor.display_name or vendor.name, confirmed=True)
     await db.commit()
