@@ -24,7 +24,7 @@ const STORES = vi.hoisted(() => {
 vi.mock("@/api/endpoints", () => ({
   setDeliveryDate: vi.fn(),
   chooseInvoiceVendor: vi.fn(),
-  listVendorOptions: vi.fn(async () => [{ id: "v-tj", name: "T.J. Sheehan", confirmed: true, last_used_at: null }]),
+  listVendorOptions: vi.fn(async () => [{ id: "v-tj", name: "T.J. Sheehan", kind: "vendor", confirmed: true, last_used_at: null }]),
   addVendor: vi.fn(),
   requestVendor: vi.fn(),
   changeInvoiceStore: vi.fn(),
@@ -91,7 +91,7 @@ describe("what a person declared about the invoice", () => {
       vendor_request: { id: "r-1", name: "Brand New Vendor", status: "PENDING" },
     }));
     expect(screen.getByTestId("declared-vendor")).toHaveTextContent("Brand New Vendor");
-    expect(screen.getByTestId("vendor-source")).toHaveTextContent(/waiting for a manager or administrator/);
+    expect(screen.getByTestId("vendor-source")).toHaveTextContent(/waiting for an administrator.*can be finished meanwhile/);
   });
 
   it("a vendor that disagrees with the document is stated in words, to anyone who can read the invoice", () => {
@@ -237,5 +237,28 @@ describe("moving the invoice to another store", () => {
     renderCard(detail());
     expect(screen.getByTestId("declared-store")).toHaveTextContent("PB Wolf");
     expect(screen.queryByRole("button", { name: "Change" })).not.toBeInTheDocument();
+  });
+});
+
+
+describe("after an administrator's decision on a requested vendor", () => {
+  it("a rejected request says so and offers choosing a vendor, even once Retailed, because none was ever set", () => {
+    renderCard(detail({
+      vendor: null, vendor_source: null, delivery_date: "2026-10-09",
+      vendor_request: { id: "r-1", name: "Northwind Brewing", status: "REJECTED" },
+      completion: { status: "retailed", can_mark: false, reason: null, retailed_by: "barj", retailed_at: "2026-10-30T00:00:00Z" },
+    } as Partial<InvoiceDetail>));
+    expect(screen.getByTestId("vendor-source")).toHaveTextContent(/request was rejected \(Northwind Brewing\): choose a vendor/);
+    expect(screen.getByRole("button", { name: "Choose" })).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: "Change" })).toHaveLength(0);      // store and date stay locked
+  });
+
+  it("a vendor it already has is not offered for change once Retailed", () => {
+    renderCard(detail({
+      vendor_source: "operator", delivery_date: "2026-10-09", declarations_missing: null,
+      completion: { status: "retailed", can_mark: false, reason: null, retailed_by: "barj", retailed_at: "2026-10-30T00:00:00Z" },
+    } as Partial<InvoiceDetail>));
+    expect(screen.queryByRole("button", { name: "Change" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Choose" })).not.toBeInTheDocument();
   });
 });

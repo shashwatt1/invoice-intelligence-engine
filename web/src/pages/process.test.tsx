@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { StoreDirectoryEntry } from "@/api/types";
+import type { StoreDirectoryEntry, VendorOption } from "@/api/types";
 
 import { ProcessPage } from "./process";
 
@@ -183,9 +183,10 @@ describe("the vendor and the delivery date declared at upload", () => {
     status: "active", notes: null, identifiers: [], invoices: 0, pricing_rows: 0, identities: 0, catalogue_rows: 0,
     case_mappings: 0, pending_proposals: 0,
   };
-  const VENDORS = [
-    { id: "v-tj", name: "T.J. Sheehan", confirmed: true, last_used_at: null },
-    { id: "v-pepsi", name: "PepsiCo Pepsi Beverages Company", confirmed: true, last_used_at: null },
+  const VENDORS: VendorOption[] = [
+    { id: "v-tj", name: "T.J. Sheehan", kind: "vendor", confirmed: true, last_used_at: null },
+    { id: "v-pepsi", name: "PepsiCo Pepsi Beverages Company", kind: "vendor", confirmed: true, last_used_at: null },
+    { id: "req-9", name: "Northwind Brewing", kind: "request", confirmed: false, last_used_at: null },
   ];
   const accepted = { document_id: "d-9", filename: "p1.jpg", status: "UPLOADED" as const, status_url: "/x" };
 
@@ -247,7 +248,7 @@ describe("the vendor and the delivery date declared at upload", () => {
     vi.mocked(api.requestVendor).mockResolvedValue({
       id: "req-1", requested_name: "Brand New Vendor", status: "PENDING", requested_by: "tester",
       created_at: "2026-11-01T00:00:00Z", decided_by: null, decided_at: null, decision_note: null, vendor_id: null,
-      waiting_invoices: 0,
+      waiting_invoices: 0, waiting: [],
     });
     const user = userEvent.setup();
     renderPage();
@@ -256,7 +257,7 @@ describe("the vendor and the delivery date declared at upload", () => {
     await user.click(await screen.findByRole("button", { name: /Ask for .Brand New Vendor. to be added/ }));
     await user.click(screen.getByRole("button", { name: "Send request" }));
 
-    expect(await screen.findByTestId("chosen-vendor")).toHaveTextContent(/waiting for a manager or administrator/i);
+    expect(await screen.findByTestId("chosen-vendor")).toHaveTextContent(/waiting for an administrator.*finish the invoice now/i);
     expect(api.addVendor).not.toHaveBeenCalled();
     await user.type(screen.getByLabelText("Delivery date"), "2026-10-22");
     await user.click(screen.getByTestId("process-button"));
@@ -266,9 +267,33 @@ describe("the vendor and the delivery date declared at upload", () => {
     });
   });
 
-  it("a MANAGER adds the vendor directly and it is chosen at once", async () => {
+  it("a MANAGER asks for a vendor too: only an administrator adds one directly", async () => {
     currentRole = "MANAGER";
-    vi.mocked(api.addVendor).mockResolvedValue({ id: "v-new", name: "Brand New Vendor", confirmed: true, last_used_at: null });
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(screen.getByLabelText("Vendor"), "Brand New Vendor");
+    expect(await screen.findByRole("button", { name: /Ask for .Brand New Vendor. to be added/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /as a new vendor/ })).not.toBeInTheDocument();
+  });
+
+  it("a pending request is offered, labelled, and choosing it uploads against the request", async () => {
+    currentRole = "USER";
+    const user = userEvent.setup();
+    renderPage();
+    await chooseStoreAndFile(user);
+    const pending = await screen.findByRole("button", { name: /Northwind Brewing/ });
+    expect(pending).toHaveTextContent("pending approval");
+    await user.click(pending);
+    await user.type(screen.getByLabelText("Delivery date"), "2026-10-22");
+    await user.click(screen.getByTestId("process-button"));
+    await waitFor(() => expect(processInvoice).toHaveBeenCalledTimes(1));
+    expect(processInvoice.mock.calls[0][2]).toEqual({ vendorId: null, vendorRequestId: "req-9", deliveryDate: "2026-10-22" });
+    expect(api.requestVendor).not.toHaveBeenCalled();
+  });
+
+  it("an ADMIN adds the vendor directly and it is chosen at once", async () => {
+    currentRole = "ADMIN";
+    vi.mocked(api.addVendor).mockResolvedValue({ id: "v-new", name: "Brand New Vendor", kind: "vendor", confirmed: true, last_used_at: null });
     const user = userEvent.setup();
     renderPage();
     await user.type(screen.getByLabelText("Vendor"), "Brand New Vendor");

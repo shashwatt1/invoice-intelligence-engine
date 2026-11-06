@@ -17,7 +17,8 @@ export type VendorChoice =
   | { kind: "request"; id: string; name: string };
 
 /**
- * The vendor an invoice belongs to, chosen from the vendor list. A vendor that is not listed is added at once by a
+ * The vendor an invoice belongs to, chosen from the vendor list (vendors an administrator confirmed, then vendors people have
+ * asked for that wait for an administrator). A vendor that is not listed is added at once by an
  * manager or administrator; anyone else asks for it, and it is usable for this invoice only after a manager or
  * administrator approves it. What the document prints is compared with this choice afterwards; the choice is never
  * overwritten by it.
@@ -34,7 +35,8 @@ export function VendorPicker({
   disabled?: boolean;
 }) {
   const { user } = useAuth();
-  const canAddDirectly = user?.role === "MANAGER" || user?.role === "ADMIN";
+  // Only an administrator adds a vendor straight away; anyone else asks, and an administrator approves it.
+  const canAddDirectly = user?.role === "ADMIN";
   const options = useVendorOptions(storeId);
   const add = useAddVendor();
   const request = useRequestVendor();
@@ -91,8 +93,8 @@ export function VendorPicker({
         <span className="font-medium">{value.name}</span>
         {waiting ? (
           <span className="text-[0.74rem] text-muted-foreground">
-            Waiting for a manager or administrator to approve this vendor. The invoice is processed now and can be marked
-            Retailed once the vendor is approved.
+            Waiting for an administrator to approve this vendor. You can finish the invoice now, including Mark Retailed;
+            the vendor is attached to it when it is approved.
           </span>
         ) : null}
         {!disabled ? (
@@ -131,9 +133,12 @@ export function VendorPicker({
                 type="button"
                 disabled={disabled}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/60 focus-visible:bg-accent/60 focus-visible:outline-none"
-                onClick={() => onChange({ kind: "vendor", id: vendor.id, name: vendor.name })}
+                onClick={() => onChange({ kind: vendor.kind === "request" ? "request" : "vendor", id: vendor.id, name: vendor.name })}
               >
-                <span className={vendor.confirmed ? undefined : "font-mono"}>{vendor.name}</span>
+                <span>{vendor.name}</span>
+                {vendor.kind === "request" ? (
+                  <span className="text-warning text-[0.7rem] font-medium" data-testid="pending-tag">pending approval</span>
+                ) : null}
                 {vendor.last_used_at ? <Check className="ml-auto size-3.5 text-muted-foreground" aria-label="Used at this store" /> : null}
               </button>
             </li>
@@ -169,7 +174,7 @@ export function VendorPicker({
           <p className="text-[0.74rem] text-muted-foreground">
             {canAddDirectly
               ? "It is added to the vendor list and confirmed straight away."
-              : "A manager or administrator reviews the request. Until then this invoice waits for the vendor and cannot be marked Retailed."}
+              : "An administrator approves it before it joins the vendor list. You can finish this invoice now; the vendor is attached to it once approved."}
           </p>
           <div className="flex gap-2">
             <Button type="button" size="sm" disabled={busy || newName.trim().length < 2} onClick={submitNew}>
