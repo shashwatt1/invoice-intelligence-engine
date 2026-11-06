@@ -116,6 +116,8 @@ async def settle_reprocess_vendor(session: AsyncSession, invoice: Invoice, norma
     """
     vendors = VendorRepository(session)
     current = await session.get(Vendor, invoice.vendor_id) if invoice.vendor_id else None
+    if current is None and getattr(invoice, "vendor_source", None) == SOURCE_REQUESTED:
+        return VendorSettlement(None)        # still waiting for an administrator: a new reading creates no vendor either
     if current is not None and getattr(invoice, "vendor_source", None) in (SOURCE_OPERATOR, SOURCE_REQUESTED):
         # A vendor a person chose (or asked for) at upload is theirs: a new reading never replaces it. The mismatch check
         # compares the new reading with it, so a disagreement is a review reason, not a silent change.

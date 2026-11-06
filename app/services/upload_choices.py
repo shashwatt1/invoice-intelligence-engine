@@ -21,11 +21,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.exceptions import ValidationError
 from app.models.user import UserRole
-from app.models.vendor import Vendor
+from app.models.vendor import VENDOR_CONFIRMED, Vendor
 from app.models.vendor_request import REQUEST_APPROVED, REQUEST_PENDING, VendorRequest
 from app.repositories.vendor_repository import resolve_vendor
 
 EARLIEST_DELIVERY = date(2000, 1, 1)
+
+
+def ensure_listed(vendor: Vendor) -> None:
+    """Only a vendor an administrator confirmed can be chosen; one that was only ever extracted is not in the list."""
+    if vendor.identity_status != VENDOR_CONFIRMED:
+        raise ValidationError(
+            message="That vendor has not been approved by an administrator yet. Choose a listed vendor or ask for it.",
+            detail={"field": "vendor_id", "reason": "not_confirmed", "value": str(vendor.id)})
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,7 @@ async def resolve_upload_choices(session: AsyncSession, role: str, *, vendor_id:
         if chosen is None:
             raise ValidationError(message="That vendor is not in the vendor list.",
                                   detail={"field": "vendor_id", "reason": "unknown_vendor", "value": str(vendor)})
+        ensure_listed(chosen)
         vendor = chosen.id
     if request_id is not None:
         row = await session.get(VendorRequest, request_id)

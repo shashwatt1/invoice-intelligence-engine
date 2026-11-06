@@ -205,15 +205,15 @@ def ensure_not_retailed(invoice: Invoice, action: str) -> None:
 def missing_declarations(invoice: Invoice) -> str | None:
     """
     Why the invoice cannot be marked Retailed yet for want of the vendor or the delivery date a person must declare, or None.
+    A vendor waiting for an administrator's approval is declared (it does not hold the invoice back).
     Asked for at upload; whoever missed it (an ADMIN, an invoice from before the upload asked) sets it on the invoice.
     """
     missing = []
     if getattr(invoice, "delivery_date", None) is None:
         missing.append("set the delivery date (the day the goods arrived)")
-    source = getattr(invoice, "vendor_source", None)
-    if source == SOURCE_REQUESTED:
-        missing.append("wait for the vendor you asked for to be approved, or choose another vendor")
-    elif source != SOURCE_OPERATOR:
+    # A vendor that was asked for counts as declared: the invoice is processed all the way and the administrator's decision
+    # only attaches the vendor afterwards. A rejected request leaves the invoice undeclared (vendor_source cleared).
+    if getattr(invoice, "vendor_source", None) not in (SOURCE_OPERATOR, SOURCE_REQUESTED):
         missing.append("choose the vendor from the vendor list")
     if not missing:
         return None
