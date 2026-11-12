@@ -521,7 +521,7 @@ describe("rows per page", () => {
     expect(screen.queryByRole("button", { name: "Next page" })).not.toBeInTheDocument();
     await choosePageSize(user, 25);
     expect(await screen.findByText("1–25 of 412")).toBeInTheDocument();
-  });
+  }, 20_000); // renders 412 rows twice: about 5 s on a shared CI runner, over vitest's 5 s default
 
   it("returns to page 1 when the page size changes, with one request for the new size", async () => {
     const user = userEvent.setup();
