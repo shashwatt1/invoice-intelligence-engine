@@ -20,7 +20,8 @@ jobs:
   backend:
     name: Backend (lint, unit and database tests)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The suite takes 25-30 minutes; 30 left no headroom on a slow runner.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16-alpine
