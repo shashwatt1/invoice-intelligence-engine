@@ -69,6 +69,8 @@ Running out of disk is therefore a shared outage, not just our problem.
 - **CRITICAL at 90%** (exit code 2);
 - inodes are checked against the same thresholds.
 
+**Alerts:** once installed and enabled, `edihor-disk-check.timer` runs the check hourly and emails through Healthchecks.io. It also alerts when the check stops reporting. See section 8.
+
 **At WARNING (80%):**
 1. Run `disk_check.sh` and `upload_inventory.sh`.
 2. Look at `sudo docker system df` and `sudo du -sh /var/lib/docker/volumes/*`.
@@ -124,6 +126,107 @@ Without off-VM backups, this scenario loses all data since the last copy.
 
 ## 7. Routine checks
 
-- `disk_check.sh`: daily, or by timer once approved.
+- `disk_check.sh`: hourly by `edihor-disk-check.timer` once it is enabled (section 8). Until then, run it by hand daily.
 - `upload_inventory.sh`: weekly, after any restore, and before any change to storage.
 - Before any maintenance, confirm the other project is healthy: `systemctl is-active hor-backend-dash chat-backend postgresql@16-main nginx`, and both sites return 200.
+
+## 8. Disk monitoring and alerting
+
+**Status:** the files are in this repository. Installing them on the VM and creating the Healthchecks.io check each need the owner's explicit approval. Until then, nothing in this section is active.
+
+### How it works
+
+1. `edihor-disk-check.timer` starts `edihor-disk-check.service`:
+   - every hour, at a random minute within 5 minutes;
+   - once after boot if a run was missed.
+2. The service runs `scripts/ops/disk_alert.sh`, which runs `scripts/ops/disk_check.sh`:
+   - **WARNING at 80%**, **CRITICAL at 90%** (disk space or inodes), for the single filesystem holding `/opt/edihor` and `/var/lib/docker`;
+   - this disk also holds the other project's data, so the check protects both.
+3. The full report goes to the journal: `journalctl -t edihor-disk`.
+4. One HTTPS ping goes to Healthchecks.io: `https://hc-ping.com/<uuid>/<exit code>`.
+   - The exit code is the state: 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN.
+   - The body is a single line, for example `state=WARNING used=82%`.
+   - Nothing else is sent: no hostname, paths, sizes or application data. Healthchecks.io can see the VM's IP address.
+5. Healthchecks.io (one check, period **1 hour**, grace **2 hours**) emails the recipients:
+   - **once** when the state becomes WARNING, CRITICAL or UNKNOWN;
+   - when **no ping arrives** within period + grace (VM down, timer stopped, network broken);
+   - when the check recovers.
+
+   Optional hourly or daily reminder emails can be turned on in the account settings while a check is down.
+
+### Isolation
+
+The service runs as a throwaway user (`DynamicUser=yes`):
+- no `sudo`, no Docker access, no capabilities, no group memberships;
+- the whole filesystem read-only, a private `/tmp`, and limited system calls;
+- `Nice=19`, idle disk priority, 10% CPU, 64 MB memory, 90-second timeout.
+
+It can read disk statistics and make one outbound HTTPS request. It cannot change application data, containers, Docker or the other project.
+
+### Files
+
+| In the repository | On the VM | Owner / mode |
+|---|---|---|
+| `scripts/ops/disk_check.sh`, `scripts/ops/disk_alert.sh` | `/opt/edihor/ops/` | root:root 0755 |
+| `deploy/systemd/edihor-disk-check.service`, `.timer` | `/etc/systemd/system/` | root:root 0644 |
+| `deploy/systemd/disk-alert.env.example` (placeholder only) | `/etc/edihor/disk-alert.env` (the real ping URL) | root:root 0600, directory 0700 |
+
+The ping URL works like a password. It is never committed, pasted into chat or printed. `disk_alert.sh` refuses any value that is not `https://hc-ping.com/<uuid>`.
+
+### One-time setup (after approval)
+
+**Healthchecks.io:**
+1. Create the account with a team email address.
+2. Create one check named `oci-vm-disk`: Simple schedule, period 1 hour, grace 2 hours.
+3. Add the email recipients. Consider the other project's owner too.
+4. Copy the ping URL; it is sent to the VM in the next steps.
+
+**On the VM**, from a checkout of the approved commit (`<repo>` below):
+```
+sudo install -d -m 0755 -o root -g root /opt/edihor/ops
+sudo install -m 0755 -o root -g root <repo>/scripts/ops/disk_check.sh <repo>/scripts/ops/disk_alert.sh /opt/edihor/ops/
+sudo install -d -m 0700 -o root -g root /etc/edihor
+# The ping URL is written to /etc/edihor/disk-alert.env (mode 0600) from the owner's clipboard over SSH, never typed or echoed.
+sudo install -m 0644 -o root -g root <repo>/deploy/systemd/edihor-disk-check.service <repo>/deploy/systemd/edihor-disk-check.timer /etc/systemd/system/
+sudo systemd-analyze verify /etc/systemd/system/edihor-disk-check.service /etc/systemd/system/edihor-disk-check.timer
+sudo systemctl daemon-reload
+sudo systemctl start edihor-disk-check.service      # one run now (test 1)
+sudo systemctl enable --now edihor-disk-check.timer
+```
+Before and after: check that the other project is healthy (section 7).
+
+### Test cases
+
+Forced thresholds use a one-off unit that runs as a throwaway user with a read-only filesystem, like the service. They never change the installed files.
+```
+sudo systemd-run --wait --pipe --quiet -p DynamicUser=yes -p ProtectSystem=strict -p EnvironmentFile=/etc/edihor/disk-alert.env -E WARN_PCT=<w> -E CRIT_PCT=<c> /opt/edihor/ops/disk_alert.sh
+```
+
+| # | Test | How | Expected |
+|---|---|---|---|
+| 1 | Normal run | `systemctl start edihor-disk-check.service` | Journal shows `OK`. Healthchecks.io shows the check up, last ping exit 0. No email. |
+| 2 | Warning | one-off unit, `WARN_PCT=10 CRIT_PCT=90` | Exit 1 ping. One "down" email with body `state=WARNING used=N%`. |
+| 3 | Critical | one-off unit, `WARN_PCT=5 CRIT_PCT=10` | Exit 2 ping, body `state=CRITICAL ...`. No second email: the check is already down. |
+| 4 | Recovery | `systemctl start edihor-disk-check.service` | Exit 0 ping. One "up" (recovery) email. |
+| 5 | Missed pings | Temporarily set the check's period and grace to 1 minute in the dashboard; wait 3 minutes | "down" email for a late check. Restore 1 hour / 2 hours, then run test 4 to bring it back up. |
+| 6 | Broken alert path | the same one-off command **without** `-p EnvironmentFile=...` (the file would override `-E`) and with `-E HC_PING_URL=https://hc-ping.com/not-a-uuid` | Unit fails. Journal says the URL is not of the expected form. Nothing sent, and the URL is not printed. |
+| 7 | Sandbox | `systemd-analyze security edihor-disk-check.service`, and `systemd-run --wait --pipe -p DynamicUser=yes -p ProtectSystem=strict touch /opt/edihor/sandbox-test` | Low exposure score. The `touch` fails with "Read-only file system". |
+| 8 | Other project | `systemctl is-active hor-backend-dash chat-backend postgresql@16-main nginx`, both sites, before and after | Unchanged: same PIDs, both sites 200. |
+
+### Operating notes
+
+- **Planned maintenance** (VM reboot, network work): pause the check in the Healthchecks.io dashboard, then resume it afterwards.
+- **Logs:** `journalctl -t edihor-disk --since today`.
+- **Timer status:** `systemctl list-timers edihor-disk-check.timer`.
+- **Changing thresholds:** only by an approved change to this repository. The defaults stay 80% / 90%.
+
+### Rollback (about 2 minutes, no effect on the application)
+
+```
+sudo systemctl disable --now edihor-disk-check.timer
+sudo rm /etc/systemd/system/edihor-disk-check.service /etc/systemd/system/edihor-disk-check.timer
+sudo systemctl daemon-reload
+sudo shred -u /etc/edihor/disk-alert.env && sudo rmdir /etc/edihor
+sudo rm /opt/edihor/ops/disk_alert.sh   # disk_check.sh may stay for manual runs
+```
+Then pause or delete the check in Healthchecks.io so it stops expecting pings.

@@ -1,0 +1,55 @@
+# Invoice Intelligence Engine - hourly disk usage check with a Healthchecks.io heartbeat.
+# Installed to /etc/systemd/system/ on the shared OCI VM; started by edihor-disk-check.timer.
+# See docs/oci-vm-runbook.md, section 8, for installation, test cases and rollback.
+#
+# The job is unprivileged and sandboxed. It runs as a throwaway user with no sudo, no Docker
+# access and no group memberships, sees the whole filesystem read-only, and can only read disk
+# statistics and make one outbound HTTPS request. It cannot modify application data, containers
+# or the other project on this VM.
+
+[Unit]
+Description=Invoice Intelligence Engine disk usage check (read-only, heartbeat)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/edihor/ops/disk_alert.sh
+# HC_PING_URL only (root-only file, never in Git). A missing file fails the unit visibly.
+EnvironmentFile=/etc/edihor/disk-alert.env
+SyslogIdentifier=edihor-disk
+TimeoutStartSec=90
+
+# Unprivileged and isolated
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+# Light footprint on a shared 2-core VM
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=10%
+MemoryMax=64M
+TasksMax=16
