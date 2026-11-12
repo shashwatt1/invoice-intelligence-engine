@@ -1,0 +1,15 @@
+# Runs edihor-disk-check.service hourly. The Healthchecks.io check expects one ping per hour
+# (period 1 h, grace 2 h), so a stopped timer or a VM that is down raises an alert too.
+
+[Unit]
+Description=Hourly disk usage check for Invoice Intelligence Engine
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=300
+AccuracySec=1min
+# Run once after boot if the VM was off at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
