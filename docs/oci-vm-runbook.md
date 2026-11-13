@@ -9,9 +9,11 @@ Scripts referenced here live in [`scripts/ops/`](../scripts/ops/). On the VM the
 `ssh ubuntu@<vm> 'bash -s' < scripts/ops/disk_check.sh`.
 Both are read-only.
 
-The environment set-up and data-load helpers used during the migration live on the VM, not in this repository:
-- `/opt/edihor/setup_env.sh`
-- `/opt/edihor/migration/restore_data.sh`
+The environment set-up and data-move helpers are in the same folder and installed on the VM:
+- `scripts/ops/setup_env.sh` → `/opt/edihor/setup_env.sh`
+- `scripts/ops/supabase_backup.sh` and `scripts/ops/restore_data.sh` → `/opt/edihor/migration/`
+
+**Status since 13 Nov 2026: this VM is the live production system** (`https://aix.handsoffretail.com`, section 10).
 
 ## 1. Upload retention: indefinite
 
@@ -279,3 +281,46 @@ From a checkout of the approved commit:
 ```
 sudo install -m 0755 -o root -g root scripts/ops/deploy.sh scripts/ops/rollback.sh /opt/edihor/ops/
 ```
+
+## 10. Domain, HTTPS and the 13 Nov 2026 cutover
+
+### The site
+
+- **Address:** `https://aix.handsoffretail.com`.
+  - DNS is an A record → the VM's public IP (the same as mystores and chats), hosted on Google Cloud DNS, with no proxy.
+  - Staging has no public address; reach it through the SSH tunnel (`localhost:8101`).
+- **Nginx:** [`deploy/nginx/aix.conf`](../deploy/nginx/aix.conf) is installed as `/etc/nginx/sites-available/aix`, with a symlink in `sites-enabled/`.
+  - It does: HTTP → HTTPS redirect, 30 MB uploads, 180 s timeouts, proxy to `127.0.0.1:8100`.
+  - The other project's `hor` and `chats` files are never edited.
+- **Certificate:** Let's Encrypt via certbot (nginx authenticator), certificate name `aix.handsoffretail.com`.
+  - Renewal: the existing `certbot.timer`. Dry run: `sudo certbot renew --dry-run --cert-name aix.handsoffretail.com`.
+- **Changing the site:**
+  1. Back up the current file.
+  2. Install the new one.
+  3. Run `sudo nginx -t`; reload only if it passes (`sudo systemctl reload nginx`).
+  4. Check `https://aix.handsoffretail.com`, `https://mystores.handsoffretail.com` and `https://chats.handsoffretail.com`.
+- **Rollback of the site:** remove the `sites-enabled/aix` symlink, then `nginx -t` and reload.
+
+### App settings that differ from the old Render service
+
+- `ACCESS_TOKEN_EXPIRE_MINUTES=480` (8-hour sessions).
+- Feature switches copied from Render: `INVENTORY_ENABLED`, `PRODUCT_MASTER_COMMERCIAL_RESOLUTION`, `COMMERCIAL_SOURCE_IDENTITY=47708760`, `EDI_EXPORT_LEDGER`, `UPLOAD_REQUIRES_VENDOR_AND_DELIVERY`.
+- The settings files keep the previous version as `app.env.bak-<time>`.
+
+### What happened on 13 Nov 2026
+
+1. Render was **suspended** in its dashboard. It was not deleted, and can be resumed as a fallback.
+2. A final read-only Supabase backup was taken: `/opt/edihor/migration/backup-20261113T121920Z`, 35 tables, 36,534 rows.
+3. It was loaded into production with `restore_data.sh`: all 35 tables matched, and all 82 foreign keys had no orphans.
+4. The day's reference-data work was re-applied on top ([`reference-data-2026-11-13.md`](reference-data-2026-11-13.md)).
+5. The pre-launch Basic Auth gate was removed. Users sign in with their existing accounts.
+6. The Supabase connection file on the VM was shredded.
+
+Backups taken that day are in `/opt/edihor/backups/production/`, including `pre-cutover-vmprod-20261113T121700Z.dump` (the state just before the reload).
+
+### Open after the cutover
+
+- **No automated off-VM backups yet**: section 5 still applies. The VM disk now holds the only live copy.
+- Rotate the Supabase database password.
+- Retire Render and Supabase only after an explicit decision (planned after 1–2 stable weeks).
+- `/etc/nginx/aix.htpasswd` and `/root/aix-basic-auth.txt` belonged to the removed gate and are no longer used.
