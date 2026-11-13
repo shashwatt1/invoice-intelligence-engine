@@ -263,6 +263,39 @@ class TestOneSessionPerAccount:
         finally:
             await client.aclose()
 
+    async def test_signing_out_ends_the_session_on_the_server(self, app, api_client, db_session):  # noqa: F811
+        client, copy = await _client(app), await _client(app)
+        try:
+            await _login(client, USER_USERNAME, USER_PASSWORD)
+            token = client.cookies.get("access_token")
+            assert (await client.post("/api/v1/auth/logout")).status_code == 200
+            copy.cookies.set("access_token", token)              # someone kept a copy of the cookie
+            stale = await copy.get("/api/v1/auth/me")
+            assert stale.status_code == 401
+        finally:
+            await client.aclose()
+            await copy.aclose()
+
+    async def test_signing_out_a_replaced_session_leaves_the_newer_one_alone(self, app, api_client, db_session):  # noqa: F811
+        old, new = await _client(app), await _client(app)
+        try:
+            await _login(old, MANAGER_USERNAME, MANAGER_PASSWORD)
+            await _login(new, MANAGER_USERNAME, MANAGER_PASSWORD)
+            assert (await old.post("/api/v1/auth/logout")).status_code == 200
+            assert (await new.get("/api/v1/auth/me")).status_code == 200
+        finally:
+            await old.aclose()
+            await new.aclose()
+
+    async def test_signing_out_without_a_session_still_succeeds(self, app, db_session):  # noqa: F811
+        client = await _client(app)
+        try:
+            assert (await client.post("/api/v1/auth/logout")).status_code == 200
+            client.cookies.set("access_token", "not-a-token")
+            assert (await client.post("/api/v1/auth/logout")).status_code == 200
+        finally:
+            await client.aclose()
+
     async def test_a_password_reset_signs_out_existing_sessions(self, app, api_client, db_session):  # noqa: F811
         client = await _client(app)
         try:
