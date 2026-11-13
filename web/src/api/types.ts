@@ -1149,6 +1149,14 @@ export interface LegacyMappingRef {
 }
 
 /** Where a product's display name came from. A label, never the product's identity. */
+/** PUT /product-master/products/{id}/name */
+export interface ProductNameEditResult {
+  product_id: string;
+  name: string;
+  previous_name: string | null;
+  changed: boolean;
+}
+
 export type ProductNameBasis = "CANONICAL" | "SOURCE" | "AMBIGUOUS_SOURCE" | "UNAVAILABLE";
 
 /** One materially distinct source wording, and every row that carried it. */

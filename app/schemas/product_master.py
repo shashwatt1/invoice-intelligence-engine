@@ -136,6 +136,20 @@ class CommercialCandidateDetail(BaseModel):
     history: list[ReviewHistoryEntry] = Field(default_factory=list)
 
 
+class ProductNameEditRequest(BaseModel):
+    """A person's name for a product (PM Approvals "Edit name"). Who edited is the authenticated session."""
+
+    name: str = Field(..., min_length=1, max_length=200,
+                      description="The product's new name; trimmed, spaces collapsed, at most 100 characters.")
+
+
+class ProductNameEditResult(BaseModel):
+    product_id: uuid.UUID
+    name: str
+    previous_name: str | None
+    changed: bool
+
+
 class CommercialReviewRequest(BaseModel):
     """
     A reviewer's decision. `commercial_unit_basis`/`units_accounted_for`

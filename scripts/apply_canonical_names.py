@@ -23,7 +23,6 @@ import asyncio
 import json
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -33,14 +32,8 @@ from sqlalchemy.engine import make_url  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
-from app.models.product_master import (  # noqa: E402
-    DESC_CANONICAL,
-    DESC_HISTORICAL_ALIAS,
-    STATE_CONFIRMED,
-    MasterProduct,
-    MasterProductDescription,
-)
-from app.services.product_master.candidates import normalize_description  # noqa: E402
+from app.models.product_master import MasterProduct, MasterProductDescription  # noqa: E402
+from app.services.product_master.canonical_names import set_canonical_name  # noqa: E402
 from app.services.product_master.display_name import resolve_display_name  # noqa: E402
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -60,49 +53,22 @@ class Outcome:
         return self.missing == 0 and self.shown_correctly == self.listed
 
 
-async def _description(session: AsyncSession, product_id, normalized: str, role: str, source: str):
-    return (await session.execute(select(MasterProductDescription).where(
-        MasterProductDescription.product_id == product_id, MasterProductDescription.role == role,
-        MasterProductDescription.normalized_description == normalized,
-        MasterProductDescription.source_system == source))).scalars().first()
-
-
 async def apply_canonical_names(session: AsyncSession, items: list[dict], *, source_system: str, source_file: str,
                                 demote_others: bool) -> Outcome:
-    """Flushes; the caller commits or rolls back."""
-    now, out = datetime.now(UTC), Outcome(listed=len(items))
+    """Flushes; the caller commits or rolls back. The naming itself is set_canonical_name's."""
+    out = Outcome(listed=len(items))
     for item in items:
-        name = " ".join(str(item["name"]).split())
         product = (await session.execute(select(MasterProduct).where(
             MasterProduct.canonical_upc == item["upc"]))).scalars().first()
         if product is None:
             out.missing += 1
             continue
-        normalized = normalize_description(name)
-        row = await _description(session, product.id, normalized, DESC_CANONICAL, source_system)
-        if row is not None and row.description == name and product.canonical_description == name:
-            out.unchanged += 1
-        else:
-            if row is None:
-                session.add(MasterProductDescription(
-                    product_id=product.id, description=name, normalized_description=normalized, role=DESC_CANONICAL,
-                    evidence_state=STATE_CONFIRMED, source_system=source_system, source_file=source_file,
-                    observed_count=1, created_at=now, updated_at=now))
-            else:
-                row.description, row.updated_at = name, now
-            product.canonical_description, product.updated_at = name, now
-            out.set += 1
-        if demote_others:
-            others = (await session.execute(select(MasterProductDescription).where(
-                MasterProductDescription.product_id == product.id, MasterProductDescription.role == DESC_CANONICAL,
-                MasterProductDescription.source_system != source_system))).scalars().all()
-            for other in others:
-                if await _description(session, product.id, other.normalized_description, DESC_HISTORICAL_ALIAS,
-                                      other.source_system):
-                    await session.delete(other)          # an identical alias already keeps this wording
-                else:
-                    other.role, other.updated_at = DESC_HISTORICAL_ALIAS, now
-                out.demoted += 1
+        change = await set_canonical_name(session, product, item["name"], source_system=source_system,
+                                          source_file=source_file,
+                                          demote="other_sources" if demote_others else "none")
+        out.set += change.changed
+        out.unchanged += not change.changed
+        out.demoted += change.demoted
     await session.flush()
     for item in items:
         name = " ".join(str(item["name"]).split())

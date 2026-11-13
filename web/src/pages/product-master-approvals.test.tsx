@@ -18,11 +18,13 @@ vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { username: "barj",
 
 const listCommercialCandidates = vi.fn();
 const bulkApproveCommercialCandidates = vi.fn();
+const editProductName = vi.fn();
 const listStores = vi.fn();
 vi.mock("@/api/endpoints", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/endpoints")>()),
   listCommercialCandidates: (...a: unknown[]) => listCommercialCandidates(...a),
   bulkApproveCommercialCandidates: (...a: unknown[]) => bulkApproveCommercialCandidates(...a),
+  editProductName: (...a: unknown[]) => editProductName(...a),
   listStores: (...a: unknown[]) => listStores(...a),
   getCommercialCandidate: vi.fn(() => new Promise(() => {})),
 }));
@@ -70,6 +72,38 @@ beforeEach(() => {
 });
 
 describe("Product Master approvals", () => {
+  it("lets a manager edit a product's name inline", async () => {
+    const user = userEvent.setup();
+    editProductName.mockResolvedValue({ product_id: "p-a", name: "NEW NAME 12OZ", previous_name: "PRODUCT a", changed: true });
+    renderPage();
+    const target = await rowFor("018200000001");
+    await user.click(within(target).getByRole("button", { name: "Edit name of 018200000001" }));
+    const input = within(target).getByRole("textbox", { name: "New product name" });
+    expect(input).toHaveValue("PRODUCT a");
+    await user.clear(input);
+    await user.type(input, "  NEW NAME 12OZ  ");
+    await user.click(within(target).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(editProductName).toHaveBeenCalledWith("p-a", "NEW NAME 12OZ"));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Name saved: NEW NAME 12OZ"));
+    expect(within(target).queryByRole("textbox", { name: "New product name" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the editor open and explains a refused name", async () => {
+    const user = userEvent.setup();
+    editProductName.mockRejectedValue(new ApiError(422, { error_code: "ERR_VALIDATION", message: "The name must contain letters or digits." }));
+    renderPage();
+    const target = await rowFor("018200000001");
+    await user.click(within(target).getByRole("button", { name: "Edit name of 018200000001" }));
+    const input = within(target).getByRole("textbox", { name: "New product name" });
+    await user.clear(input);
+    await user.type(input, "!!!");
+    await user.click(within(target).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("The name must contain letters or digits."));
+    expect(within(target).getByRole("textbox", { name: "New product name" })).toBeInTheDocument();
+    await user.click(within(target).getByRole("button", { name: "Cancel" }));
+    expect(within(target).queryByRole("textbox", { name: "New product name" })).not.toBeInTheDocument();
+  });
+
   it("shows what awaits a decision; conflicts cannot be selected and there is no approve-all", async () => {
     renderPage();
     await rowFor("018200000001");
