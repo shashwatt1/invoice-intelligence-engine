@@ -21,6 +21,7 @@ from app.core.security import (
     ALGORITHM,
     create_access_token,
     decode_access_token,
+    decode_session_token,
     hash_password,
     verify_password,
 )
@@ -104,3 +105,26 @@ class TestRoleRank:
     def test_exactly_three_roles_exist(self):
         assert {r.value for r in UserRole} == {"USER", "MANAGER", "ADMIN"}
         assert "DEVELOPER" not in {r.value for r in UserRole}
+
+
+class TestSessionNumber:
+    """One active session per account: the token carries the account's session number (`sv`)."""
+
+    def test_token_carries_the_session_number(self):
+        user_id = uuid.uuid4()
+        assert decode_session_token(create_access_token(user_id, 7)) == (user_id, 7)
+
+    def test_a_token_from_before_session_numbers_counts_as_zero(self):
+        user_id = uuid.uuid4()
+        now = datetime.now(UTC)
+        legacy = jwt.encode({"sub": str(user_id), "iat": now, "exp": now + timedelta(minutes=5)},
+                            get_settings().secret_key, algorithm=ALGORITHM)
+        assert decode_session_token(legacy) == (user_id, 0)
+        assert decode_access_token(legacy) == user_id
+
+    def test_garbage_and_bad_claims_decode_to_none(self):
+        assert decode_session_token("not-a-jwt-at-all") is None
+        now = datetime.now(UTC)
+        bad_sv = jwt.encode({"sub": str(uuid.uuid4()), "sv": "x", "iat": now, "exp": now + timedelta(minutes=5)},
+                            get_settings().secret_key, algorithm=ALGORITHM)
+        assert decode_session_token(bad_sv) is None

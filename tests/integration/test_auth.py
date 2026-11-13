@@ -15,6 +15,8 @@ login/authorization/redaction endpoints do.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from httpx import ASGITransport, AsyncClient
 from jose import jwt
 
@@ -205,6 +207,58 @@ class TestJwtSubjectIsTheImmutableUuid:
 
             after = await client.get("/api/v1/users")   # same session cookie, no re-login
             assert after.status_code == 200             # role re-read from DB, not the old token
+        finally:
+            await client.aclose()
+
+
+class TestOneSessionPerAccount:
+    """Signing in on another device or browser signs the previous session out."""
+
+    async def test_a_second_login_signs_out_the_first(self, app, api_client, db_session):  # noqa: F811
+        first, second = await _client(app), await _client(app)
+        try:
+            assert (await _login(first, MANAGER_USERNAME, MANAGER_PASSWORD)).status_code == 200
+            assert (await first.get("/api/v1/auth/me")).status_code == 200
+            assert (await _login(second, MANAGER_USERNAME, MANAGER_PASSWORD)).status_code == 200
+            replaced = await first.get("/api/v1/auth/me")
+            assert replaced.status_code == 401
+            assert replaced.json()["error"]["detail"] == {"reason": "session_replaced"}
+            assert (await second.get("/api/v1/auth/me")).status_code == 200
+            # another account is unaffected
+            assert (await api_client.get("/api/v1/auth/me")).status_code == 200
+        finally:
+            await first.aclose()
+            await second.aclose()
+
+    async def test_a_session_from_before_the_change_keeps_working_until_the_next_login(
+        self, app, api_client, db_session  # noqa: F811
+    ):
+        now = datetime.now(UTC)
+        legacy = jwt.encode({"sub": str(user_id("USER")), "iat": now, "exp": now + timedelta(minutes=5)},
+                            get_settings().secret_key, algorithm=ALGORITHM)
+        client = await _client(app)
+        try:
+            client.cookies.set("access_token", legacy)
+            assert (await client.get("/api/v1/auth/me")).status_code == 200
+            other = await _client(app)
+            try:
+                await _login(other, USER_USERNAME, USER_PASSWORD)
+            finally:
+                await other.aclose()
+            assert (await client.get("/api/v1/auth/me")).status_code == 401
+        finally:
+            await client.aclose()
+
+    async def test_a_password_reset_signs_out_existing_sessions(self, app, api_client, db_session):  # noqa: F811
+        client = await _client(app)
+        try:
+            await _login(client, USER_USERNAME, USER_PASSWORD)
+            assert (await client.get("/api/v1/auth/me")).status_code == 200
+            reset = await api_client.post(f"/api/v1/users/{user_id('USER')}/reset-password",
+                                          json={"new_password": "A-new-pass-2026!", "confirm_password": "A-new-pass-2026!"})
+            assert reset.status_code == 200, reset.text
+            assert (await client.get("/api/v1/auth/me")).status_code == 401
+            assert (await _login(client, USER_USERNAME, "A-new-pass-2026!")).status_code == 200
         finally:
             await client.aclose()
 

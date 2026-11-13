@@ -68,7 +68,10 @@ async def login(
         raise AuthenticationError(message="Incorrect username or password.")
     if not user.is_active:
         raise AuthenticationError(message="This account is inactive. Contact an administrator.")
-    _set_session_cookie(response, create_access_token(user.id))
+    # One active session per account: this login's number replaces every earlier session's.
+    user.session_version = (user.session_version or 0) + 1
+    await db.flush()
+    _set_session_cookie(response, create_access_token(user.id, user.session_version))
     return APIResponse(data=user_out(user))
 
 

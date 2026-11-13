@@ -146,8 +146,8 @@ def _checked_new_password(body: ResetPasswordRequest) -> str:
         "An ADMIN sets a new password for another account. Only the password changes — username, "
         "role, active state and id are untouched. The acting administrator is the authenticated "
         "session; the reset is recorded without the password. Resetting your own password here is "
-        "refused. Existing sessions of the account are not ended (sessions are stateless and expire "
-        "on their own); deactivate the account to cut access immediately."
+        "refused. Existing sessions of the account are ended: its session number is raised, so it must "
+        "sign in again with the new password (one active session per account, migration 0042)."
     ),
     responses={404: {"description": "User not found"},
                422: {"description": "Own account, or the password is missing, too short/long or unconfirmed"}},

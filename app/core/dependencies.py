@@ -18,7 +18,7 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
-from app.core.security import ACCESS_TOKEN_COOKIE_NAME, decode_access_token
+from app.core.security import ACCESS_TOKEN_COOKIE_NAME, decode_session_token
 from app.database.session import get_db
 from app.models.user import ROLE_RANK, User, UserRole
 from app.repositories.user_repository import UserRepository
@@ -37,12 +37,19 @@ async def get_current_user(
     token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
     if not token:
         raise AuthenticationError(message="Not authenticated. Please log in.")
-    user_id = decode_access_token(token)
-    if user_id is None:
+    decoded = decode_session_token(token)
+    if decoded is None:
         raise AuthenticationError(message="Session expired or invalid. Please log in again.")
+    user_id, session_version = decoded
     user = await UserRepository(db).get(user_id)
     if user is None or not user.is_active:
         raise AuthenticationError(message="This account is inactive or no longer exists.")
+    if session_version != (user.session_version or 0):
+        # A newer login (or a password reset) replaced this session: one active session per account.
+        raise AuthenticationError(
+            message="You were signed out because this account signed in on another device or browser.",
+            detail={"reason": "session_replaced"},
+        )
     return user
 
 

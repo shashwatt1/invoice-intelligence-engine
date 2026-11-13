@@ -49,6 +49,7 @@ class UserRepository:
 
     async def set_password_hash(self, user: User, password_hash: str) -> None:
         user.password_hash = password_hash
+        user.session_version = (user.session_version or 0) + 1   # a new password signs out existing sessions
         await self._session.flush()
 
     async def record_security_event(self, event: UserSecurityEvent) -> UserSecurityEvent:
