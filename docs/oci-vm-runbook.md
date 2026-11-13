@@ -230,3 +230,52 @@ sudo shred -u /etc/edihor/disk-alert.env && sudo rmdir /etc/edihor
 sudo rm /opt/edihor/ops/disk_alert.sh   # disk_check.sh may stay for manual runs
 ```
 Then pause or delete the check in Healthchecks.io so it stops expecting pings.
+
+## 9. Deploy and rollback
+
+Code reaches the VM the same way as before: merge to `main` on GitHub, then the VM fetches it. `scripts/ops/deploy.sh` and `scripts/ops/rollback.sh` make that repeatable and reversible. Always run the **installed copies** in `/opt/edihor/ops/`, never the scripts inside the checkout: a deploy switches the checkout to another commit, which would change the script while it runs.
+
+### Deploy: staging first, then production
+
+```
+/opt/edihor/ops/deploy.sh staging <commit>      # test it on staging (http://localhost:8101 via the SSH tunnel)
+/opt/edihor/ops/deploy.sh production <commit>   # only after staging is good
+```
+
+What it does, in order (any failure stops it):
+
+1. Fetches the commit from GitHub into `/opt/edihor/invoice-intelligence-engine` and checks it out. The checkout must have no local changes.
+2. Builds the image `invoice-engine:<7-char commit>`, or reuses it if that tag already exists. The build log is in `/opt/edihor/<env>/last-build.log`.
+3. Takes a **pre-deploy database backup** in `/opt/edihor/backups/<env>/predeploy-<time>-<commit>.dump` and checks it is readable.
+4. Runs database migrations with the new image (`alembic upgrade head`). The log is in `/opt/edihor/<env>/last-migrate.log`.
+5. Switches the app to the new image and records the previous one in `/opt/edihor/<env>/.env` (`APP_IMAGE`, `PREVIOUS_IMAGE`). Docker Compose reads this file, so the choice survives restarts and reboots.
+6. Health check (app and database). **If it fails, the app is switched back to the previous image automatically.**
+
+Guards:
+- Production only accepts commits that are **on `origin/main`** and were **deployed to staging successfully** first. `ALLOW_PRODUCTION_WITHOUT_STAGING=1` overrides the staging check in an emergency.
+- One deploy or rollback at a time (lock file `/opt/edihor/.deploy.lock`).
+- Every deploy and rollback is appended to `/opt/edihor/<env>/deploy.log`.
+- Downtime is the few seconds the app container takes to restart (accepted by the owner).
+
+### Rollback
+
+```
+/opt/edihor/ops/rollback.sh production
+```
+
+- Swaps back to the previous image in seconds, with no rebuild, and health-checks it. Running it again switches forward.
+- Puts the VM checkout back on that image's commit.
+- **The database is not changed.** This project's migrations are additive, so the previous version keeps working on the newer schema. Only if a deploy's database changes must also be undone: stop the app and restore that deploy's pre-deploy backup with `pg_restore` (section 6). That loses changes made since the deploy, so it is a deliberate owner decision, never automatic.
+- Then revert the change on GitHub too (a revert PR), so `main` matches what runs.
+
+### Housekeeping
+
+- Old images and pre-deploy backups are **not deleted automatically**; the disk monitor (section 8) warns at 80%. To free space later, remove old `invoice-engine:<commit>` tags that are neither `APP_IMAGE` nor `PREVIOUS_IMAGE` in either environment, and old pre-deploy dumps, only after checking them.
+- Never run `docker system prune --volumes`, `docker volume prune` or `docker compose down -v` (section 3).
+
+### Installing or updating the scripts on the VM
+
+From a checkout of the approved commit:
+```
+sudo install -m 0755 -o root -g root scripts/ops/deploy.sh scripts/ops/rollback.sh /opt/edihor/ops/
+```
