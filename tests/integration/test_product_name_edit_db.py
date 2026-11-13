@@ -20,11 +20,14 @@ from tests.integration.test_data_team_user_permissions import _client_as
 
 pytestmark = requires_db
 
-UPC = "036000291452"
+def _new_upc() -> str:
+    # The test database keeps rows between tests, so every test needs its own product key.
+    return f"0{uuid.uuid4().int % 10**11:011d}"
 
 
 async def _product(db_session, descriptions=()):
-    product = MasterProduct(canonical_key=UPC, canonical_upc=UPC, identity_basis=BASIS_UPC_A,
+    upc = _new_upc()
+    product = MasterProduct(canonical_key=upc, canonical_upc=upc, identity_basis=BASIS_UPC_A,
                             identity_state=STATE_AUTO_MATCHED)
     db_session.add(product)
     await db_session.flush()
