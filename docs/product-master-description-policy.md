@@ -175,3 +175,22 @@ packs in the price sheets — consistent with breweries reusing a UPC for rotati
 slots, but not proven to be that. They include both commercial `CONFLICT` candidates, whose
 disputed `C12` / `C24` pack sizes appear in their names. Which product each of these UPCs is
 remains a human question; the display name deliberately does not answer it.
+
+## 7. Owner decision, 13 November 2026: list names as canonical
+
+For the 1,298 products matched in [`reference-data-2026-11-13.md`](reference-data-2026-11-13.md), the owner decided
+that the **XO Liquor Boulder item list's names are the canonical names**.
+- They are recorded as `CANONICAL` descriptions, evidence `CONFIRMED`, source `item_master:xo_liquor_boulder`.
+- The 16 canonical names these products already had from §4's Tier 1 source (the Beer Inventory product sheets) are
+  kept as `HISTORICAL_ALIAS`.
+- PDI's POS wordings stay as `SOURCE` descriptions.
+
+This departs from §4 in two ways, deliberately and on the owner's authority:
+- **Another source.** The source is a store item list, not a distributor product sheet.
+- **Longer names.** 532 of the names are longer than the 25-character PDI field.
+
+The PDI export is not affected, because the EDI file writes the invoice line's own wording, cut to 25 characters
+(`export_service._pdi_description`). Canonical names only change what people read: review screens, invoice detail and
+inventory.
+
+Applied with `scripts/apply_canonical_names.py`. Any further source is promoted only by a similar recorded decision.
