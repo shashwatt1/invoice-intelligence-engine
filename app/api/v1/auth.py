@@ -75,7 +75,8 @@ async def login(
         raise AuthenticationError(message="This account is inactive. Contact an administrator.")
     # One active session per account: this login's number replaces every earlier session's.
     user.session_version = (user.session_version or 0) + 1
-    await db.flush()
+    # Commit here, as other writing routes do: the new number must be saved before the token is handed out.
+    await db.commit()
     # The update refreshes updated_at in the database, which expires it here; reload before reading it.
     await db.refresh(user)
     _set_session_cookie(response, create_access_token(user.id, user.session_version))
@@ -96,7 +97,7 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
         user = await UserRepository(db).get(decoded[0])
         if user is not None and decoded[1] == (user.session_version or 0):
             user.session_version = (user.session_version or 0) + 1
-            await db.flush()
+            await db.commit()
     response.delete_cookie(ACCESS_TOKEN_COOKIE_NAME, path="/")
     return APIResponse(data={"logged_out": True})
 
