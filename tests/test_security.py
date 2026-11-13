@@ -95,7 +95,8 @@ class TestAccessToken:
         token = create_access_token(uuid.uuid4())
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         assert "role" not in payload
-        assert set(payload.keys()) == {"sub", "iat", "exp"}
+        # `sv` is the account's session number (one active session per account), not a permission.
+        assert set(payload.keys()) == {"sub", "sv", "iat", "exp"}
 
 
 class TestRoleRank:
