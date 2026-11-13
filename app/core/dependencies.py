@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
 from app.core.security import ACCESS_TOKEN_COOKIE_NAME, decode_session_token
 from app.database.session import get_db
@@ -44,7 +45,7 @@ async def get_current_user(
     user = await UserRepository(db).get(user_id)
     if user is None or not user.is_active:
         raise AuthenticationError(message="This account is inactive or no longer exists.")
-    if session_version != (user.session_version or 0):
+    if get_settings().single_session_per_account and session_version != (user.session_version or 0):
         # A newer login (or a password reset) replaced this session: one active session per account.
         raise AuthenticationError(
             message="You were signed out because this account signed in on another device or browser.",

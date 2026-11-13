@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 from jose import jwt
 
@@ -213,6 +214,19 @@ class TestJwtSubjectIsTheImmutableUuid:
 
 class TestOneSessionPerAccount:
     """Signing in on another device or browser signs the previous session out."""
+
+    @pytest.fixture(autouse=True)
+    def _rule_on(self, monkeypatch):
+        # The suite turns the rule off (tests/conftest.py); production has it on by default.
+        import app.core.dependencies as dependencies
+
+        enabled = get_settings().model_copy(update={"single_session_per_account": True})
+        monkeypatch.setattr(dependencies, "get_settings", lambda: enabled)
+
+    async def test_the_rule_is_on_by_default_outside_the_test_suite(self):
+        from app.core.config import Settings
+
+        assert Settings.model_fields["single_session_per_account"].default is True
 
     async def test_a_second_login_signs_out_the_first(self, app, api_client, db_session):  # noqa: F811
         first, second = await _client(app), await _client(app)

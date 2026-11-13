@@ -31,6 +31,8 @@ os.environ.setdefault("DATABASE_URL_SYNC", "postgresql+psycopg2://test:test@loca
 os.environ.setdefault("LOG_FILE_ENABLED", "false")
 os.environ.setdefault("LOG_FORMAT", "console")
 os.environ.setdefault("STORAGE_BACKEND", "local")
+# Many tests sign one account in from several clients; the one-session rule has its own tests, which turn it on.
+os.environ.setdefault("SINGLE_SESSION_PER_ACCOUNT", "false")
 
 
 @pytest.fixture(scope="session")
