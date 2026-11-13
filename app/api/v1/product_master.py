@@ -29,8 +29,15 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import require_authenticated_user, require_manager
+from app.core.exceptions import RecordNotFoundError
+from app.core.logging import get_logger
 from app.database.session import get_db
-from app.models.product_master import COMMERCIAL_CONFLICT, DESC_CANONICAL, STATE_REVIEW_REQUIRED
+from app.models.product_master import (
+    COMMERCIAL_CONFLICT,
+    DESC_CANONICAL,
+    STATE_REVIEW_REQUIRED,
+    MasterProduct,
+)
 from app.models.user import User
 from app.models.vendor import Vendor
 from app.models.vendor_item_crosswalk import CROSSWALK_CONFIRMED, VendorItemCrosswalk
@@ -54,6 +61,8 @@ from app.schemas.product_master import (
     IdentityUnresolvedRow,
     LegacyMappingRef,
     ProductDescriptionView,
+    ProductNameEditRequest,
+    ProductNameEditResult,
     ProductNameVariant,
     ReviewHistoryEntry,
     StoreValueOut,
@@ -63,6 +72,7 @@ from app.schemas.product_master import (
 from app.services import master_commercial_review_service as review_service
 from app.services import proposal_service, vendor_item_crosswalk
 from app.services.product_master import shared_decisions
+from app.services.product_master.canonical_names import MANUAL_SOURCE, set_canonical_name
 from app.services.product_master.commercial_resolution import SHARED_SCOPE_LABEL
 from app.services.product_master.display_name import NAME_AMBIGUOUS, resolve_display_name
 
@@ -417,6 +427,34 @@ async def bulk_approve_candidates(
     return APIResponse(data=CommercialBulkApprovalResult(
         approved=len(outcomes), decisions=[CommercialReviewDecision(**vars(o)) for o in outcomes],
     ))
+
+
+@router.put(
+    "/products/{product_id}/name",
+    response_model=APIResponse[ProductNameEditResult],
+    summary="Edit a product's name (MANAGER/ADMIN)",
+    description=(
+        "Makes the given name the product's canonical name, as shown in PM Approvals, Product Master, invoice "
+        "detail and inventory. The previous canonical name is kept as a historical alias, never deleted; who "
+        "edited is recorded with the name. The PDI export is unaffected (it writes the invoice line's wording)."
+    ),
+    responses={404: {"description": "Product not found"}, 422: {"description": "Empty, too long or invalid name"}},
+)
+async def edit_product_name(
+    product_id: uuid.UUID, body: ProductNameEditRequest, db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_manager),
+) -> APIResponse[ProductNameEditResult]:
+    product = await db.get(MasterProduct, product_id)
+    if product is None:
+        raise RecordNotFoundError(message="Product not found.", detail={"product_id": str(product_id)})
+    change = await set_canonical_name(db, product, body.name, source_system=MANUAL_SOURCE,
+                                      source_file=f"edited by {user.username} ({user.role})",
+                                      source_sheet="PM Approvals", demote="all_others")
+    await db.commit()
+    get_logger(__name__).info("product_name_edited", product_id=str(product.id), actor=user.username,
+                              changed=change.changed, demoted=change.demoted)
+    return APIResponse(data=ProductNameEditResult(product_id=product.id, name=product.canonical_description,
+                                                  previous_name=change.previous, changed=change.changed))
 
 
 @router.get(

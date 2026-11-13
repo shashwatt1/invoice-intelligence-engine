@@ -194,3 +194,14 @@ The PDI export is not affected, because the EDI file writes the invoice line's o
 inventory.
 
 Applied with `scripts/apply_canonical_names.py`. Any further source is promoted only by a similar recorded decision.
+
+## 8. Names edited by a person (PM Approvals)
+
+A MANAGER or ADMIN can edit a product's name in PM Approvals (`PUT /product-master/products/{id}/name`).
+- **What it does:** the typed name becomes the canonical name (`CANONICAL`, evidence `CONFIRMED`, source `manual:product_master`).
+- **What it records:** who edited and when (the description row's `source_file` / `source_sheet` and timestamps).
+- **What is kept:** every earlier canonical name, including an earlier manual one, becomes a `HISTORICAL_ALIAS`. Source wordings are untouched.
+- **Rules:** at most 100 characters, and must contain letters or digits.
+- **Unaffected:** the PDI export (§7).
+
+The rule and the list import in §7 share one implementation: `app/services/product_master/canonical_names.py`.
