@@ -781,6 +781,17 @@ export function useCommercialCandidates(params: CommercialCandidateParams) {
   });
 }
 
+/** Product Master pack sizes awaiting a manager's decision (PM Approvals' default filter) — the sidebar's badge. */
+export function usePmAwaitingCount({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ["product-master", "commercial", "awaiting-count"],
+    queryFn: async () => (await listCommercialCandidates({ review_status: "UNDECIDED", page: 1, page_size: 1 })).total,
+    refetchInterval: 30_000,
+    // PM Approvals is MANAGER+; a USER never asks for this count.
+    enabled,
+  });
+}
+
 export function useCommercialSummary() {
   return useQuery({
     queryKey: ["product-master", "commercial", "summary"],

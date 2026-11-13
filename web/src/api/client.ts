@@ -9,6 +9,8 @@
 
 import axios, { AxiosError } from "axios";
 
+import { markSessionReplaced } from "@/lib/session-notice";
+
 import type { ApiErrorDetail } from "./types";
 
 export class ApiError extends Error {
@@ -94,6 +96,8 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError<{ error?: ApiErrorDetail; request_id?: string }>) => {
     if (error.response) {
+      const reason = (error.response.data?.error?.detail as { reason?: unknown } | null | undefined)?.reason;
+      if (error.response.status === 401 && reason === "session_replaced") markSessionReplaced();
       const requestId =
         error.response.data?.request_id ??
         (error.response.headers?.["x-request-id"] as string | undefined) ??

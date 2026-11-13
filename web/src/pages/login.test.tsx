@@ -30,6 +30,7 @@ vi.mock("@/api/endpoints", () => ({
   getMappingQueueSummary: vi.fn(async () => ({ unique_products: 0, invoice_occurrences: 0, stores: 0 })),
   getInventoryStatus: vi.fn(async () => ({ enabled: false })),
   getRecycleBinSummary: vi.fn(async () => ({ in_bin: 0, pending_requests: 0 })),
+  listCommercialCandidates: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 1 })),
 }));
 
 import { ApiError } from "@/api/client";
@@ -69,6 +70,17 @@ beforeEach(() => {
 });
 
 describe("LoginPage", () => {
+  it("explains once that a newer sign-in elsewhere ended this session", async () => {
+    window.sessionStorage.setItem("invoice-intelligence.session-notice", "session_replaced");
+    const { unmount } = mount(<LoginPage />);
+    expect(await screen.findByTestId("login-notice")).toHaveTextContent(
+      "You were signed out because this account signed in on another device or browser.");
+    unmount();
+    mount(<LoginPage />);
+    await screen.findByTestId("login");
+    expect(screen.queryByTestId("login-notice")).not.toBeInTheDocument();
+  });
+
   it("signs in with username and password and never offers a role choice", async () => {
     const user = userEvent.setup();
     vi.mocked(api.login).mockResolvedValue(account("MANAGER"));
@@ -152,7 +164,17 @@ describe("Sidebar role gating", () => {
     expect(api.getMappingQueueSummary).not.toHaveBeenCalled();
     expect(api.listProposals).not.toHaveBeenCalled();
     expect(api.getInventoryStatus).not.toHaveBeenCalled();
+    expect(api.listCommercialCandidates).not.toHaveBeenCalled();
     expect(rail()).not.toHaveTextContent("Inventory");
+  });
+
+  it("shows a MANAGER how many pack sizes await approval on PM Approvals", async () => {
+    vi.mocked(api.me).mockResolvedValue(account("MANAGER"));
+    vi.mocked(api.listCommercialCandidates).mockResolvedValue({ success: true, items: [], total: 1256, page: 1, page_size: 1, request_id: null });
+    mount(<Sidebar collapsed={false} onToggle={() => {}} />);
+    const badge = await screen.findByTitle("1256 pack sizes awaiting approval");
+    expect(badge).toHaveTextContent("1256");
+    expect(api.listCommercialCandidates).toHaveBeenCalledWith({ review_status: "UNDECIDED", page: 1, page_size: 1 });
   });
 
   it("offers Inventory to a MANAGER only while the server reports it switched on", async () => {
