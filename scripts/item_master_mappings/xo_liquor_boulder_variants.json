@@ -1,11 +1,10 @@
 {
-  "_about": "XO Liquor Boulder POS 'variants' export (Item, Barcodes, Units per case, Department, Retail price), supplied by the owner 2026-11-13 (data/reference/variants-xo_liquor_boulder-*.csv, not committed). Barcodes are full codes (12-digit UPC-A 99% check-digit valid; 13-digit EAN). 'Units per case' is 1 for 86% of rows and disagrees with approved values mostly where it is 1, so 1 is treated as 'not set': those rows add barcode and wording only. Prices and departments are not imported.",
+  "_about": "XO Liquor Boulder POS 'variants' export (Item, Barcodes, Units per case, Department, Retail price), supplied by the owner 2026-11-13 (data/reference/variants-xo_liquor_boulder-*.csv, not committed). Barcodes are full codes (12-digit UPC-A 99% check-digit valid; 13-digit EAN). Owner decision 2026-11-13: every stated 'Units per case', including 1, is a real pack size and becomes a review candidate; a value that disagrees with an approved one is reported as a conflict and never overwrites it. Prices and departments are not imported.",
   "source_system": "item_master:xo_liquor_boulder",
   "upc": "Barcodes",
   "description": "Item",
   "units_per_case": "Units per case",
   "header_row": 1,
   "barcode_convention": "FULL_BARCODE",
-  "representation": "EXCEL_FLOAT",
-  "units_placeholder_values": [1]
+  "representation": "EXCEL_FLOAT"
 }
