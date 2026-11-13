@@ -95,11 +95,20 @@ class ColumnMapping:
     header_row: int = 1                      # 1-based
     barcode_convention: str = BARCODE_FULL   # or CHECK_DIGIT_OMITTED (11-digit PDI codes)
     representation: str = REPRESENTATION_TEXT  # or EXCEL_FLOAT (leading zeros may be lost)
+    # Values this source writes when the pack size is NOT set (e.g. a POS export that shows 1
+    # for every item nobody configured). Such a row still adds its barcode and wording, but
+    # states no units-per-case, so it can neither create a candidate nor raise a conflict.
+    units_placeholder_values: tuple[int, ...] = ()
 
     @classmethod
     def from_file(cls, path: str | Path) -> ColumnMapping:
         data = json.loads(Path(path).read_text())
         data = {k: v for k, v in data.items() if not k.startswith("_")}
+        if "units_placeholder_values" in data:
+            values = data["units_placeholder_values"]
+            if not isinstance(values, list) or not all(isinstance(v, int) and 1 <= v <= 9999 for v in values):
+                raise ValueError("units_placeholder_values must be a list of whole numbers from 1 to 9999.")
+            data["units_placeholder_values"] = tuple(values)
         mapping = cls(**data)
         if not mapping.source_system.startswith("item_master:"):
             raise ValueError("source_system must start with 'item_master:' so imported rows are recognizable.")
@@ -221,6 +230,8 @@ async def preview(session: AsyncSession, path: str | Path, mapping: ColumnMappin
         units, problem = _units(values.get(mapping.units_per_case)) if mapping.units_per_case else (None, None)
         if problem:
             r.category, r.reason = INVALID, problem
+        elif units is not None and units in mapping.units_placeholder_values:
+            units, r.reason = None, "units_placeholder_ignored"
         r.units = units
         results.append(r)
 

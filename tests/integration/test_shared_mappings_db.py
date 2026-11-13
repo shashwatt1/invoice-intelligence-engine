@@ -349,6 +349,38 @@ class TestItemMasterImport:
         again = await importer.preview(db_session, path, MAPPING)
         assert not any(r.writes for r in again.rows)
 
+    async def test_a_placeholder_pack_size_adds_identity_but_no_units(self, db_session, tmp_path):
+        mapping = importer.ColumnMapping(source_system="item_master:test", upc="UPC", description="Description",
+                                         units_per_case="Units", units_placeholder_values=(1,))
+        path = _csv(tmp_path, [
+            (UPC, "SYNTH COLA 12PK", "12"),
+            (OTHER_UPC, "SYNTH LEMON", "1"),           # 1 = not set in this source
+            (OTHER_UPC, "SYNTH LEMON", "6"),           # the real value elsewhere: no conflict with the placeholder
+        ])
+        plan = await importer.preview(db_session, path, mapping)
+        assert plan.counts()["CONFLICT"] == 0 and plan.counts()["INVALID"] == 0
+        assert plan.summary()["reasons"].get("NEW: units_placeholder_ignored") == 1
+        written = await importer.apply(db_session, plan, mapping)
+        await db_session.commit()
+        assert written == {"product": 2, "identifier": 2, "description": 2, "commercial_candidate": 2}
+        units = (await db_session.execute(select(MasterCommercialMapping.units_accounted_for).where(
+            MasterCommercialMapping.source_system == "item_master:test"))).scalars().all()
+        assert sorted(units) == [6, 12] and 1 not in units
+
+    async def test_without_the_option_a_one_is_a_stated_pack_size(self, db_session, tmp_path):
+        plan = await importer.preview(db_session, _csv(tmp_path, [(UPC, "SYNTH COLA", "1")]), MAPPING)
+        assert plan.summary()["units_candidates"] == 1
+
+    def test_placeholder_values_are_validated_when_read_from_a_mapping_file(self, tmp_path):
+        good = tmp_path / "good.json"
+        good.write_text('{"source_system": "item_master:x", "upc": "U", "units_placeholder_values": [1]}')
+        assert importer.ColumnMapping.from_file(good).units_placeholder_values == (1,)
+        for bad_value in ('"1"', "[0]", "[1.5]", '["1"]'):
+            bad = tmp_path / "bad.json"
+            bad.write_text('{"source_system": "item_master:x", "upc": "U", "units_placeholder_values": ' + bad_value + "}")
+            with pytest.raises(ValueError):
+                importer.ColumnMapping.from_file(bad)
+
     async def test_an_approved_value_is_never_overwritten_by_an_import(self, api_client, db_session, tmp_path):  # noqa: F811
         p = await _proposal(db_session, PHYSICAL_STORE, 12)
         assert (await api_client.post(f"/api/v1/proposals/{p.id}/approve", json={"scope": "shared"})).status_code == 200
