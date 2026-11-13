@@ -1,0 +1,10 @@
+{
+  "_about": "Items present in BOTH the PDI Item Sales exports and the XO Liquor Boulder item list, as written by scripts/match_pdi_items.py (pdi-matched.csv: UPC = PDI item code + check digit, Description = PDI wording, Units = the list's stated units per case, 1 included). Units become REVIEW_REQUIRED shared candidates for PM Approvals; names are made canonical separately with scripts/apply_canonical_names.py. Loaded into production 2026-11-13; see docs/reference-data-2026-11-13.md.",
+  "source_system": "item_master:pdi_matched_xo",
+  "upc": "UPC",
+  "description": "Description",
+  "units_per_case": "Units",
+  "header_row": 1,
+  "barcode_convention": "FULL_BARCODE",
+  "representation": "TEXT"
+}
