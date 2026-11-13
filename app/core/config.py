@@ -184,6 +184,8 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     api_key_header: str = "X-API-Key"
     access_token_expire_minutes: int = 60
+    # One active session per account: a new login signs the account's other sessions out (migration 0042).
+    single_session_per_account: bool = True
 
     @property
     def is_production(self) -> bool:

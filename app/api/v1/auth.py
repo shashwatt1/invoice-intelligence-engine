@@ -15,13 +15,18 @@ never needs to store or attach it manually; the browser does that.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.dependencies import get_current_user
 from app.core.exceptions import AuthenticationError
-from app.core.security import ACCESS_TOKEN_COOKIE_NAME, create_access_token, verify_password
+from app.core.security import (
+    ACCESS_TOKEN_COOKIE_NAME,
+    create_access_token,
+    decode_session_token,
+    verify_password,
+)
 from app.database.session import get_db
 from app.models.user import User, UserRole
 from app.repositories.user_repository import UserRepository
@@ -68,12 +73,31 @@ async def login(
         raise AuthenticationError(message="Incorrect username or password.")
     if not user.is_active:
         raise AuthenticationError(message="This account is inactive. Contact an administrator.")
-    _set_session_cookie(response, create_access_token(user.id))
+    # One active session per account: this login's number replaces every earlier session's.
+    user.session_version = (user.session_version or 0) + 1
+    # Commit here, as other writing routes do: the new number must be saved before the token is handed out.
+    await db.commit()
+    # The update refreshes updated_at in the database, which expires it here; reload before reading it.
+    await db.refresh(user)
+    _set_session_cookie(response, create_access_token(user.id, user.session_version))
     return APIResponse(data=user_out(user))
 
 
 @router.post("/logout", response_model=APIResponse[dict], summary="Log out")
-async def logout(response: Response) -> APIResponse[dict]:
+async def logout(request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> APIResponse[dict]:
+    """
+    Ends the session on the server, not only in this browser: the account's session number is raised,
+    so this token (or a copy of it) is refused from now on. Only the account's CURRENT session can do
+    that — signing out a session another login already replaced leaves the newer one alone. Never fails:
+    no cookie, an invalid or expired token, or a deleted account still just clears the cookie.
+    """
+    token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
+    decoded = decode_session_token(token) if token else None
+    if decoded is not None:
+        user = await UserRepository(db).get(decoded[0])
+        if user is not None and decoded[1] == (user.session_version or 0):
+            user.session_version = (user.session_version or 0) + 1
+            await db.commit()
     response.delete_cookie(ACCESS_TOKEN_COOKIE_NAME, path="/")
     return APIResponse(data={"logged_out": True})
 

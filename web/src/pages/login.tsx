@@ -5,6 +5,7 @@ import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
+import { takeSessionNotice } from "@/lib/session-notice";
 
 /**
  * The only unauthenticated screen. Username and password, nothing else
@@ -21,6 +22,8 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Shown once when a newer sign-in elsewhere ended this browser's session.
+  const [notice] = useState(() => takeSessionNotice());
 
   const from = (location.state as { from?: string } | null)?.from ?? "/";
 
@@ -59,6 +62,11 @@ export function LoginPage() {
         </div>
 
         <form onSubmit={submit} className="surface space-y-4 p-6">
+          {notice ? (
+            <p role="status" className="rounded-md border px-3 py-2 text-[0.78rem] text-muted-foreground" data-testid="login-notice">
+              {notice}
+            </p>
+          ) : null}
           <div className="space-y-1.5">
             <label htmlFor="username" className="text-[0.78rem] font-medium">Username</label>
             <Input

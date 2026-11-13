@@ -22,7 +22,7 @@ import re
 import uuid
 from enum import StrEnum
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, String, text
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -124,6 +124,11 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true"),
         doc="False deactivates the account: it can no longer authenticate or use any protected API.",
+    )
+    session_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0"), default=0,
+        doc="Raised by every login and password reset; a session token issued for an older number is refused, "
+            "so an account has one active session (migration 0042).",
     )
 
     def __repr__(self) -> str:

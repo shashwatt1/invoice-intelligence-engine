@@ -54,17 +54,30 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(user_id: uuid.UUID) -> str:
+def create_access_token(user_id: uuid.UUID, session_version: int = 0) -> str:
     """
-    A JWT whose only claim that matters is `sub` (the user id) — an
-    identity pointer, not a cache of role/permissions. Role and
-    is_active are read fresh from the database on every request.
+    A JWT whose claims are `sub` (the user id) — an identity pointer, not a
+    cache of role/permissions — and `sv`, the account's session number at
+    login. Role and is_active are read fresh from the database on every
+    request; so is the session number, which a newer login has raised.
     """
     settings = get_settings()
     now = datetime.now(UTC)
     expires = now + timedelta(minutes=settings.access_token_expire_minutes)
-    payload: dict[str, Any] = {"sub": str(user_id), "iat": now, "exp": expires}
+    payload: dict[str, Any] = {"sub": str(user_id), "sv": int(session_version), "iat": now, "exp": expires}
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+
+
+def decode_session_token(token: str) -> tuple[uuid.UUID, int] | None:
+    """(user id, session number) of a valid, unexpired token, or None. A token without `sv` counts as 0."""
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+        user_id = uuid.UUID(str(payload.get("sub")))
+        session_version = int(payload.get("sv", 0))
+    except (JWTError, ValueError, TypeError):
+        return None
+    return user_id, session_version
 
 
 def decode_access_token(token: str) -> uuid.UUID | None:
