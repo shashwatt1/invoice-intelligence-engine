@@ -76,6 +76,8 @@ async def login(
     # One active session per account: this login's number replaces every earlier session's.
     user.session_version = (user.session_version or 0) + 1
     await db.flush()
+    # The update refreshes updated_at in the database, which expires it here; reload before reading it.
+    await db.refresh(user)
     _set_session_cookie(response, create_access_token(user.id, user.session_version))
     return APIResponse(data=user_out(user))
 
