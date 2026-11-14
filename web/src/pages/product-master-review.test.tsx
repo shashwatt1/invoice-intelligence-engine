@@ -606,7 +606,8 @@ describe("Product Master review — accountable decisions", () => {
     expect(maker).toHaveTextContent("Decision by");
     expect(maker).toHaveTextContent("tester · Administrator");
     expect(maker).toHaveTextContent("Recorded from your signed-in account.");
-    expect(within(dialog).queryByLabelText(/name|reviewer|approved by/i)).not.toBeInTheDocument();
+    // Nothing to type for WHO decides. (The product's own "Edit name" control is a button, not a field for a person.)
+    expect(within(dialog).queryByRole("textbox", { name: /name|reviewer|approved by/i })).not.toBeInTheDocument();
   });
 
   it("states the operational consequence as exact arithmetic", async () => {

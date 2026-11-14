@@ -104,6 +104,37 @@ describe("Product Master approvals", () => {
     expect(within(target).queryByRole("textbox", { name: "New product name" })).not.toBeInTheDocument();
   });
 
+  it("lets a manager edit the name inside the review pop-up, next to the units per case", async () => {
+    const user = userEvent.setup();
+    editProductName.mockResolvedValue({ product_id: "p-a", name: "ZIG ZAG ULTRA THIN 1EA", previous_name: "PRODUCT a", changed: true });
+    renderPage();
+    await user.click(within(await rowFor("018200000001")).getByRole("button", { name: "Review" }));
+    const review = await screen.findByRole("alertdialog");
+    await user.click(within(review).getByRole("button", { name: "Edit name of 018200000001" }));
+    const input = within(review).getByRole("textbox", { name: "New product name" });
+    expect(input).toHaveValue("PRODUCT a");
+    await user.clear(input);
+    await user.type(input, "ZIG ZAG ULTRA THIN 1EA");
+    await user.click(within(review).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(editProductName).toHaveBeenCalledWith("p-a", "ZIG ZAG ULTRA THIN 1EA"));
+    await waitFor(() => expect(within(review).queryByRole("textbox", { name: "New product name" })).not.toBeInTheDocument());
+    // the review stays open, with its decision controls, so the units per case can be set next
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(within(review).getByRole("button", { name: "Approve candidate" })).toBeInTheDocument();
+  });
+
+  it("Escape in the pop-up's name editor closes the editor, not the review", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(within(await rowFor("018200000001")).getByRole("button", { name: "Review" }));
+    const review = await screen.findByRole("alertdialog");
+    await user.click(within(review).getByRole("button", { name: "Edit name of 018200000001" }));
+    await user.keyboard("{Escape}");
+    expect(within(review).queryByRole("textbox", { name: "New product name" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(editProductName).not.toHaveBeenCalled();
+  });
+
   it("shows what awaits a decision; conflicts cannot be selected and there is no approve-all", async () => {
     renderPage();
     await rowFor("018200000001");

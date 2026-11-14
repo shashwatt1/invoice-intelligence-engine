@@ -1,4 +1,4 @@
-import { ClipboardCheck, Pencil } from "lucide-react";
+import { ClipboardCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -7,6 +7,7 @@ import { ApiError } from "@/api/client";
 import type { CommercialCandidateRow } from "@/api/types";
 import { PageHeader } from "@/components/layout/page-header";
 import { CommercialEvidencePanel } from "@/components/product-master/commercial-evidence-panel";
+import { EditableProductName } from "@/components/product-master/editable-product-name";
 import { CrossStoreDifferences } from "@/components/product-master/cross-store-differences";
 import { ReviewStatusBadge } from "@/components/product-master/review-status-badge";
 import { FilterBar } from "@/components/shared/filter-bar";
@@ -24,12 +25,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useBulkApproveCommercialCandidates, useCommercialCandidates, useEditProductName, useStores } from "@/hooks/use-api";
+import { useBulkApproveCommercialCandidates, useCommercialCandidates, useStores } from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { roleLabel } from "@/lib/commercial";
 import { formatDateTime } from "@/lib/format";
 import { storeOptionLabel } from "@/lib/stores";
-import { basisLabel, costLabel, ProductName, StoreContext } from "@/pages/product-master-review";
+import { basisLabel, costLabel, StoreContext } from "@/pages/product-master-review";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500] as const;
 
@@ -265,53 +266,6 @@ export function ProductMasterApprovalsPage() {
  * server makes the authoritative check under a lock (version and eligibility)
  * and refuses the whole request if any mapping fails it.
  */
-/**
- * The product's name with an "Edit name" control. Saving makes the typed name the product's canonical name
- * everywhere it is shown; the previous name is kept as a historical alias by the server. Not the PDI export.
- */
-function EditableProductName({ row }: { row: CommercialCandidateRow }) {
-  const edit = useEditProductName();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  const start = () => {
-    setDraft(row.product_name_basis === "AMBIGUOUS_SOURCE" || !row.product_name ? "" : row.product_name);
-    setEditing(true);
-  };
-  const save = () => {
-    const name = draft.trim();
-    if (!name || edit.isPending) return;
-    edit.mutate({ productId: row.product_id, name }, {
-      onSuccess: (result) => {
-        toast.success(result.changed ? `Name saved: ${result.name}` : "That name was already set.");
-        setEditing(false);
-      },
-      onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not save the name. Try again."),
-    });
-  };
-
-  if (editing) {
-    return (
-      <form className="flex flex-wrap items-center gap-1.5" onSubmit={(event) => { event.preventDefault(); save(); }}>
-        <Input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={100} autoFocus
-               aria-label="New product name" disabled={edit.isPending} className="h-8 min-w-0 flex-1"
-               onKeyDown={(event) => { if (event.key === "Escape") setEditing(false); }} />
-        <Button type="submit" size="sm" disabled={!draft.trim() || edit.isPending}>Save</Button>
-        <Button type="button" variant="ghost" size="sm" disabled={edit.isPending} onClick={() => setEditing(false)}>Cancel</Button>
-      </form>
-    );
-  }
-  return (
-    <div className="flex items-start gap-1">
-      <div className="min-w-0 flex-1"><ProductName row={row} /></div>
-      <Button type="button" variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground"
-              aria-label={`Edit name of ${row.canonical_identifier ?? "this product"}`} title="Edit name" onClick={start}>
-        <Pencil aria-hidden />
-      </Button>
-    </div>
-  );
-}
-
 function BulkApprovalDialog({ rows, selected, onClose, onFinished }: {
   rows: CommercialCandidateRow[];
   selected: Map<string, CommercialCandidateRow>;
