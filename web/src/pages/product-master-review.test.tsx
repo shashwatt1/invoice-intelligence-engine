@@ -623,6 +623,29 @@ describe("Product Master review — accountable decisions", () => {
     expect(impact).toHaveTextContent("Selling-unit cost$26.45");
   });
 
+  it("typing 1 unit per case switches a decision to 'case is the selling unit' instead of refusing it", async () => {
+    currentRole = "MANAGER";
+    const { user, dialog } = await openCandidate("018200001154");
+    await user.click(within(dialog).getByRole("combobox", { name: /commercial interpretation/i }));
+    await user.click(await screen.findByRole("option", { name: /contained unit/i }));
+    await user.type(within(dialog).getByLabelText(/sellable units per case/i), "1");
+    expect(within(dialog).getByTestId("switched-to-case")).toHaveTextContent("switched to “Case is the selling unit”");
+    expect(within(dialog).getByRole("combobox", { name: /commercial interpretation/i }))
+      .toHaveTextContent(/case is the selling unit/i);
+    expect(within(dialog).queryByLabelText(/sellable units per case/i)).not.toBeInTheDocument();
+    expect(within(dialog).getByTestId("commercial-impact")).toHaveTextContent("Multiplier1");
+  });
+
+  it("a USER proposing 1 unit per case keeps the 1 (a proposal is not a decision)", async () => {
+    currentRole = "USER";
+    const { user, dialog } = await openCandidate("018200001154");
+    await user.click(within(dialog).getByRole("combobox", { name: /commercial interpretation/i }));
+    await user.click(await screen.findByRole("option", { name: /contained unit/i }));
+    await user.type(within(dialog).getByLabelText(/sellable units per case/i), "1");
+    expect(within(dialog).getByLabelText(/sellable units per case/i)).toHaveValue(1);
+    expect(within(dialog).queryByTestId("switched-to-case")).not.toBeInTheDocument();
+  });
+
   it("shows no unit cost for a conflict until an interpretation is chosen, and never guesses one", async () => {
     const { dialog } = await openCandidate("018200967214");
     const impact = within(dialog).getByTestId("commercial-impact");
