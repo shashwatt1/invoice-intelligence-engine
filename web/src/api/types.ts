@@ -1219,6 +1219,9 @@ export interface CommercialCandidateRow {
   reviewed_by: string | null;
   reviewed_at: string | null;
   legacy_mappings: LegacyMappingRef[];
+  /** Who reviews this candidate (PM Approvals work assignment); null = unassigned. */
+  assigned_to?: string | null;
+  assigned_to_user_id?: string | null;
 }
 
 export interface EvidenceView {
@@ -1302,6 +1305,8 @@ export interface CommercialCandidateParams {
   store_id?: string;
   cost_basis?: string;
   search?: string;
+  /** 'me', 'unassigned', 'all' or a user id. */
+  assigned_to?: string;
   page?: number;
   page_size?: number;
 }
@@ -1822,4 +1827,36 @@ export interface StoreChangeResult {
   decided_proposals_left_at_old_store: number;
   /** Export files already generated for this invoice; they carry the old store. */
   export_files_for_old_store: number;
+}
+
+/** PM Approvals work assignment. */
+export interface PersonWorkload {
+  user_id: string;
+  username: string;
+  awaiting: number;
+  decided: number;
+}
+
+export interface AssignmentSummary {
+  people: PersonWorkload[];
+  unassigned_awaiting: number;
+}
+
+export interface AssignmentPlanEntry {
+  user_id: string;
+  count: number;
+}
+
+export interface AssignedBlock {
+  user_id: string;
+  username: string;
+  requested: number;
+  assigned: number;
+  first_upc: string | null;
+  last_upc: string | null;
+}
+
+export interface AssignInOrderResult {
+  blocks: AssignedBlock[];
+  unassigned_awaiting: number;
 }
