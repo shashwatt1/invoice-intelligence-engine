@@ -445,12 +445,23 @@ function AssignWorkDialog({ onClose }: { onClose: () => void }) {
     && new Set(entries.map((row) => row.userId)).size === entries.length;
   const nameOf = (id: string) => reviewers.find((u) => u.id === id)?.username ?? "—";
 
+  // Work already handed out comes first (in the order it was handed out); new blocks are numbered after it and
+  // are only ever taken from unassigned candidates — never from anyone's existing block.
+  const people = summary.data?.people ?? [];
+  let taken = 0;
+  const existing = people.map((p) => {
+    const size = p.awaiting + p.decided;
+    const block = { name: p.username, start: taken + 1, end: taken + size, awaiting: p.awaiting, decided: p.decided };
+    taken += size;
+    return block;
+  });
   let from = 1;
   const preview = entries.map((row) => {
     const start = from;
     const end = Math.min(from + row.n - 1, unassigned);
     from += row.n;
-    return { name: nameOf(row.userId), start, end, short: start > unassigned ? row.n : Math.max(0, start + row.n - 1 - end) };
+    return { name: nameOf(row.userId), start: taken + start, end: taken + end,
+             short: start > unassigned ? row.n : Math.max(0, start + row.n - 1 - end) };
   });
 
   const update = (key: number, patch: Partial<PlanRow>) =>
@@ -487,11 +498,22 @@ function AssignWorkDialog({ onClose }: { onClose: () => void }) {
           </AlertDialogDescription>
         </AlertDialogHeader>
 
+        {existing.length > 0 && (
+          <div className="space-y-1 rounded-md border p-3" data-testid="already-assigned">
+            <h4 className="text-xs font-medium text-muted-foreground">Already assigned</h4>
+            <ul className="space-y-0.5 text-sm">
+              {existing.map((b) => (
+                <li key={b.name}>
+                  {b.name}: candidates {b.start}–{b.end}
+                  <span className="text-muted-foreground"> · {b.awaiting} awaiting, {b.decided} decided</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <p className="text-sm" data-testid="unassigned-count">
-          <span className="font-medium tabular-nums">{unassigned}</span> awaiting approval and unassigned
-          {summary.data?.people.length
-            ? ` · already assigned: ${summary.data.people.map((p) => `${p.username} ${p.awaiting}`).join(", ")}`
-            : ""}
+          <span className="font-medium tabular-nums">{unassigned}</span> awaiting approval and unassigned.
+          {existing.length > 0 ? " New work is taken only from these, after the blocks above — never anyone else's." : ""}
         </p>
 
         <div className="space-y-2">

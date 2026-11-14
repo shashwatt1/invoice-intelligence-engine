@@ -187,7 +187,9 @@ async def workloads(session: AsyncSession) -> list[PersonWorkload]:
                func.count().filter(~_UNDECIDED))
         .join(MasterCommercialMapping, MasterCommercialMapping.id == CommercialReviewAssignment.mapping_id)
         .join(User, User.id == CommercialReviewAssignment.assigned_user_id)
+        .join(MasterProduct, MasterProduct.id == MasterCommercialMapping.product_id)
         .group_by(CommercialReviewAssignment.assigned_user_id, User.username)
-        .order_by(User.username)
+        # In the order the blocks were handed out (queue order), so ranges can be shown one after another.
+        .order_by(func.min(CommercialReviewAssignment.assigned_at), func.min(MasterProduct.canonical_upc))
     )).all()
     return [PersonWorkload(user_id, username, awaiting, decided) for user_id, username, awaiting, decided in rows]
