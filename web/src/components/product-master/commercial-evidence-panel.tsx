@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { EditableProductName } from "@/components/product-master/editable-product-name";
 import { ReviewStatusBadge } from "@/components/product-master/review-status-badge";
 import {
   useApproveCommercialCandidate,
@@ -174,10 +175,18 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
 
   return (
     <AlertDialog open onOpenChange={(next) => !next && attemptClose()}>
-      <AlertDialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+      <AlertDialogContent
+        className="max-h-[85vh] max-w-2xl overflow-y-auto"
+        // Escape in the name editor closes the editor, not the review (Radix hears Escape before the input does).
+        onEscapeKeyDown={(event) => {
+          if ((event.target as HTMLElement | null)?.getAttribute?.("aria-label") === "New product name") {
+            event.preventDefault();
+          }
+        }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle className="text-base">
-            {candidate.product_name ?? PRODUCT_NAME_UNAVAILABLE}
+            {current.product_name ?? PRODUCT_NAME_UNAVAILABLE}
           </AlertDialogTitle>
           <ReviewStatusBadge status={current.review_status} lastDecision={current.last_decision} />
           <AlertDialogDescription>
@@ -204,11 +213,14 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
               <dd className="font-mono text-xs">{candidate.pdi_item_code ?? "—"}</dd>
               <dt className="text-muted-foreground">Product name</dt>
               <dd className="space-y-1">
-                <div>{candidate.product_name ?? PRODUCT_NAME_UNAVAILABLE}</div>
-                <ProductNameBasisBadge basis={candidate.product_name_basis} />
+                {/* Edit the name here, next to the units per case, without leaving the review. */}
+                <EditableProductName row={current} editable={canDecide}>
+                  <div data-testid="review-product-name">{current.product_name ?? PRODUCT_NAME_UNAVAILABLE}</div>
+                </EditableProductName>
+                <ProductNameBasisBadge basis={current.product_name_basis} />
                 <div className="text-xs text-muted-foreground">
-                  {nameBasisLabel(candidate)}
-                  {candidate.product_name_reference ? ` · ${candidate.product_name_reference}` : ""}
+                  {nameBasisLabel(current)}
+                  {current.product_name_reference ? ` · ${current.product_name_reference}` : ""}
                 </div>
               </dd>
             </dl>
