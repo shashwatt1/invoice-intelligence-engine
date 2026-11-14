@@ -247,7 +247,7 @@ describe("Product Master product names", () => {
     expect(within(dialog).getByText(/identified by its UPC/)).toBeInTheDocument();
     // SOURCE → DERIVED evidence is still there.
     expect(within(dialog).getByText(/Source values/i)).toBeInTheDocument();
-    expect(within(dialog).getByText(/Derived, not printed in the workbook/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Suggested by the import, not printed on an invoice/i)).toBeInTheDocument();
   });
 
   it("shows a USER the same names and evidence, with no approve or reject", async () => {
@@ -327,37 +327,34 @@ describe("Product Master commercial review", () => {
     expect(screen.getByText(/A package of 18 does not make the multiplier 18/)).toBeInTheDocument();
   });
 
-  it("requires an explicit interpretation before approving a conflict", async () => {
+  it("requires the units per case before approving a conflict — nothing is guessed", async () => {
     const user = userEvent.setup();
     renderPage();
     const row = (await screen.findByText("018200967214")).closest("tr")!;
     await user.click(within(row).getByRole("button", { name: /review/i }));
 
     expect(await screen.findByText(/did not settle this candidate/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^units per case$/i)).toHaveValue(null);       // no suggestion to keep
     await user.type(screen.getByLabelText(/decision basis/i), "Checked the distributor sheet");
-    await user.click(screen.getByRole("button", { name: /approve candidate/i }));
-    await user.click(screen.getByRole("button", { name: /confirm approval/i }));
-
-    // The UI sends no basis, so the backend refuses — nothing is guessed here.
-    expect(approveCommercialCandidate).toHaveBeenCalledWith(
-      "c2", expect.objectContaining({ commercial_unit_basis: null, units_accounted_for: null }),
-    );
+    expect(screen.getByRole("button", { name: /approve candidate/i })).toBeDisabled();
+    await user.type(screen.getByLabelText(/^units per case$/i), "24");
+    expect(screen.getByRole("button", { name: /approve candidate/i })).toBeEnabled();
   });
 
-  it("sends the reviewer's chosen interpretation when resolving a conflict", async () => {
+  it("records 1 unit per case as 'case is the selling unit' when resolving a conflict", async () => {
     const user = userEvent.setup();
     renderPage();
     const row = (await screen.findByText("018200967214")).closest("tr")!;
     await user.click(within(row).getByRole("button", { name: /review/i }));
 
-    await user.click(await screen.findByRole("combobox", { name: /commercial interpretation/i }));
-    await user.click(await screen.findByRole("option", { name: /case is the selling unit/i }));
+    await user.type(await screen.findByLabelText(/^units per case$/i), "1");
+    expect(screen.getByTestId("units-meaning")).toHaveTextContent("1 — the case itself is the selling unit.");
     await user.type(screen.getByLabelText(/decision basis/i), "Items/case column states 1");
     await user.click(screen.getByRole("button", { name: /approve candidate/i }));
     await user.click(screen.getByRole("button", { name: /confirm approval/i }));
 
     expect(approveCommercialCandidate).toHaveBeenCalledWith(
-      "c2", expect.objectContaining({ commercial_unit_basis: "CASE_IS_SELLING_UNIT" }),
+      "c2", expect.objectContaining({ commercial_unit_basis: "CASE_IS_SELLING_UNIT", units_accounted_for: 1 }),
     );
   });
 
@@ -388,7 +385,7 @@ describe("Product Master commercial review", () => {
     expect(screen.getByText("18/12 CAN")).toBeInTheDocument();
     expect(screen.getByText("1.0")).toBeInTheDocument();
     // DERIVED layer — explicitly labelled as derived.
-    expect(screen.getByText(/Derived, not printed in the workbook/i)).toBeInTheDocument();
+    expect(screen.getByText(/Suggested by the import, not printed on an invoice/i)).toBeInTheDocument();
   });
 
   it("offers a USER proposal instead of approve/reject", async () => {
@@ -411,9 +408,7 @@ describe("Product Master commercial review", () => {
     const row = (await screen.findByText("018200967214")).closest("tr")!;
     await user.click(within(row).getByRole("button", { name: /review/i }));
 
-    await user.click(await screen.findByRole("combobox", { name: /commercial interpretation/i }));
-    await user.click(await screen.findByRole("option", { name: /contained unit/i }));
-    await user.type(screen.getByLabelText(/sellable units per case/i), "12");
+    await user.type(await screen.findByLabelText(/^units per case$/i), "12");
     await user.type(screen.getByLabelText(/proposal basis/i), "Distributor sheet states 12 per case");
     await user.click(screen.getByRole("button", { name: /submit proposal/i }));
 
@@ -616,34 +611,38 @@ describe("Product Master review — accountable decisions", () => {
     const impact = within(dialog).getByTestId("commercial-impact");
     expect(impact).toHaveTextContent("$26.45");
     expect(impact).toHaveTextContent("Selling-unit cost$6.61 (rounded to the cent)");
-    // Choosing "case is the selling unit" makes the multiplier 1 and the unit cost the case cost.
-    await user.click(within(dialog).getByRole("combobox", { name: /commercial interpretation/i }));
-    await user.click(await screen.findByRole("option", { name: /case is the selling unit/i }));
+    // Entering 1 unit per case makes the multiplier 1 and the unit cost the case cost.
+    const units = within(dialog).getByLabelText(/^units per case$/i);
+    expect(units).toHaveValue(4);                                   // filled in with the suggestion
+    await user.clear(units);
+    await user.type(units, "1");
     expect(impact).toHaveTextContent("Multiplier1");
     expect(impact).toHaveTextContent("Selling-unit cost$26.45");
   });
 
-  it("typing 1 unit per case switches a decision to 'case is the selling unit' instead of refusing it", async () => {
+  it("the units per case is one box, filled with the suggestion; changing it sends the matching basis", async () => {
     currentRole = "MANAGER";
     const { user, dialog } = await openCandidate("018200001154");
-    await user.click(within(dialog).getByRole("combobox", { name: /commercial interpretation/i }));
-    await user.click(await screen.findByRole("option", { name: /contained unit/i }));
-    await user.type(within(dialog).getByLabelText(/sellable units per case/i), "1");
-    expect(within(dialog).getByTestId("switched-to-case")).toHaveTextContent("switched to “Case is the selling unit”");
-    expect(within(dialog).getByRole("combobox", { name: /commercial interpretation/i }))
-      .toHaveTextContent(/case is the selling unit/i);
-    expect(within(dialog).queryByLabelText(/sellable units per case/i)).not.toBeInTheDocument();
-    expect(within(dialog).getByTestId("commercial-impact")).toHaveTextContent("Multiplier1");
+    expect(within(dialog).getByTestId("suggested-units")).toHaveTextContent("4");
+    const units = within(dialog).getByLabelText(/^units per case$/i);
+    await user.clear(units);
+    await user.type(units, "12");
+    expect(within(dialog).getByTestId("units-meaning")).toHaveTextContent("12 — one case holds 12 sellable units. Changed from the suggested 4.");
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "Checked from PDI");
+    await user.click(within(dialog).getByRole("button", { name: /approve candidate/i }));
+    await user.click(screen.getByRole("button", { name: /confirm approval/i }));
+    expect(approveCommercialCandidate).toHaveBeenCalledWith(expect.any(String), expect.objectContaining(
+      { commercial_unit_basis: "UNIT_IS_SELLING_UNIT", units_accounted_for: 12 }));
   });
 
-  it("a USER proposing 1 unit per case keeps the 1 (a proposal is not a decision)", async () => {
-    currentRole = "USER";
+  it("approving without changing the number keeps the suggestion (no basis sent)", async () => {
+    currentRole = "MANAGER";
     const { user, dialog } = await openCandidate("018200001154");
-    await user.click(within(dialog).getByRole("combobox", { name: /commercial interpretation/i }));
-    await user.click(await screen.findByRole("option", { name: /contained unit/i }));
-    await user.type(within(dialog).getByLabelText(/sellable units per case/i), "1");
-    expect(within(dialog).getByLabelText(/sellable units per case/i)).toHaveValue(1);
-    expect(within(dialog).queryByTestId("switched-to-case")).not.toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText(/decision basis/i), "Agrees with PDI");
+    await user.click(within(dialog).getByRole("button", { name: /approve candidate/i }));
+    await user.click(screen.getByRole("button", { name: /confirm approval/i }));
+    expect(approveCommercialCandidate).toHaveBeenCalledWith(expect.any(String), expect.objectContaining(
+      { commercial_unit_basis: null, units_accounted_for: null }));
   });
 
   it("shows no unit cost for a conflict until an interpretation is chosen, and never guesses one", async () => {
