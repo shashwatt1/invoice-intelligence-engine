@@ -86,6 +86,8 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
   const reopen = useReopenCommercialCandidate();
   const [basis, setBasis] = useState<string>("");
   const [units, setUnits] = useState<string>("");
+  // Typing 1 unit per case means the case itself is sold: switch to that interpretation instead of refusing it.
+  const [switchedToCase, setSwitchedToCase] = useState(false);
   const [note, setNote] = useState("");
   // A final decision is a second, explicit step — never a single click.
   const [confirming, setConfirming] = useState<"approve" | "reject" | "reopen" | null>(null);
@@ -435,7 +437,7 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
                 )}
                 <div className="space-y-2">
                   <label className="text-sm font-medium" htmlFor="basis">Commercial interpretation</label>
-                  <Select value={basis} onValueChange={setBasis}>
+                  <Select value={basis} onValueChange={(value) => { setBasis(value); setSwitchedToCase(false); }}>
                     <SelectTrigger id="basis">
                       <SelectValue placeholder={needsResolution ? "Choose one" : "Keep as derived"} />
                     </SelectTrigger>
@@ -449,13 +451,31 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
                     </SelectContent>
                   </Select>
                 </div>
+                {basis === "CASE_IS_SELLING_UNIT" && switchedToCase && (
+                  <p className="text-sm text-muted-foreground" role="status" data-testid="switched-to-case">
+                    1 unit per case: switched to &ldquo;Case is the selling unit&rdquo; &mdash; that is how 1 per case
+                    is recorded (multiplier 1).
+                  </p>
+                )}
                 {basis === "UNIT_IS_SELLING_UNIT" && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium" htmlFor="units">Sellable units per case</label>
                     <Input
-                      id="units" type="number" min={2} max={9999} value={units}
-                      onChange={(event) => setUnits(event.target.value)}
+                      id="units" type="number" min={1} max={9999} value={units}
+                      onChange={(event) => {
+                        // A decision records 1 per case as "case is the selling unit"; a proposal keeps the 1.
+                        if (canDecide && event.target.value.trim() === "1") {
+                          setBasis("CASE_IS_SELLING_UNIT");
+                          setUnits("");
+                          setSwitchedToCase(true);
+                          return;
+                        }
+                        setUnits(event.target.value);
+                      }}
                     />
+                    <p className="text-xs text-muted-foreground">
+                      2 or more. For 1 per case, type 1 (or choose &ldquo;Case is the selling unit&rdquo;).
+                    </p>
                   </div>
                 )}
               </>
