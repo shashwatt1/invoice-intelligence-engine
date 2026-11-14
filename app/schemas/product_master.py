@@ -94,6 +94,9 @@ class CommercialCandidateRow(BaseModel):
     last_decision: str | None = None
     bulk_eligible: bool = False
     legacy_mappings: list[LegacyMappingRef] = Field(default_factory=list)
+    # Who reviews this candidate (PM Approvals work assignment); None = unassigned, open to every reviewer.
+    assigned_to: str | None = None
+    assigned_to_user_id: uuid.UUID | None = None
 
 
 class EvidenceView(BaseModel):
@@ -286,3 +289,55 @@ class VendorItemLinkOut(BaseModel):
 
 class VendorItemRetireRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
+
+
+
+class AssignmentPlanEntry(BaseModel):
+    user_id: uuid.UUID
+    count: int = Field(ge=1, le=5000)
+
+
+class AssignInOrderRequest(BaseModel):
+    """Hand out the queue in order: each person gets the next `count` unassigned, undecided candidates."""
+    plan: list[AssignmentPlanEntry] = Field(min_length=1, max_length=50)
+
+
+class AssignedBlockOut(BaseModel):
+    user_id: uuid.UUID
+    username: str
+    requested: int
+    assigned: int
+    first_upc: str | None = None
+    last_upc: str | None = None
+
+
+class AssignInOrderResult(BaseModel):
+    blocks: list[AssignedBlockOut]
+    unassigned_awaiting: int
+
+
+class ReassignRequest(BaseModel):
+    """Give these candidates to one person, or unassign them (user_id null)."""
+    mapping_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+    user_id: uuid.UUID | None = None
+
+
+class UnassignRequest(BaseModel):
+    """Take back undecided work: one person's, or everyone's (user_id null)."""
+    user_id: uuid.UUID | None = None
+
+
+class AssignmentCountResult(BaseModel):
+    changed: int
+
+
+class PersonWorkloadOut(BaseModel):
+    user_id: uuid.UUID
+    username: str
+    awaiting: int
+    decided: int
+
+
+class AssignmentSummary(BaseModel):
+    people: list[PersonWorkloadOut]
+    unassigned_awaiting: int

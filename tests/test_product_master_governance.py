@@ -88,6 +88,9 @@ class Repository:
         self.calls["review_version"] += 1
         return len(self._of(mapping_id))
 
+    async def assignments_for(self, _ids):
+        return {}   # no candidate is assigned here
+
     async def review_facts(self, ids):
         self.calls["review_facts"] += 1
         return {i: (len(self._of(i)), self._of(i)[-1].decision if self._of(i) else None) for i in ids}
@@ -346,9 +349,19 @@ class TestBulkApproval:
 
 # ---- over the API ------------------------------------------------------------
 
+class _NoRows:
+    def all(self):
+        return []
+
+
 class _Session:
     async def commit(self):
         return None
+
+    async def execute(self, *_args, **_kwargs):
+        # The only query these API tests reach directly is the work-assignment check
+        # (app.services.review_assignment_service): no candidate is assigned to anyone here.
+        return _NoRows()
 
 
 @pytest.fixture

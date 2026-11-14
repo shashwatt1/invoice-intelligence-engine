@@ -200,8 +200,17 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
                 {candidate.store_identity_status !== "confirmed" && " · location not confirmed"}
               </>
             )}
+            {current.assigned_to ? ` · assigned to ${current.assigned_to_user_id === user?.id ? "you" : current.assigned_to}` : ""}
           </AlertDialogDescription>
         </AlertDialogHeader>
+
+        {current.assigned_to && current.assigned_to_user_id !== user?.id && user?.role !== "ADMIN" && !settled && (
+          <p className="rounded-md border border-amber-300 p-3 text-sm dark:border-amber-800" role="note"
+             data-testid="assigned-elsewhere">
+            Assigned to {current.assigned_to}. Only {current.assigned_to} or an administrator can decide on it, so two
+            people never work the same candidate. Ask an administrator to reassign it if you should take it.
+          </p>
+        )}
 
         <div className="space-y-6">
           <section className="space-y-2">

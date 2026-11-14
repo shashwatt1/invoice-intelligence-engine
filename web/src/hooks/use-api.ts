@@ -18,7 +18,10 @@ import {
   approveReceipt,
   approveVendorRequest,
   assignInvoiceStore,
+  assignReviewInOrder,
   bulkApproveCommercialCandidates,
+  getReviewAssignments,
+  unassignReview,
   bulkApproveProposals,
   bulkRejectProposals,
   cancelDeletionRequest,
@@ -114,6 +117,7 @@ import {
 } from "@/api/endpoints";
 import type { RecycleBinParams } from "@/api/endpoints";
 import type {
+  AssignmentPlanEntry,
   BulkProposalDecision,
   DeletionRequestStatus,
   CaseMappingConfirmation,
@@ -865,6 +869,30 @@ export function useEditProductName() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ productId, name }: { productId: string; name: string }) => editProductName(productId, name),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["product-master"] });
+    },
+  });
+}
+
+export function useReviewAssignments() {
+  return useQuery({ queryKey: ["product-master", "commercial", "assignments"], queryFn: getReviewAssignments });
+}
+
+export function useAssignReviewInOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (plan: AssignmentPlanEntry[]) => assignReviewInOrder(plan),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["product-master"] });
+    },
+  });
+}
+
+export function useUnassignReview() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string | null) => unassignReview(userId),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["product-master"] });
     },

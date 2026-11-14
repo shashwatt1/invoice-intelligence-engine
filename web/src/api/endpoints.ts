@@ -16,6 +16,9 @@ import type {
   CommercialCandidateDetail,
   CommercialCandidateParams,
   CommercialCandidateRow,
+  AssignInOrderResult,
+  AssignmentPlanEntry,
+  AssignmentSummary,
   CommercialProposalRequest,
   CommercialReopenRequest,
   CommercialReviewRequest,
@@ -700,6 +703,28 @@ export async function reopenCommercialCandidate(id: string, body: CommercialReop
 export async function editProductName(productId: string, name: string): Promise<ProductNameEditResult> {
   const { data } = await apiClient.put<ApiEnvelope<ProductNameEditResult>>(
     `/product-master/products/${productId}/name`, { name },
+  );
+  return data.data!;
+}
+
+/** PM Approvals work assignment: who has how much, and how much is still unassigned. */
+export async function getReviewAssignments(): Promise<AssignmentSummary> {
+  const { data } = await apiClient.get<ApiEnvelope<AssignmentSummary>>("/product-master/commercial/assignments");
+  return data.data!;
+}
+
+/** Hand out the queue in order: each person gets the next N unassigned, undecided candidates (ADMIN). */
+export async function assignReviewInOrder(plan: AssignmentPlanEntry[]): Promise<AssignInOrderResult> {
+  const { data } = await apiClient.post<ApiEnvelope<AssignInOrderResult>>(
+    "/product-master/commercial/assignments/in-order", { plan },
+  );
+  return data.data!;
+}
+
+/** Take back undecided work: one person's, or everyone's when userId is null (ADMIN). */
+export async function unassignReview(userId: string | null): Promise<{ changed: number }> {
+  const { data } = await apiClient.post<ApiEnvelope<{ changed: number }>>(
+    "/product-master/commercial/assignments/unassign", { user_id: userId },
   );
   return data.data!;
 }

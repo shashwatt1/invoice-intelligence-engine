@@ -373,6 +373,9 @@ class FakeRepository:
     async def descriptions_for(self, product_ids):
         return {pid: [d for d in self.descriptions if d.product_id == pid] for pid in product_ids}
 
+    async def assignments_for(self, _ids):
+        return {}   # no candidate is assigned here
+
     async def review_facts(self, mapping_ids):
         return dict.fromkeys(mapping_ids, (0, None))
 

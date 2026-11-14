@@ -6,6 +6,7 @@ register on Base.metadata. Alembic's env.py also imports from here
 to ensure autogenerate detects all tables.
 """
 
+from app.models.commercial_review_assignment import CommercialReviewAssignment
 from app.models.document import Document, DocumentStatus
 from app.models.document_page import DocumentPage
 from app.models.edi_export import EdiExport
@@ -35,6 +36,7 @@ from app.models.vendor_item_crosswalk import VendorItemCrosswalk
 from app.models.vendor_request import VendorRequest
 
 __all__ = [
+    "CommercialReviewAssignment",
     "Document",
     "EdiExport",
     "ExportOverride",

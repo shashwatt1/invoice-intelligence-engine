@@ -14,18 +14,26 @@ vi.mock("sonner", () => ({
 }));
 
 let currentRole = "MANAGER";
-vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { username: "barj", role: currentRole } }) }));
+vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { id: "u-barj", username: "barj", role: currentRole } }) }));
 
 const listCommercialCandidates = vi.fn();
 const bulkApproveCommercialCandidates = vi.fn();
 const editProductName = vi.fn();
 const listStores = vi.fn();
+const getReviewAssignments = vi.fn();
+const assignReviewInOrder = vi.fn();
+const unassignReview = vi.fn();
+const listUsers = vi.fn();
 vi.mock("@/api/endpoints", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/endpoints")>()),
   listCommercialCandidates: (...a: unknown[]) => listCommercialCandidates(...a),
   bulkApproveCommercialCandidates: (...a: unknown[]) => bulkApproveCommercialCandidates(...a),
   editProductName: (...a: unknown[]) => editProductName(...a),
   listStores: (...a: unknown[]) => listStores(...a),
+  getReviewAssignments: (...a: unknown[]) => getReviewAssignments(...a),
+  assignReviewInOrder: (...a: unknown[]) => assignReviewInOrder(...a),
+  unassignReview: (...a: unknown[]) => unassignReview(...a),
+  listUsers: (...a: unknown[]) => listUsers(...a),
   getCommercialCandidate: vi.fn(() => new Promise(() => {})),
 }));
 
@@ -69,6 +77,7 @@ beforeEach(() => {
   listStores.mockResolvedValue([]);
   listCommercialCandidates.mockResolvedValue({ items: [CONFLICT, READY_A, READY_B], total: 3, page: 1, page_size: 50 });
   bulkApproveCommercialCandidates.mockResolvedValue({ approved: 2, decisions: [] });
+  getReviewAssignments.mockResolvedValue({ people: [], unassigned_awaiting: 1256 });
 });
 
 describe("Product Master approvals", () => {
@@ -381,5 +390,71 @@ describe("mapping scope versus where a proposal came from", () => {
     await user.click(await screen.findByRole("option", { name: /PB Wolf/ }));
     expect(await screen.findByText("No Product Master mappings held by this store")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open this store's invoice proposals" })).toHaveAttribute("href", "/data-review?store=pb-wolf");
+  });
+});
+
+
+describe("review work is handed out so two people never work the same candidate", () => {
+  const account = (id: string, username: string, role = "MANAGER") =>
+    ({ id, username, role, is_active: true, created_at: "", updated_at: "" });
+
+  it("a manager starts on their own work, and sees whose each candidate is", async () => {
+    listCommercialCandidates.mockResolvedValue({ items: [
+      row("a", "018200000001", { assigned_to: "barj", assigned_to_user_id: "u-barj" }),
+      row("b", "018200000002", { assigned_to: "helloritu", assigned_to_user_id: "u-ritu" }),
+    ], total: 2, page: 1, page_size: 50 });
+    getReviewAssignments.mockResolvedValue({
+      people: [{ user_id: "u-barj", username: "barj", awaiting: 100, decided: 3 },
+               { user_id: "u-ritu", username: "helloritu", awaiting: 250, decided: 0 }],
+      unassigned_awaiting: 906 });
+    renderPage();
+    await rowFor("018200000001");
+    expect(listCommercialCandidates).toHaveBeenCalledWith(expect.objectContaining({ assigned_to: "me" }));
+    expect(within(await rowFor("018200000001")).getByTestId("assigned-to")).toHaveTextContent("You");
+    expect(within(await rowFor("018200000002")).getByTestId("assigned-to")).toHaveTextContent("helloritu");
+    expect(await screen.findByTestId("assignment-summary")).toHaveTextContent(
+      "Your work: 100 awaiting · 3 decided. Assigned: barj 100 · helloritu 250. Unassigned: 906.");
+    expect(screen.queryByRole("button", { name: "Assign work" })).not.toBeInTheDocument();
+  });
+
+  it("tells a manager when nothing is assigned to them yet", async () => {
+    listCommercialCandidates.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 });
+    renderPage();
+    expect(await screen.findByText("Nothing assigned to you")).toBeInTheDocument();
+  });
+
+  it("an administrator sees everyone's work and hands it out in order", async () => {
+    currentRole = "ADMIN";
+    listUsers.mockResolvedValue([account("u-ritu", "helloritu"), account("u-swati", "swati"),
+                                 account("u-barj", "hellobarj"), account("u-x", "someuser", "USER")]);
+    getReviewAssignments.mockResolvedValue({ people: [], unassigned_awaiting: 1256 });
+    assignReviewInOrder.mockResolvedValue({ blocks: [
+      { user_id: "u-ritu", username: "helloritu", requested: 250, assigned: 250, first_upc: "1", last_upc: "2" },
+      { user_id: "u-swati", username: "swati", requested: 250, assigned: 250, first_upc: "3", last_upc: "4" },
+      { user_id: "u-barj", username: "hellobarj", requested: 100, assigned: 100, first_upc: "5", last_upc: "6" },
+    ], unassigned_awaiting: 656 });
+    const user = userEvent.setup();
+    renderPage();
+    await rowFor("018200000001");
+    expect(listCommercialCandidates).toHaveBeenCalledWith(expect.not.objectContaining({ assigned_to: expect.anything() }));
+
+    await user.click(screen.getByRole("button", { name: "Assign work" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByTestId("unassigned-count")).toHaveTextContent("1256 awaiting approval and unassigned");
+    for (const [index, name, count] of [[1, "helloritu", "250"], [2, "swati", "250"], [3, "hellobarj", "100"]] as const) {
+      if (index > 1) await user.click(within(dialog).getByRole("button", { name: "Add person" }));
+      await user.click(within(dialog).getByRole("combobox", { name: `Person ${index}` }));
+      // only active managers and administrators can be given review work
+      if (index === 1) expect(screen.queryByRole("option", { name: "someuser" })).not.toBeInTheDocument();
+      await user.click(await screen.findByRole("option", { name }));
+      await user.type(within(dialog).getByRole("spinbutton", { name: `How many for person ${index}` }), count);
+    }
+    expect(within(dialog).getByTestId("assign-preview")).toHaveTextContent(
+      "helloritu: candidates 1–250swati: candidates 251–500hellobarj: candidates 501–600");
+    await user.click(within(dialog).getByRole("button", { name: "Assign 600" }));
+    await waitFor(() => expect(assignReviewInOrder).toHaveBeenCalledWith([
+      { user_id: "u-ritu", count: 250 }, { user_id: "u-swati", count: 250 }, { user_id: "u-barj", count: 100 }]));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(
+      "Assigned in order: helloritu 250, swati 250, hellobarj 100. 656 still unassigned."));
   });
 });

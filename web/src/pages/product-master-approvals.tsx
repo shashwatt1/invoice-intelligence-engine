@@ -25,7 +25,15 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useBulkApproveCommercialCandidates, useCommercialCandidates, useStores } from "@/hooks/use-api";
+import {
+  useAssignReviewInOrder,
+  useBulkApproveCommercialCandidates,
+  useCommercialCandidates,
+  useReviewAssignments,
+  useStores,
+  useUnassignReview,
+  useUsers,
+} from "@/hooks/use-api";
 import { useAuth } from "@/hooks/use-auth";
 import { roleLabel } from "@/lib/commercial";
 import { formatDateTime } from "@/lib/format";
@@ -50,7 +58,11 @@ function evidenceLabel(row: CommercialCandidateRow): string {
 export function ProductMasterApprovalsPage() {
   const { user } = useAuth();
   const canDecide = user?.role === "MANAGER" || user?.role === "ADMIN";
+  const isAdmin = user?.role === "ADMIN";
   const [status, setStatus] = useState("UNDECIDED");
+  // Review work is handed out so two people never work the same candidate: a manager starts on their own.
+  const [assignee, setAssignee] = useState<string>(isAdmin ? "all" : "me");
+  const [assigning, setAssigning] = useState(false);
   const [storeId, setStoreId] = useState("ALL");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -66,13 +78,16 @@ export function ProductMasterApprovalsPage() {
     review_status: status === "ALL" ? undefined : status,
     store_id: storeId === "ALL" ? undefined : storeId,
     search: search.trim() || undefined,
+    assigned_to: assignee === "all" ? undefined : assignee,
     page,
     page_size: pageSize,
-  }), [status, storeId, search, page, pageSize]);
+  }), [status, storeId, search, assignee, page, pageSize]);
   const query = useCommercialCandidates(params);
   const stores = useStores();
+  const assignments = useReviewAssignments();
+  const mine = assignments.data?.people.find((p) => p.user_id === user?.id);
 
-  useEffect(() => setPage(1), [status, storeId, search]);
+  useEffect(() => setPage(1), [status, storeId, search, assignee]);
 
   const rows = query.data?.items ?? [];
   const eligibleOnPage = rows.filter((r) => r.bulk_eligible);
@@ -142,6 +157,18 @@ export function ProductMasterApprovalsPage() {
             {(stores.data ?? []).map((s) => <SelectItem key={s.id} value={s.id}>{storeOptionLabel(s)}</SelectItem>)}
           </SelectContent>
         </Select>
+        <Select value={assignee} onValueChange={setAssignee}>
+          <SelectTrigger className="w-[210px]" aria-label="Assigned to"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="me">Assigned to me</SelectItem>
+            <SelectItem value="all">Everyone's work</SelectItem>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
+            {(assignments.data?.people ?? []).filter((p) => p.user_id !== user?.id).map((p) => (
+              <SelectItem key={p.user_id} value={p.user_id}>Assigned to {p.username}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {isAdmin && <Button variant="outline" onClick={() => setAssigning(true)}>Assign work</Button>}
         <div className="ml-auto flex items-center gap-2">
           {selected.size > 0 && (
             <>
@@ -157,6 +184,16 @@ export function ProductMasterApprovalsPage() {
         </div>
       </FilterBar>
 
+      {assignments.data && (
+        <p className="t-meta mb-2" data-testid="assignment-summary">
+          {mine ? `Your work: ${mine.awaiting} awaiting · ${mine.decided} decided. ` : ""}
+          {assignments.data.people.length
+            ? `Assigned: ${assignments.data.people.map((p) => `${p.username} ${p.awaiting}`).join(" · ")}. `
+            : "Nothing is assigned yet. "}
+          Unassigned: {assignments.data.unassigned_awaiting}.
+        </p>
+      )}
+
       {query.isLoading ? (
         <TableSkeleton rows={8} />
       ) : query.isError ? (
@@ -169,6 +206,9 @@ export function ProductMasterApprovalsPage() {
             description="Global mappings are held under the Item Sales source, not a physical store. Proposals from this store's invoices are in Master Data Review."
             action={<Button asChild variant="outline" size="sm"><Link to={`/data-review?store=${storeId}`}>Open this store's invoice proposals</Link></Button>}
           />
+        ) : assignee === "me" && !search.trim() ? (
+          <EmptyState icon={ClipboardCheck} title="Nothing assigned to you"
+                      description={"An administrator hands out the review work in PM Approvals. Choose \u201cEveryone\u2019s work\u201d to see the whole queue."} />
         ) : (
           <EmptyState icon={ClipboardCheck} title="Nothing awaiting approval" description="No mappings match these filters." />
         )
@@ -190,6 +230,7 @@ export function ProductMasterApprovalsPage() {
                 <TableHead>Evidence</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Submitted</TableHead>
+                <TableHead>Assigned to</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -230,6 +271,11 @@ export function ProductMasterApprovalsPage() {
                       </>
                     ) : "Evidence candidate"}
                   </TableCell>
+                  <TableCell className="text-sm" data-testid="assigned-to">
+                    {row.assigned_to ? (row.assigned_to_user_id === user?.id ? "You" : row.assigned_to) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-right">
                     <Button variant="outline" size="sm" onClick={() => setOpen(row)}>
                       {row.bulk_eligible ? "Review" : "Review individually"}
@@ -254,6 +300,7 @@ export function ProductMasterApprovalsPage() {
         />
       )}
       {open && <CommercialEvidencePanel candidate={open} onClose={() => setOpen(null)} />}
+      {assigning && <AssignWorkDialog onClose={() => setAssigning(false)} />}
     </>
   );
 }
@@ -346,6 +393,146 @@ function BulkApprovalDialog({ rows, selected, onClose, onFinished }: {
           <Button onClick={submit} disabled={queueChanged || !basis.trim() || bulk.isPending}>
             Approve {eligible}
           </Button>
+        </div>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+type PlanRow = { key: number; userId: string; count: string };
+
+/**
+ * Hand out the review queue in order (ADMIN): each person gets the next block of unassigned, undecided candidates
+ * in the order PM Approvals lists them (conflicts first, then by UPC) — e.g. 250, then 250, then 100. Candidates
+ * already assigned or decided are skipped, so running it again only hands out what is left.
+ */
+function AssignWorkDialog({ onClose }: { onClose: () => void }) {
+  const users = useUsers();
+  const summary = useReviewAssignments();
+  const assign = useAssignReviewInOrder();
+  const unassign = useUnassignReview();
+  const [plan, setPlan] = useState<PlanRow[]>([{ key: 1, userId: "", count: "" }]);
+  const [takingBack, setTakingBack] = useState(false);
+
+  const reviewers = (users.data ?? []).filter((u) => u.is_active && (u.role === "MANAGER" || u.role === "ADMIN"));
+  const unassigned = summary.data?.unassigned_awaiting ?? 0;
+  const entries = plan
+    .map((row) => ({ ...row, n: Number.parseInt(row.count, 10) }))
+    .filter((row) => row.userId && Number.isInteger(row.n) && row.n > 0);
+  const total = entries.reduce((sum, row) => sum + row.n, 0);
+  const valid = entries.length === plan.length && entries.length > 0
+    && new Set(entries.map((row) => row.userId)).size === entries.length;
+  const nameOf = (id: string) => reviewers.find((u) => u.id === id)?.username ?? "—";
+
+  let from = 1;
+  const preview = entries.map((row) => {
+    const start = from;
+    const end = Math.min(from + row.n - 1, unassigned);
+    from += row.n;
+    return { name: nameOf(row.userId), start, end, short: start > unassigned ? row.n : Math.max(0, start + row.n - 1 - end) };
+  });
+
+  const update = (key: number, patch: Partial<PlanRow>) =>
+    setPlan((rows) => rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+
+  const submit = () => assign.mutate(
+    entries.map((row) => ({ user_id: row.userId, count: row.n })),
+    {
+      onSuccess: (result) => {
+        toast.success(`Assigned in order: ${result.blocks.map((b) => `${b.username} ${b.assigned}`).join(", ")}. `
+          + `${result.unassigned_awaiting} still unassigned.`);
+        onClose();
+      },
+      onError: (error) => toast.error(error instanceof ApiError ? error.userMessage : "Nothing was assigned. Try again."),
+    },
+  );
+
+  const takeBack = () => unassign.mutate(null, {
+    onSuccess: (result) => {
+      toast.success(`Took back ${result.changed} undecided candidates. Decided ones keep who decided them.`);
+      setTakingBack(false);
+    },
+    onError: (error) => toast.error(error instanceof ApiError ? error.userMessage : "Nothing was changed."),
+  });
+
+  return (
+    <AlertDialog open onOpenChange={(next) => !next && onClose()}>
+      <AlertDialogContent className="max-w-lg">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-base">Assign review work</AlertDialogTitle>
+          <AlertDialogDescription>
+            Each person gets the next block of unassigned candidates awaiting approval, in the order PM Approvals lists
+            them. Only they (or an administrator) can decide on their candidates, so two people never work the same one.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        <p className="text-sm" data-testid="unassigned-count">
+          <span className="font-medium tabular-nums">{unassigned}</span> awaiting approval and unassigned
+          {summary.data?.people.length
+            ? ` · already assigned: ${summary.data.people.map((p) => `${p.username} ${p.awaiting}`).join(", ")}`
+            : ""}
+        </p>
+
+        <div className="space-y-2">
+          {plan.map((row, index) => (
+            <div key={row.key} className="flex items-center gap-2" data-testid="plan-row">
+              <span className="w-5 text-xs text-muted-foreground tabular-nums">{index + 1}.</span>
+              <Select value={row.userId} onValueChange={(value) => update(row.key, { userId: value })}>
+                <SelectTrigger className="w-[190px]" aria-label={`Person ${index + 1}`}><SelectValue placeholder="Choose a person" /></SelectTrigger>
+                <SelectContent>
+                  {reviewers.map((u) => <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Input type="number" min={1} max={5000} inputMode="numeric" className="h-9 w-24" placeholder="How many"
+                     aria-label={`How many for person ${index + 1}`} value={row.count}
+                     onChange={(event) => update(row.key, { count: event.target.value })} />
+              {plan.length > 1 && (
+                <Button variant="ghost" size="sm" onClick={() => setPlan((rows) => rows.filter((r) => r.key !== row.key))}>
+                  Remove
+                </Button>
+              )}
+            </div>
+          ))}
+          <Button variant="outline" size="sm"
+                  onClick={() => setPlan((rows) => [...rows, { key: Math.max(...rows.map((r) => r.key)) + 1, userId: "", count: "" }])}>
+            Add person
+          </Button>
+        </div>
+
+        {entries.length > 0 && (
+          <ul className="space-y-0.5 text-sm" data-testid="assign-preview">
+            {preview.map((p) => (
+              <li key={`${p.name}-${p.start}`}>
+                {p.start > unassigned
+                  ? <>{p.name}: nothing left to give</>
+                  : <>{p.name}: candidates {p.start}–{p.end}{p.short ? ` (${p.short} fewer than asked: the queue runs out)` : ""}</>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {!valid && plan.some((row) => row.userId || row.count) && (
+          <p className="text-xs text-muted-foreground">Choose a person and a number on every line; each person once.</p>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+          {takingBack ? (
+            <div className="flex items-center gap-2">
+              <span className="text-sm">Take back all undecided work?</span>
+              <Button variant="destructive" size="sm" onClick={takeBack} disabled={unassign.isPending}>Yes, take back</Button>
+              <Button variant="ghost" size="sm" onClick={() => setTakingBack(false)}>No</Button>
+            </div>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => setTakingBack(true)}
+                    disabled={!summary.data?.people.some((p) => p.awaiting > 0)}>
+              Take back undecided work
+            </Button>
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose} disabled={assign.isPending}>Cancel</Button>
+            <Button onClick={submit} disabled={!valid || assign.isPending || unassigned === 0}>
+              Assign {total || ""}
+            </Button>
+          </div>
         </div>
       </AlertDialogContent>
     </AlertDialog>

@@ -265,11 +265,18 @@ class TestTheSessionDecides:
     def session_as(self, app, patched):
         from app.database.session import get_db
 
+        class _NoRows:
+            def all(self):
+                return []
+
         class _Session:
             commits = 0
 
             async def commit(self):
                 _Session.commits += 1
+
+            async def execute(self, *_args, **_kwargs):
+                return _NoRows()   # the work-assignment check: nothing is assigned here
 
         async def fake_db():
             yield _Session()
