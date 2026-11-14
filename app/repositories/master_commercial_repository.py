@@ -136,11 +136,16 @@ class MasterCommercialRepository:
         return statement
 
     async def list_candidates(self, *, page: int, page_size: int, **filters) -> Sequence:
-        statement = self._filtered(self._base(), **filters).order_by(
+        if filters.get("assigned_to") is not None:
+            # One person's work list keeps a FIXED order (by UPC: the order it was handed out in), so its serial
+            # numbers never shift when a candidate is decided and its basis changes.
+            order = (MasterProduct.canonical_upc, MasterCommercialMapping.id)
+        else:
             # Conflicts first — they are the rows that hold no answer yet.
-            (MasterCommercialMapping.commercial_unit_basis != COMMERCIAL_CONFLICT),
-            MasterProduct.canonical_upc,
-        ).limit(page_size).offset((page - 1) * page_size)
+            order = ((MasterCommercialMapping.commercial_unit_basis != COMMERCIAL_CONFLICT),
+                     MasterProduct.canonical_upc, MasterCommercialMapping.id)
+        statement = self._filtered(self._base(), **filters).order_by(*order).limit(page_size).offset(
+            (page - 1) * page_size)
         return (await self._session.execute(statement)).all()
 
     async def count_candidates(self, **filters) -> int:

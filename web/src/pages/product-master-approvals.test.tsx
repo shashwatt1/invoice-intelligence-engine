@@ -147,7 +147,8 @@ describe("Product Master approvals", () => {
   it("shows what awaits a decision; conflicts cannot be selected and there is no approve-all", async () => {
     renderPage();
     await rowFor("018200000001");
-    expect(listCommercialCandidates).toHaveBeenCalledWith(expect.objectContaining({ review_status: "UNDECIDED", page: 1 }));
+    // a manager's own list keeps decided rows (all states), so its serial numbers do not shift
+    expect(listCommercialCandidates).toHaveBeenCalledWith(expect.objectContaining({ review_status: undefined, page: 1 }));
     const conflict = await rowFor("018200000003");
     expect(within(conflict).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(within(conflict).getByText("Individual review required")).toBeInTheDocument();
@@ -372,6 +373,7 @@ describe("selection is independent of search, filters and paging", () => {
 
 describe("mapping scope versus where a proposal came from", () => {
   it("labels globally held rows Product Master · Global and points to where invoice proposals are reviewed", async () => {
+    currentRole = "ADMIN";   // the scope column is in the administrator's full view
     renderPage();
     const first = await rowFor("018200000001");
     expect(within(first).getByTestId("mapping-scope")).toHaveTextContent("Product Master · Global");
@@ -398,7 +400,7 @@ describe("review work is handed out so two people never work the same candidate"
   const account = (id: string, username: string, role = "MANAGER") =>
     ({ id, username, role, is_active: true, created_at: "", updated_at: "" });
 
-  it("a manager starts on their own work, and sees whose each candidate is", async () => {
+  it("a manager starts on their own work, with the summary of who has what", async () => {
     listCommercialCandidates.mockResolvedValue({ items: [
       row("a", "018200000001", { assigned_to: "barj", assigned_to_user_id: "u-barj" }),
       row("b", "018200000002", { assigned_to: "helloritu", assigned_to_user_id: "u-ritu" }),
@@ -410,8 +412,8 @@ describe("review work is handed out so two people never work the same candidate"
     renderPage();
     await rowFor("018200000001");
     expect(listCommercialCandidates).toHaveBeenCalledWith(expect.objectContaining({ assigned_to: "me" }));
-    expect(within(await rowFor("018200000001")).getByTestId("assigned-to")).toHaveTextContent("You");
-    expect(within(await rowFor("018200000002")).getByTestId("assigned-to")).toHaveTextContent("helloritu");
+    // a manager's compact view: no "assigned to" column (the list is their own)
+    expect(within(await rowFor("018200000001")).queryByTestId("assigned-to")).not.toBeInTheDocument();
     expect(await screen.findByTestId("assignment-summary")).toHaveTextContent(
       "Your work: 100 awaiting · 3 decided. Assigned: barj 100 · helloritu 250. Unassigned: 906.");
     expect(screen.queryByRole("button", { name: "Assign work" })).not.toBeInTheDocument();
@@ -456,5 +458,40 @@ describe("review work is handed out so two people never work the same candidate"
       { user_id: "u-ritu", count: 250 }, { user_id: "u-swati", count: 250 }, { user_id: "u-barj", count: 100 }]));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(
       "Assigned in order: helloritu 250, swati 250, hellobarj 100. 656 still unassigned."));
+  });
+});
+
+
+describe("a manager's compact list: serial numbers, and decided rows stay ticked", () => {
+  it("shows only the columns a reviewer needs", async () => {
+    renderPage();
+    await rowFor("018200000001");
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim()).filter(Boolean);
+    expect(headers).toEqual(["#", "Product", "UPC / PDI item", "Units/case", "Status"]);
+  });
+
+  it("numbers the rows across pages and keeps a mapped row in place, ticked", async () => {
+    listCommercialCandidates.mockResolvedValue({ items: [
+      row("a", "018200000001"),
+      row("b", "018200000002", { approval_state: "APPROVED", review_status: "APPROVED", reviewed_by: "swati",
+                                 units_accounted_for: 1, bulk_eligible: false }),
+      row("c", "018200000004"),
+    ], total: 3, page: 1, page_size: 50 });
+    renderPage();
+    const rows = await screen.findAllByTestId("approval-row");
+    expect(rows.map((r) => within(r).getByTestId("serial").textContent)).toEqual(["1", "2", "3"]);
+    const mapped = await rowFor("018200000002");
+    expect(mapped).toHaveAttribute("data-decided", "true");
+    expect(within(mapped).getByTestId("mapped")).toHaveTextContent("✓ Mapped · swati");
+    expect(within(mapped).getByRole("button", { name: "View" })).toBeInTheDocument();
+  });
+
+  it("an administrator keeps every column", async () => {
+    currentRole = "ADMIN";
+    renderPage();
+    await rowFor("018200000001");
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim()).filter(Boolean);
+    expect(headers).toEqual(expect.arrayContaining(["#", "Mapping scope", "Case cost", "Interpretation", "Evidence",
+                                                    "Submitted", "Assigned to"]));
   });
 });

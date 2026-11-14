@@ -13,9 +13,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
 import { EditableProductName } from "@/components/product-master/editable-product-name";
 import { ReviewStatusBadge } from "@/components/product-master/review-status-badge";
 import {
@@ -84,10 +81,11 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
   const canDecide = user?.role === "MANAGER" || user?.role === "ADMIN";
 
   const reopen = useReopenCommercialCandidate();
-  const [basis, setBasis] = useState<string>("");
-  const [units, setUnits] = useState<string>("");
-  // Typing 1 unit per case means the case itself is sold: switch to that interpretation instead of refusing it.
-  const [switchedToCase, setSwitchedToCase] = useState(false);
+  // Units per case is one number, filled in with the derived value: the reviewer just edits it.
+  // 1 is recorded as "case is the selling unit", 2 or more as "contained unit is the selling unit".
+  const derivedUnits = candidate.units_accounted_for;
+  const [units, setUnits] = useState<string>(
+    derivedUnits !== null && derivedUnits !== undefined && !candidate.requires_resolution ? String(derivedUnits) : "");
   const [note, setNote] = useState("");
   // A final decision is a second, explicit step — never a single click.
   const [confirming, setConfirming] = useState<"approve" | "reject" | "reopen" | null>(null);
@@ -104,12 +102,16 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
   const reviewVersion = current.review_version ?? 0;
   const source = sourceIdentityView(candidate.store_kind, candidate.store_source_identity);
   const basisGiven = note.trim().length > 0;
-  const dirty = basisGiven || basis !== "" || units !== "";
-  // The multiplier the decision would record: the reviewer's choice, else what was derived.
   const typedUnits = Number(units);
-  const multiplier = basis === "CASE_IS_SELLING_UNIT" ? 1
-    : basis === "UNIT_IS_SELLING_UNIT" ? (Number.isInteger(typedUnits) && typedUnits >= 2 ? typedUnits : null)
-      : needsResolution ? null : candidate.units_accounted_for;
+  const unitsValid = units.trim() !== "" && Number.isInteger(typedUnits) && typedUnits >= 1 && typedUnits <= 9999;
+  const unitsChanged = unitsValid && typedUnits !== derivedUnits;
+  const dirty = basisGiven || (units !== "" && unitsChanged);
+  // What a decision records: the typed number (with the interpretation it implies) when it differs from the
+  // derived one or the evidence did not settle the candidate; otherwise the derived value is kept.
+  const decidedBasis = unitsValid && (unitsChanged || needsResolution)
+    ? (typedUnits === 1 ? "CASE_IS_SELLING_UNIT" : "UNIT_IS_SELLING_UNIT") : null;
+  // The multiplier the decision would record: the reviewer's number, else what was derived.
+  const multiplier = unitsValid ? typedUnits : needsResolution ? null : derivedUnits;
   const unitCost = sellingUnitCost(candidate.case_cost, multiplier);
   const proposalReady = basisGiven && Number.isInteger(typedUnits) && typedUnits >= 1;
   const busy = approve.isPending || reject.isPending || reopen.isPending || propose.isPending;
@@ -142,8 +144,8 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
       id: candidate.id,
       body: {
         note: note.trim(),
-        commercial_unit_basis: basis || null,
-        units_accounted_for: units ? Number(units) : null,
+        commercial_unit_basis: decidedBasis,
+        units_accounted_for: decidedBasis ? typedUnits : null,
         expected_review_version: reviewVersion,
       },
     },
@@ -406,17 +408,14 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
           <section className="space-y-3 border-t pt-4">
             <h3 className="text-sm font-medium">Commercial interpretation</h3>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-              <dt className="text-muted-foreground">Derived basis</dt>
-              <dd>{basisLabel(candidate.commercial_unit_basis)}</dd>
-              <dt className="text-muted-foreground">Derived multiplier</dt>
-              <dd className="tabular-nums">{candidate.units_accounted_for ?? "not established"}</dd>
+              <dt className="text-muted-foreground">Suggested units per case</dt>
+              <dd className="tabular-nums" data-testid="suggested-units">
+                {candidate.units_accounted_for ?? "not established"}
+                <span className="text-muted-foreground"> · {basisLabel(candidate.commercial_unit_basis)}</span>
+              </dd>
             </dl>
-            <p className="text-sm text-muted-foreground">
-              {basisLabel(candidate.commercial_unit_basis)}
-              {candidate.units_accounted_for !== null
-                ? ` → multiplier ${candidate.units_accounted_for}`
-                : " → no multiplier"}
-              . Derived, not printed in the workbook.
+            <p className="text-xs text-muted-foreground">
+              Suggested by the import, not printed on an invoice. The number you approve below replaces it.
             </p>
             {(candidate.conflict_explanation || evidence?.notes) && (
               <p className="text-sm text-muted-foreground">
@@ -430,54 +429,27 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
                   <p className="flex items-start gap-2 text-sm">
                     <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
                     <span>
-                      The evidence did not settle this candidate. Choose the interpretation it
+                      The evidence did not settle this candidate. Enter the units per case it
                       supports, or reject it.
                     </span>
                   </p>
                 )}
                 <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="basis">Commercial interpretation</label>
-                  <Select value={basis} onValueChange={(value) => { setBasis(value); setSwitchedToCase(false); }}>
-                    <SelectTrigger id="basis">
-                      <SelectValue placeholder={needsResolution ? "Choose one" : "Keep as derived"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="CASE_IS_SELLING_UNIT">
-                        Case is the selling unit (multiplier 1)
-                      </SelectItem>
-                      <SelectItem value="UNIT_IS_SELLING_UNIT">
-                        Contained unit is the selling unit
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                {basis === "CASE_IS_SELLING_UNIT" && switchedToCase && (
-                  <p className="text-sm text-muted-foreground" role="status" data-testid="switched-to-case">
-                    1 unit per case: switched to &ldquo;Case is the selling unit&rdquo; &mdash; that is how 1 per case
-                    is recorded (multiplier 1).
+                  <label className="text-sm font-medium" htmlFor="units">Units per case</label>
+                  <Input
+                    id="units" type="number" min={1} max={9999} inputMode="numeric" className="max-w-[160px]"
+                    value={units} placeholder={needsResolution ? "Enter units" : undefined}
+                    onChange={(event) => setUnits(event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground" data-testid="units-meaning">
+                    {!unitsValid
+                      ? "How many sellable units one case holds. 1 = the case itself is sold."
+                      : typedUnits === 1
+                        ? "1 — the case itself is the selling unit."
+                        : `${typedUnits} — one case holds ${typedUnits} sellable units.`}
+                    {unitsChanged && derivedUnits !== null ? ` Changed from the suggested ${derivedUnits}.` : ""}
                   </p>
-                )}
-                {basis === "UNIT_IS_SELLING_UNIT" && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium" htmlFor="units">Sellable units per case</label>
-                    <Input
-                      id="units" type="number" min={1} max={9999} value={units}
-                      onChange={(event) => {
-                        // A decision records 1 per case as "case is the selling unit"; a proposal keeps the 1.
-                        if (canDecide && event.target.value.trim() === "1") {
-                          setBasis("CASE_IS_SELLING_UNIT");
-                          setUnits("");
-                          setSwitchedToCase(true);
-                          return;
-                        }
-                        setUnits(event.target.value);
-                      }}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      2 or more. For 1 per case, type 1 (or choose &ldquo;Case is the selling unit&rdquo;).
-                    </p>
-                  </div>
-                )}
+                </div>
               </>
             )}
 
@@ -606,7 +578,8 @@ export function CommercialEvidencePanel({ candidate, onClose }: Props) {
                 <div className="flex flex-wrap gap-2">
                   {!settled && canDecide ? (
                     <>
-                      <Button onClick={() => setConfirming("approve")} disabled={busy || stale || !basisGiven}>
+                      <Button onClick={() => setConfirming("approve")}
+                              disabled={busy || stale || !basisGiven || (units.trim() !== "" && !unitsValid) || (needsResolution && !unitsValid)}>
                         Approve candidate
                       </Button>
                       <Button variant="outline" onClick={() => setConfirming("reject")} disabled={busy || stale || !basisGiven}>

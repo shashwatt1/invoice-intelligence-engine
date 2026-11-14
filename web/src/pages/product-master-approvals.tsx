@@ -59,7 +59,10 @@ export function ProductMasterApprovalsPage() {
   const { user } = useAuth();
   const canDecide = user?.role === "MANAGER" || user?.role === "ADMIN";
   const isAdmin = user?.role === "ADMIN";
-  const [status, setStatus] = useState("UNDECIDED");
+  // Managers get a compact table (serial, product, UPC, units per case, status) and keep decided rows in their
+  // list, ticked green, so the serial numbers do not shift as they work. Administrators see every column.
+  const compact = !isAdmin;
+  const [status, setStatus] = useState(isAdmin ? "UNDECIDED" : "ALL");
   // Review work is handed out so two people never work the same candidate: a manager starts on their own.
   const [assignee, setAssignee] = useState<string>(isAdmin ? "all" : "me");
   const [assigning, setAssigning] = useState(false);
@@ -147,7 +150,7 @@ export function ProductMasterApprovalsPage() {
             <SelectItem value="NO_MULTIPLIER">No multiplier</SelectItem>
             <SelectItem value="APPROVED">Approved</SelectItem>
             <SelectItem value="REJECTED">Rejected</SelectItem>
-            <SelectItem value="ALL">All states</SelectItem>
+            <SelectItem value="ALL">All states (decided stay listed)</SelectItem>
           </SelectContent>
         </Select>
         <Select value={storeId} onValueChange={setStoreId}>
@@ -221,22 +224,28 @@ export function ProductMasterApprovalsPage() {
                   <Checkbox aria-label="Select every eligible row on this page" checked={allEligibleSelected}
                             disabled={eligibleOnPage.length === 0} onCheckedChange={toggleAll} />
                 </TableHead>
+                <TableHead className="w-10 text-right">#</TableHead>
                 <TableHead>Product</TableHead>
                 <TableHead>UPC / PDI item</TableHead>
-                <TableHead>Mapping scope</TableHead>
+                {!compact && <TableHead>Mapping scope</TableHead>}
                 <TableHead className="text-right">Units/case</TableHead>
-                <TableHead className="text-right">Case cost</TableHead>
-                <TableHead>Interpretation</TableHead>
-                <TableHead>Evidence</TableHead>
+                {!compact && <TableHead className="text-right">Case cost</TableHead>}
+                {!compact && <TableHead>Interpretation</TableHead>}
+                {!compact && <TableHead>Evidence</TableHead>}
                 <TableHead>Status</TableHead>
-                <TableHead>Submitted</TableHead>
-                <TableHead>Assigned to</TableHead>
+                {!compact && <TableHead>Submitted</TableHead>}
+                {!compact && <TableHead>Assigned to</TableHead>}
                 <TableHead />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((row) => (
-                <TableRow key={row.id} data-testid="approval-row" data-conflict={row.is_conflict || undefined}>
+              {rows.map((row, index) => {
+                const mapped = row.approval_state === "APPROVED";
+                const decided = mapped || row.approval_state === "REJECTED";
+                return (
+                <TableRow key={row.id} data-testid="approval-row" data-conflict={row.is_conflict || undefined}
+                          data-decided={decided || undefined}
+                          className={mapped ? "bg-emerald-50 dark:bg-emerald-950/30" : decided ? "bg-muted/40" : undefined}>
                   <TableCell>
                     {row.bulk_eligible ? (
                       <Checkbox aria-label={`Select ${row.canonical_identifier ?? row.id}`}
@@ -245,44 +254,56 @@ export function ProductMasterApprovalsPage() {
                       <span className="text-[0.68rem] text-muted-foreground" title="Needs an individual decision">—</span>
                     )}
                   </TableCell>
+                  <TableCell className="text-right text-xs tabular-nums text-muted-foreground" data-testid="serial">
+                    {(page - 1) * pageSize + index + 1}
+                  </TableCell>
                   <TableCell className="min-w-[200px] max-w-[280px] text-sm"><EditableProductName row={row} /></TableCell>
                   <TableCell className="font-mono text-xs">
                     {row.canonical_identifier ?? "—"}
                     <div className="text-muted-foreground">{row.pdi_item_code ?? ""}</div>
                   </TableCell>
-                  <TableCell className="text-sm">
+                  {!compact && <TableCell className="text-sm">
                     {row.store_kind === "source_identity" ? (
                       <div className="font-medium" data-testid="mapping-scope">Product Master · Global</div>
                     ) : null}
                     <div className={row.store_kind === "source_identity" ? "text-xs text-muted-foreground" : undefined}>
                       <StoreContext row={row} />
                     </div>
-                  </TableCell>
+                  </TableCell>}
                   <TableCell className="text-right tabular-nums">{row.units_accounted_for ?? "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums">{row.case_cost === null ? "—" : row.case_cost.toFixed(2)}</TableCell>
-                  <TableCell className="text-sm">{basisLabel(row.commercial_unit_basis)}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{evidenceLabel(row)}</TableCell>
-                  <TableCell><ReviewStatusBadge status={row.review_status} lastDecision={row.last_decision} /></TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
+                  {!compact && <TableCell className="text-right tabular-nums">{row.case_cost === null ? "—" : row.case_cost.toFixed(2)}</TableCell>}
+                  {!compact && <TableCell className="text-sm">{basisLabel(row.commercial_unit_basis)}</TableCell>}
+                  {!compact && <TableCell className="text-xs text-muted-foreground">{evidenceLabel(row)}</TableCell>}
+                  <TableCell>
+                    {mapped ? (
+                      <span className="text-sm font-medium text-emerald-700 dark:text-emerald-400" data-testid="mapped">
+                        ✓ Mapped{row.reviewed_by ? ` · ${row.reviewed_by}` : ""}
+                      </span>
+                    ) : (
+                      <ReviewStatusBadge status={row.review_status} lastDecision={row.last_decision} />
+                    )}
+                  </TableCell>
+                  {!compact && <TableCell className="text-xs text-muted-foreground">
                     {row.proposed_by ? (
                       <>
                         <div className="text-foreground">{row.proposed_by}</div>
                         {row.proposed_at ? formatDateTime(row.proposed_at) : null}
                       </>
                     ) : "Evidence candidate"}
-                  </TableCell>
-                  <TableCell className="text-sm" data-testid="assigned-to">
+                  </TableCell>}
+                  {!compact && <TableCell className="text-sm" data-testid="assigned-to">
                     {row.assigned_to ? (row.assigned_to_user_id === user?.id ? "You" : row.assigned_to) : (
                       <span className="text-muted-foreground">—</span>
                     )}
-                  </TableCell>
+                  </TableCell>}
                   <TableCell className="text-right">
                     <Button variant="outline" size="sm" onClick={() => setOpen(row)}>
-                      {row.bulk_eligible ? "Review" : "Review individually"}
+                      {decided ? "View" : row.bulk_eligible ? "Review" : "Review individually"}
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
           <Pagination page={page} pageSize={pageSize} total={query.data!.total} onPageChange={setPage}
