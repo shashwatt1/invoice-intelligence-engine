@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.commercial_review_assignment import CommercialReviewAssignment
 from app.models.product_case_mapping import ProductCaseMapping
 from app.models.product_master import (
     COMMERCIAL_CONFLICT,
@@ -90,6 +91,7 @@ class MasterCommercialRepository:
         store_id: uuid.UUID | None = None,
         cost_basis: str | None = None,
         search: str | None = None,
+        assigned_to: uuid.UUID | str | None = None,
     ) -> Select:
         if approval_state:
             statement = statement.where(
@@ -109,6 +111,15 @@ class MasterCommercialRepository:
             statement = statement.where(MasterCommercialMapping.store_id == store_id)
         if cost_basis:
             statement = statement.where(MasterCommercialMapping.cost_basis == cost_basis)
+        if assigned_to is not None:
+            # "unassigned", or one person's work (app.services.review_assignment_service)
+            assigned = select(CommercialReviewAssignment.mapping_id).where(
+                CommercialReviewAssignment.mapping_id == MasterCommercialMapping.id)
+            if assigned_to == "unassigned":
+                statement = statement.where(~assigned.exists())
+            else:
+                statement = statement.where(
+                    assigned.where(CommercialReviewAssignment.assigned_user_id == assigned_to).exists())
         if search:
             term = f"%{search.strip()}%"
             statement = statement.where(or_(
@@ -182,6 +193,17 @@ class MasterCommercialRepository:
             select(func.count()).select_from(MasterCommercialReview)
             .where(MasterCommercialReview.mapping_id == mapping_id)
         )).scalar() or 0)
+
+    async def assignments_for(self, mapping_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, tuple[uuid.UUID, str]]:
+        """Who reviews each candidate (PM Approvals work assignment): mapping id -> (user id, username)."""
+        if not mapping_ids:
+            return {}
+        rows = (await self._session.execute(
+            select(CommercialReviewAssignment.mapping_id, CommercialReviewAssignment.assigned_user_id,
+                   CommercialReviewAssignment.assigned_username)
+            .where(CommercialReviewAssignment.mapping_id.in_(list(mapping_ids)))
+        )).all()
+        return {m: (u, name) for m, u, name in rows}
 
     async def review_facts(self, mapping_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, tuple[int, str | None]]:
         """Per candidate: (review_version, latest decision) — two grouped queries for a whole page."""

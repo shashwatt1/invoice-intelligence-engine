@@ -28,8 +28,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import require_authenticated_user, require_manager
-from app.core.exceptions import RecordNotFoundError
+from app.core.dependencies import require_admin, require_authenticated_user, require_manager
+from app.core.exceptions import RecordNotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.database.session import get_db
 from app.models.product_master import (
@@ -45,6 +45,11 @@ from app.repositories.master_commercial_repository import MasterCommercialReposi
 from app.schemas.base import APIResponse, PaginatedResponse
 from app.schemas.processing import SourceIdentityRef
 from app.schemas.product_master import (
+    AssignedBlockOut,
+    AssignInOrderRequest,
+    AssignInOrderResult,
+    AssignmentCountResult,
+    AssignmentSummary,
     CommercialBulkApprovalRequest,
     CommercialBulkApprovalResult,
     CommercialCandidateDetail,
@@ -60,17 +65,21 @@ from app.schemas.product_master import (
     EvidenceView,
     IdentityUnresolvedRow,
     LegacyMappingRef,
+    PersonWorkloadOut,
     ProductDescriptionView,
     ProductNameEditRequest,
     ProductNameEditResult,
     ProductNameVariant,
+    ReassignRequest,
     ReviewHistoryEntry,
     StoreValueOut,
+    UnassignRequest,
     VendorItemLinkOut,
     VendorItemRetireRequest,
 )
 from app.services import master_commercial_review_service as review_service
 from app.services import proposal_service, vendor_item_crosswalk
+from app.services import review_assignment_service as assignment
 from app.services.product_master import shared_decisions
 from app.services.product_master.canonical_names import MANUAL_SOURCE, set_canonical_name
 from app.services.product_master.commercial_resolution import SHARED_SCOPE_LABEL
@@ -173,6 +182,8 @@ async def list_commercial_candidates(
     store_id: uuid.UUID | None = Query(default=None),
     cost_basis: str | None = Query(default=None),
     search: str | None = Query(default=None, max_length=64),
+    assigned_to: str | None = Query(default=None, max_length=64,
+                                    description="'me', 'unassigned', 'all' or a user id: whose review work to list"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
@@ -187,6 +198,7 @@ async def list_commercial_candidates(
         "store_id": store_id,
         "cost_basis": cost_basis,
         "search": search,
+        "assigned_to": _assignee_filter(assigned_to, user),
     }
     rows = await repository.list_candidates(page=page, page_size=page_size, **filters)
     total = await repository.count_candidates(**filters)
@@ -195,10 +207,12 @@ async def list_commercial_candidates(
     )
     descriptions = await repository.descriptions_for([product.id for _, product, _ in rows])
     facts = await repository.review_facts([mapping.id for mapping, _, _ in rows])
+    assigned = await repository.assignments_for([mapping.id for mapping, _, _ in rows])
     return PaginatedResponse(
         items=[
-            _row(mapping, product, store, legacy.get(mapping.pdi_item_code, []),
-                 descriptions.get(product.id, []), facts.get(mapping.id, (0, None)))
+            _with_assignee(_row(mapping, product, store, legacy.get(mapping.pdi_item_code, []),
+                                descriptions.get(product.id, []), facts.get(mapping.id, (0, None))),
+                           assigned.get(mapping.id))
             for mapping, product, store in rows
         ],
         total=total, page=page, page_size=page_size,
@@ -223,6 +237,97 @@ async def commercial_summary(
         conflicts=totals.get("conflicts", 0),
         total=sum(v for k, v in totals.items() if not k.startswith(("basis:", "conflicts"))),
     ))
+
+
+def _assignee_filter(value: str | None, user: User) -> uuid.UUID | str | None:
+    if value is None or value == "all":
+        return None
+    if value == "me":
+        return user.id
+    if value == "unassigned":
+        return "unassigned"
+    try:
+        return uuid.UUID(value)
+    except ValueError as exc:
+        raise ValidationError(message="assigned_to must be 'me', 'unassigned', 'all' or a user id.",
+                              detail={"assigned_to": value}) from exc
+
+
+def _with_assignee(row: CommercialCandidateRow, who: tuple[uuid.UUID, str] | None) -> CommercialCandidateRow:
+    return row.model_copy(update={"assigned_to_user_id": who[0], "assigned_to": who[1]}) if who else row
+
+
+@router.get(
+    "/commercial/assignments",
+    response_model=APIResponse[AssignmentSummary],
+    summary="PM Approvals work assignment: each person's assigned and decided candidates",
+)
+async def assignment_summary(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_authenticated_user),
+) -> APIResponse[AssignmentSummary]:
+    people = await assignment.workloads(db)
+    return APIResponse(data=AssignmentSummary(
+        people=[PersonWorkloadOut(**vars(p)) for p in people],
+        unassigned_awaiting=await assignment.unassigned_awaiting(db),
+    ))
+
+
+@router.post(
+    "/commercial/assignments/in-order",
+    response_model=APIResponse[AssignInOrderResult],
+    summary="Hand out the review queue in order (ADMIN)",
+    description=(
+        "Each person in the plan gets the next N unassigned, undecided candidates in PM Approvals order "
+        "(conflicts first, then by UPC). Candidates already assigned or decided are skipped, so running it again "
+        "only hands out what is left. Assignment never changes a candidate or the PDI export."
+    ),
+)
+async def assign_in_order(
+    payload: AssignInOrderRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+) -> APIResponse[AssignInOrderResult]:
+    blocks, left = await assignment.assign_in_order(db, [(e.user_id, e.count) for e in payload.plan], actor=user)
+    await db.commit()
+    get_logger(__name__).info("pm_review_assigned_in_order", actor=user.username,
+                              blocks=[(b.username, b.assigned) for b in blocks], unassigned_awaiting=left)
+    return APIResponse(data=AssignInOrderResult(blocks=[AssignedBlockOut(**vars(b)) for b in blocks],
+                                                unassigned_awaiting=left))
+
+
+@router.post(
+    "/commercial/assignments/reassign",
+    response_model=APIResponse[AssignmentCountResult],
+    summary="Give chosen candidates to one person, or unassign them (ADMIN)",
+)
+async def reassign(
+    payload: ReassignRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+) -> APIResponse[AssignmentCountResult]:
+    changed = await assignment.reassign(db, payload.mapping_ids, payload.user_id, actor=user)
+    await db.commit()
+    get_logger(__name__).info("pm_review_reassigned", actor=user.username, changed=changed,
+                              to_user_id=str(payload.user_id) if payload.user_id else None)
+    return APIResponse(data=AssignmentCountResult(changed=changed))
+
+
+@router.post(
+    "/commercial/assignments/unassign",
+    response_model=APIResponse[AssignmentCountResult],
+    summary="Take back undecided work: one person's or everyone's (ADMIN)",
+)
+async def unassign(
+    payload: UnassignRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+) -> APIResponse[AssignmentCountResult]:
+    changed = await assignment.unassign_undecided(db, payload.user_id)
+    await db.commit()
+    get_logger(__name__).info("pm_review_unassigned", actor=user.username, changed=changed,
+                              user_id=str(payload.user_id) if payload.user_id else "everyone")
+    return APIResponse(data=AssignmentCountResult(changed=changed))
 
 
 @router.get(
@@ -252,8 +357,10 @@ async def get_commercial_candidate(
     descriptions = (await repository.descriptions_for([product.id])).get(product.id, [])
 
     return APIResponse(data=CommercialCandidateDetail(
-        candidate=_row(mapping, product, store, legacy.get(mapping.pdi_item_code, []),
-                       descriptions, (len(history), history[0].decision if history else None)),
+        candidate=_with_assignee(
+            _row(mapping, product, store, legacy.get(mapping.pdi_item_code, []),
+                 descriptions, (len(history), history[0].decision if history else None)),
+            (await repository.assignments_for([mapping.id])).get(mapping.id)),
         evidence=EvidenceView(
             notes=evidence.get("notes"),
             source_statements=evidence.get("source_statements", []),
@@ -315,6 +422,7 @@ async def propose_candidate(
     the value the evidence produced, the proposal sits beside it, and a
     MANAGER or ADMIN decides through the same approval service.
     """
+    await assignment.ensure_may_decide(db, [mapping_id], user)
     outcome = await review_service.propose(
         db, mapping_id,
         units_accounted_for=payload.units_accounted_for,
@@ -338,6 +446,7 @@ async def approve_candidate(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[CommercialReviewDecision]:
+    await assignment.ensure_may_decide(db, [mapping_id], user)
     outcome = await review_service.approve(
         db, mapping_id,
         reviewer=user.username,
@@ -363,6 +472,7 @@ async def reject_candidate(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[CommercialReviewDecision]:
+    await assignment.ensure_may_decide(db, [mapping_id], user)
     outcome = await review_service.reject(
         db, mapping_id, reviewer=user.username, note=payload.note,
         reviewer_user_id=user.id, reviewer_role=user.role,
@@ -390,6 +500,7 @@ async def reopen_candidate(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[CommercialReviewDecision]:
+    await assignment.ensure_may_decide(db, [mapping_id], user)
     outcome = await review_service.reopen(
         db, mapping_id, reviewer=user.username, reason=payload.reason,
         reviewer_user_id=user.id, reviewer_role=user.role,
@@ -417,6 +528,7 @@ async def bulk_approve_candidates(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_manager),
 ) -> APIResponse[CommercialBulkApprovalResult]:
+    await assignment.ensure_may_decide(db, [i.mapping_id for i in payload.items], user)
     outcomes = await review_service.bulk_approve(
         db,
         [review_service.BulkApprovalItem(i.mapping_id, i.expected_review_version) for i in payload.items],

@@ -289,3 +289,15 @@ class StaleReviewError(InvoiceBaseException):
     error_code = "ERR_STALE_REVIEW"
     http_status = 409
     message = "This mapping changed since you opened it. Refresh to see the latest state, then decide again."
+
+
+class AssignedElsewhereError(InvoiceBaseException):
+    """
+    Raised when a reviewer decides on a PM Approvals candidate that an administrator assigned to someone
+    else. Reviewing is shared work handed out in order so two people never work the same candidate;
+    an administrator may still decide, reassign or unassign.
+    """
+
+    error_code = "ERR_ASSIGNED_ELSEWHERE"
+    http_status = 409
+    message = "This candidate is assigned to another reviewer."

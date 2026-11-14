@@ -138,6 +138,9 @@ class TestOverTheApi:
             async def descriptions_for(self, _ids):
                 return {}
 
+            async def assignments_for(self, _ids):
+                return {}   # no candidate is assigned here
+
             async def review_facts(self, ids):
                 return dict.fromkeys(ids, (0, None))
 

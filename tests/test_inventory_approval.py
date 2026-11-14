@@ -668,9 +668,10 @@ class TestTheMigration:
         assert revisions["0040"] == "0039"          # vendor and delivery date at upload, vendor requests
         assert revisions["0041"] == "0040"          # vendor merge: tombstone pointer and the merge record
         assert revisions["0042"] == "0041"          # one active session per account: users.session_version
+        assert revisions["0043"] == "0042"          # PM Approvals work assignment
         heads = set(revisions) - {d for d in revisions.values() if d}
         # 0025 is an unreleased branch off 0024, re-parented when released (see 0033's docstring).
-        assert heads - {"0025"} == {"0042"}, heads
+        assert heads - {"0025"} == {"0043"}, heads
 
     def test_the_database_checks_are_exactly_the_models(self):
         m0035 = _load(MIGRATION)
