@@ -495,3 +495,26 @@ describe("a manager's compact list: serial numbers, and decided rows stay ticked
                                                     "Submitted", "Assigned to"]));
   });
 });
+
+describe("assigning more work later continues after the blocks already handed out", () => {
+  it("shows who already has which block and numbers a new block after them", async () => {
+    currentRole = "ADMIN";
+    listUsers.mockResolvedValue([
+      { id: "u-abhi", username: "helloabhishek", role: "MANAGER", is_active: true, created_at: "", updated_at: "" }]);
+    getReviewAssignments.mockResolvedValue({ people: [
+      { user_id: "u-swati", username: "swati", awaiting: 240, decided: 10 },
+      { user_id: "u-ritu", username: "helloritu", awaiting: 250, decided: 0 },
+    ], unassigned_awaiting: 753 });
+    const user = userEvent.setup();
+    renderPage();
+    await rowFor("018200000001");
+    await user.click(screen.getByRole("button", { name: "Assign work" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByTestId("already-assigned")).toHaveTextContent(
+      "swati: candidates 1–250 · 240 awaiting, 10 decidedhelloritu: candidates 251–500 · 250 awaiting, 0 decided");
+    await user.click(within(dialog).getByRole("combobox", { name: "Person 1" }));
+    await user.click(await screen.findByRole("option", { name: "helloabhishek" }));
+    await user.type(within(dialog).getByRole("spinbutton", { name: "How many for person 1" }), "100");
+    expect(within(dialog).getByTestId("assign-preview")).toHaveTextContent("helloabhishek: candidates 501–600");
+  });
+});
